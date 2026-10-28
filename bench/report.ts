@@ -40,6 +40,26 @@ for (const p of profiles) {
   )
 }
 
+// Each subscription is metered on its own, so totals are split by who ran the tokens.
+// A solo-codex baseline runs on Codex itself, with no Conductor on Claude.
+const onProvider = (r: RunResult, provider: string) =>
+  (r.profile === "solo-codex" ? (provider === "openai" ? tokens(r) : 0) : provider === "claude" ? tokens(r) : 0) +
+  r.delegates.filter((d) => d.provider === provider).reduce((sum, d) => sum + d.tokens.input + d.tokens.output, 0)
+lines.push(
+  "",
+  "## By subscription",
+  "",
+  "| Profile | Claude tokens | Claude cost | Codex tokens | Gemini tokens | All tokens |",
+  "|---|---|---|---|---|---|",
+)
+for (const p of profiles) {
+  const rs = runs.filter((r) => r.profile === p)
+  const claude = mean(rs.map((r) => onProvider(r, "claude")))
+  const openai = mean(rs.map((r) => onProvider(r, "openai")))
+  const gemini = mean(rs.map((r) => onProvider(r, "gemini")))
+  lines.push(`| ${p} | ${k(claude)} | $${mean(rs.map(usd)).toFixed(3)} | ${k(openai)} | ${k(gemini)} | ${k(claude + openai + gemini)} |`)
+}
+
 lines.push(
   "",
   "## Per task",

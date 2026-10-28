@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { conductorTier } from "../../conductor/run"
+import { conductorTier, conductorTools } from "../../conductor/run"
 import { Session } from "../../coordinator/session"
 import { promptVars } from "../../prompts/vars"
 import { HealthTracker } from "../../router/health"
@@ -120,6 +120,27 @@ describe("profiles", () => {
       "profiles:\n  cheap:\n    label: Cheap\n    description: x\n    conductor: { tier: fast }\n    overlay:\n      routes:\n        debug.hard: { tier: fast }\n",
     )
     expect(route("cheap", { taskClass: "debug.hard" }).tier).toBe("deep")
+  })
+
+  test("offload: Codex edits, lookups fall back to Codex before Claude, planning stays on Claude", () => {
+    expect(route("offload", { taskClass: "code.edit", taskText: "rename a helper" })).toMatchObject({
+      provider: "openai",
+      tier: "standard",
+      reviewRequired: false,
+    })
+    expect(route("offload", { taskClass: "search.codebase" }).candidates).toEqual(["gemini", "openai", "claude"])
+    expect(route("offload", { taskClass: "plan" }).provider).toBe("claude")
+    expect(route("offload", { taskClass: "architecture" })).toMatchObject({ provider: "claude", tier: "deep" })
+    expect(conductorTier(session("offload"))).toMatchObject({ tier: "standard", reasoning: "high" })
+    // Conductor cannot edit, so changes have to go through Codex.
+    expect(conductorTools(session("offload"))).toEqual(["Read", "Bash"])
+    expect(conductorTools(session("balanced"))).toEqual(["Read", "Edit", "Write", "Bash"])
+  })
+
+  test("offload under a Claude-heavy plan: the plan's frontier still leads edits", () => {
+    const { config } = loadConfig(workspace, "offload", undefined, "claude-heavy")
+    const decision = decide({ config, health: new HealthTracker(2), selfProvider: "claude", spentUsd: 0 }, { taskClass: "code.edit" })
+    expect(decision.provider).toBe("claude")
   })
 
   test("unknown profile names are refused", () => {

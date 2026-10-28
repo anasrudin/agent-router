@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "economy",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 18146,
+  "conductor": {
+    "usd": 0.0822042,
+    "input": 89249,
+    "output": 1040
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "The ladder is a pure function, `nextStep`, in `src/router/escalation.ts:45`. The loop in `src/coordinator/delegate.ts` calls it after each attempt (`delegate.ts:340`).\n\n**Before the ladder**\n- Stop outcomes: `ok`, `blocked`, `cancelled`, and reaching `maxAttempts` (`escalation.ts:48-51`).\n- Stalled or looping delegates get a nudge in the same session (`delegate.ts:329`).\n- A `context_overflow` after tool calls gets one clean restart (`delegate.ts:336`).\n\n**The rungs**\n1. **Dead backend:** errors like `rate_limited` or `not_authenticated` (`escalation.ts:21-27`) switch to another live provider at the same tier (`:79-81`).\n2. **Retry:** one retry with a sharper brief (`:82-87`). `timeout`, `stalled` and `tool_loop` skip it (`:30`). A malformed report resumes the same session (`delegate.ts:356`).\n3. **Fallback:** switch provider at the same tier, once (`:89-91`). A pinned backend never falls back (`:62`).\n4. **Tier up:** raise the tier on a live provider (`:93`).\n5. **Top-tier sweep:** any live provider not yet tried at the highest tier gets a turn (`:95-96`).\n6. **Stop:** the ladder is exhausted, so ask the user (`:97`).\n\nEvery non-stop step adds a retry note to the next brief (`delegate.ts:357`).\n\n**Untested edge case**\n\nI only grepped `escalation.test.ts` for pinned cases and didn't read the full file. The one I'd flag is the `attemptsLeft == 1` branch (`escalation.ts:83-85`). That branch skips the retry when a later rung exists. The `delegate.test.ts:198` case sets `max_attempts: 2`, but it only tests a different path.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

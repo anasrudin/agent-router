@@ -53,16 +53,28 @@ export function codexMcpArgs(servers: RunOptions["mcpServers"] = []): string[] {
     ])
 }
 
+/**
+ * `codex exec resume` takes no --sandbox flag (0.165.0); the sandbox is set through config instead.
+ * Verified: a resumed read-only session keeps its context and still cannot write.
+ */
+export function codexResumeSandboxArgs(mode: AgentMode, permission: PermissionMode): string[] {
+  if (mode === "edit" && permission === "bypass") return ["--dangerously-bypass-approvals-and-sandbox"]
+  return ["-c", `sandbox_mode=${tomlLiteral(mode === "edit" ? "workspace-write" : "read-only")}`]
+}
+
 export function codexArgs(options: RunOptions, extra: string[]): string[] {
+  const resume = options.resumeSessionId
   return [
     "exec",
+    ...(resume ? ["resume"] : []),
     "--json",
     "--skip-git-repo-check",
     ...(options.model ? ["-m", options.model] : []),
     ...(options.reasoning ? ["-c", `model_reasoning_effort=${options.reasoning}`] : []),
-    ...codexSandboxArgs(options.mode, options.permission),
+    ...(resume ? codexResumeSandboxArgs(options.mode, options.permission) : codexSandboxArgs(options.mode, options.permission)),
     ...codexMcpArgs(options.mcpServers),
     ...extra,
+    ...(resume ? [resume] : []),
     // "-" reads the prompt from stdin.
     "-",
   ]
@@ -71,8 +83,9 @@ export function codexArgs(options: RunOptions, extra: string[]): string[] {
 export function createCodexBackend(config: BackendConfig): Backend {
   return {
     id: "openai",
-    // `codex exec resume` exists, but its flag order is unverified without a recorded fixture.
-    supportsResume: false,
+    supportsResume: true,
+    // turn.completed carries the thread's total so far (checked against the session rollout's token_count).
+    cumulativeUsage: true,
     detect: () => detectCli(config.executable, CODEX_TESTED_VERSION),
     async options() {
       const out = await captureCli(config.executable, ["debug", "models"], 30_000)

@@ -21,6 +21,11 @@ export const BackendConfig = z.object({
   reasoning: z.object({ fast: z.string().optional(), standard: z.string().optional(), deep: z.string().optional() }).default({}),
   /** Let the CLI run in workspaces it has not been told to trust (Gemini only). */
   trust_workspace: z.boolean().default(false),
+  /**
+   * Claude only: load just the built-in tools the harness uses (`--tools`). Claude Code's other
+   * tool definitions cost about 14k prompt tokens on every request (measured on 2.1.312).
+   */
+  lean_tools: z.boolean().default(true),
   extra_args: z.array(z.string()).default([]),
 })
 export type BackendConfig = z.infer<typeof BackendConfig>
@@ -50,6 +55,8 @@ export const ProfileOverlay = z
         z.string(),
         z
           .object({
+            /** Which backend leads. Changes who does the work, never the quality floor (`min_tier`). */
+            primary: ProviderId.optional(),
             tier: Tier.optional(),
             fallback: z.array(ProviderId).optional(),
             review: z.union([z.boolean(), z.literal("when_escalated")]).optional(),
@@ -80,7 +87,12 @@ export const Profile = z.object({
   label: z.string(),
   description: z.string(),
   /** The tier and effort Conductor itself runs at, on its own backend. */
-  conductor: z.object({ tier: Tier, reasoning: z.string().optional() }),
+  conductor: z.object({
+    tier: Tier,
+    reasoning: z.string().optional(),
+    /** Conductor's built-in Claude Code tools when `lean_tools` is on; leave out Edit and Write to make it delegate every change. */
+    tools: z.array(z.string()).optional(),
+  }),
   /** Extra operating rules appended to Conductor's prompt ({{CONDITIONAL_RULES}}). */
   guidance: z.string().default(""),
   overlay: ProfileOverlay.default({}),

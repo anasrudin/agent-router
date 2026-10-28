@@ -3,7 +3,8 @@ import { spawnSync } from "node:child_process"
 import { writeFileSync } from "node:fs"
 import path from "node:path"
 import { fakeRegistry, report, testSession } from "../../test-support"
-import { DelegationError, delegate } from "../delegate"
+import { addAttemptTokens, DelegationError, delegate, type Tokens } from "../delegate"
+import { lastSessionTokens } from "../ledger"
 import { Brief } from "../protocol"
 
 const brief = (mode: Brief["mode"] = "read-only") =>
@@ -229,5 +230,42 @@ describe("delegate()", () => {
       const r = await delegate(testSession(backends), { taskClass: "plan", brief: brief() })
       expect(r.attempts.map((a) => `${a.provider}:${a.errorKind ?? a.outcome}`)).toEqual(["claude:context_overflow", "openai:ok"])
     })
+  })
+})
+
+describe("token accounting for backends that report running totals", () => {
+  test("a resumed session counts only what it added", () => {
+    const tokens: Tokens = { input: 0, output: 0 }
+    const totals = new Map<string, Tokens>([["t1", { input: 26_642, output: 64 }]])
+    addAttemptTokens(tokens, { input: 40_036, output: 156 }, totals, "t1", "t1")
+    expect(tokens).toEqual({ input: 13_394, output: 92 })
+    expect(totals.get("t1")).toEqual({ input: 40_036, output: 156 })
+  })
+  test("a fresh session counts everything and records its total", () => {
+    const tokens: Tokens = { input: 0, output: 0 }
+    const totals = new Map<string, Tokens>()
+    addAttemptTokens(tokens, { input: 500, output: 20 }, totals, undefined, "t2")
+    expect(tokens).toEqual({ input: 500, output: 20 })
+    expect(totals.get("t2")).toEqual({ input: 500, output: 20 })
+  })
+  test("an unknown earlier total counts the whole report rather than hiding spend", () => {
+    const tokens: Tokens = { input: 0, output: 0 }
+    addAttemptTokens(tokens, { input: 900, output: 30 }, new Map(), "t3", "t3")
+    expect(tokens).toEqual({ input: 900, output: 30 })
+  })
+  test("per-run backends (no totals map) are summed as reported", () => {
+    const tokens: Tokens = { input: 100, output: 1 }
+    addAttemptTokens(tokens, { input: 50, output: 2 }, undefined, "c1", "c1")
+    expect(tokens).toEqual({ input: 150, output: 3 })
+  })
+  test("the ledger hands back a session's last running total", () => {
+    const base = { at: "", taskClass: "code.edit", task: "t", background: false }
+    const entries = [
+      { ...base, id: "d1", event: "finished" as const, sessionId: "t1", sessionTokens: { input: 100, output: 1 } },
+      { ...base, id: "d2", event: "finished" as const, sessionId: "t1", sessionTokens: { input: 300, output: 4 } },
+      { ...base, id: "d3", event: "finished" as const, sessionId: "c9" },
+    ]
+    expect(lastSessionTokens(entries, "t1")).toEqual({ input: 300, output: 4 })
+    expect(lastSessionTokens(entries, "c9")).toBeUndefined()
   })
 })

@@ -4,7 +4,7 @@ import { z } from "zod"
 import type { PermissionMode } from "../backends/Backend"
 import { MediaKind, ProviderId } from "../config/schema"
 import { type DelegateResult, DelegationError, delegate } from "../coordinator/delegate"
-import { appendLedger, closeInterrupted } from "../coordinator/ledger"
+import { appendLedger, closeInterrupted, lastSessionTokens, readLedger } from "../coordinator/ledger"
 import { capOutput } from "../coordinator/output"
 import { Brief } from "../coordinator/protocol"
 import type { Session } from "../coordinator/session"
@@ -205,6 +205,7 @@ export function createMcpServer(session: Session, pins: Pins, options: McpServer
         brief: args.brief,
         isolation: args.isolation,
         route: routeFields(args, pins),
+        priorSessionTokens: args.resume && ledger ? lastSessionTokens(readLedger(ledger), args.resume.session_id) : undefined,
         signal: cancel,
         onStart: (decision, agent) => {
           appendLedger(ledger, { ...base, event: "started", provider: decision.provider, tier: decision.tier })
@@ -229,6 +230,7 @@ export function createMcpServer(session: Session, pins: Pins, options: McpServer
         tier: result.tier,
         status: result.status ?? "unknown",
         sessionId: result.sessionId,
+        sessionTokens: result.sessionTokens,
         worktree: result.worktree?.path,
       })
       bridge?.emit({ type: "delegation.finished", id, summary: summarize(result) })

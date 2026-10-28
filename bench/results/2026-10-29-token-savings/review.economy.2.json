@@ -1,0 +1,40 @@
+{
+  "task": "review",
+  "profile": "economy",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 43534,
+  "conductor": {
+    "usd": 0.0176066,
+    "input": 59818,
+    "output": 691
+  },
+  "delegates": [
+    {
+      "taskClass": "code.review",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "tier": "standard",
+      "usd": 0,
+      "tokens": {
+        "input": 106090,
+        "output": 1884
+      },
+      "status": "done",
+      "attempts": [
+        "openai/standard: ok"
+      ]
+    }
+  ],
+  "approvals": [],
+  "answer": "**There is no finding to report.** The independent review ran on OpenAI (gpt-6-luna), and it approved `src/router/escalation.ts` with no substantiated bugs or design problems. It reported medium confidence.\n\nIt traced the pinned and candidate routes from `policy.ts` through `delegate.ts`. It found that pinned routes only contain the pinned provider and that `nextStep` disables fallback for them.\n\nThe reviewer couldn't run the tests. `bun test src/router/__tests__/escalation.test.ts` failed with `EROFS` because the environment's filesystem is read-only.\n\nI agree with the verdict only partly. I read just a grep of the file: the 98-line file exists, and the pinned and max-attempts handling is at lines 36–62. I haven't verified the ladder logic or run the tests myself.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "delegated_to_other_model": true,
+      "cites_line": true,
+      "states_agreement": true
+    }
+  }
+}

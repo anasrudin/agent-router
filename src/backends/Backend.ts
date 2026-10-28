@@ -66,6 +66,8 @@ export interface BackendOptions {
 export interface Backend {
   readonly id: ProviderId
   readonly supportsResume: boolean
+  /** Usage events report the session's running total, so a resumed run's usage includes the runs before it. */
+  readonly cumulativeUsage?: boolean
   detect(): Promise<Detection>
   options(): Promise<BackendOptions>
   /** Streams normalised events. Ends with exactly one `done` or `error` event. Abort via `signal` to cancel. */

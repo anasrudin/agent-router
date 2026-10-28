@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "economy",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 20222,
+  "conductor": {
+    "usd": 0.05861,
+    "input": 92600,
+    "output": 1333
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "**Escalation ladder.** The loop is in `src/coordinator/delegate.ts`, and the policy is the pure function `nextStep` in `src/router/escalation.ts`.\n\n1. **Classify the attempt** (`delegate.ts:226-322`). The outcome is one of `backend_error`, `report_failed` (a malformed report at `:313`, or a delegate that reported `failed` at `:316`) or `blocked`. Watchdog trips become `stalled`, `tool_loop` or `timeout` (`:305`).\n2. **Stop conditions** (`escalation.ts:48-51`): success, blocked, cancelled, or max attempts.\n3. **Dead backend** (`:21-27`, `:79`): errors such as `rate_limited` or `not_authenticated` skip the retry and go straight to another provider at the same tier.\n4. **Retry** (`:81-87`): one retry with a sharper brief. A `report_failed` retry resumes the same session (`delegate.ts:356`). `stalled`, `tool_loop` and `timeout` skip it (`:30`).\n5. **Fallback provider** (`:90-93`), unless the session is pinned.\n6. **Tier up** (`:95`).\n7. **Last resort** (`:98-100`): any live provider not yet tried at the top tier, then stop and ask the user.\n\n`delegate.ts:329-341` adds a stall nudge and a context-overflow restart before the ladder runs.\n\n**Untested edge case.** `retried` (`escalation.ts:58`) is true for any two consecutive attempts on the same provider and tier. That includes the stall nudge from `delegate.ts:329`, which is not a sharper-brief retry. If a nudged attempt then returns a malformed report, the ladder skips its retry rung. I found no test in `escalation.test.ts` or `delegate.test.ts` that combines a nudge with a later `report_failed`. I only grepped the tests, so I haven't confirmed the behaviour by running it.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

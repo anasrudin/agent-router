@@ -19,6 +19,7 @@ One entry per CLI: `claude`, `gemini`, `openai` (Codex).
 | `reasoning.<tier>` | Effort per tier: Claude `--effort`, Codex `model_reasoning_effort`. Gemini ignores it. |
 | `strengths`, `max_context_tokens`, `multimodal` | Used by routing (large inputs, media). |
 | `trust_workspace` | Gemini only: run in folders Gemini has not been told to trust. |
+| `lean_tools` | Claude only, default `true`: load just the built-in tools the harness uses (`--tools`): Read, Edit, Write, Bash for Conductor; Read and Bash for read-only delegates. Saves about 14k prompt tokens per request. |
 | `extra_args` | Appended to every invocation. |
 
 ## `routes`
@@ -123,7 +124,7 @@ Built-in servers, used when found on PATH or in the project's `node_modules/.bin
 
 ## `profiles` and `default_profile`
 
-A profile sets Conductor's own tier and effort, adds Conductor rules (`guidance`), and applies an `overlay`. An overlay may change routes' `tier`, `fallback`, `review` and `second_opinion`, backends' `reasoning`, and the escalation triggers and attempt count. It cannot change `min_tier`, privacy or budget: a profile trades depth above the quality floor, never below it.
+A profile sets Conductor's own tier and effort (and, optionally, its built-in tools under `lean_tools`: `conductor: { tier: standard, tools: [Read, Bash] }` leaves Conductor unable to edit, so every change is delegated), adds Conductor rules (`guidance`), and applies an `overlay`. An overlay may change routes' `primary`, `tier`, `fallback`, `review` and `second_opinion`, backends' `reasoning`, and the escalation triggers and attempt count. It cannot change `min_tier`, privacy or budget: a profile trades depth above the quality floor, never below it.
 
 ```yaml
 profiles:

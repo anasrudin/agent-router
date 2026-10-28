@@ -204,3 +204,27 @@ profiles:
       - Give delegates exact paths, line ranges and excerpts only.
       - No second opinions unless the user asks or a delegate reports low confidence.
       - Verification (§5) still applies to anything you deliver: never skip the build and tests.
+  offload:
+    label: Offload
+    description: Claude plans and checks; Codex and Gemini do the reading and editing on your other subscriptions.
+    # No Edit or Write: every file change goes through a delegate (Conductor skipped the rule when it could edit).
+    conductor: { tier: standard, reasoning: high, tools: [Read, Bash] }
+    overlay:
+      routes:
+        search.codebase: { fallback: [openai, claude] }
+        read.large: { fallback: [openai, claude] }
+        research.docs: { fallback: [openai, claude] }
+        code.edit: { primary: openai, fallback: [claude], review: when_escalated }
+        docs.write: { primary: openai, fallback: [gemini, claude] }
+      backends:
+        openai: { reasoning: { deep: high } }
+      escalation:
+        to_deep_when: { classes: [code.edit, plan] }
+    guidance: |
+      This session runs the Offload profile. You are the architect: Claude is the scarce budget, and Codex (the user's ChatGPT plan) and Gemini do the hands-on work.
+      - Plan, brief and verify. You have no Edit or Write tool: every file change, however small, goes to a code.edit or code.tests delegate. Delegate reading code (search.codebase, read.large) too. Read a file yourself only to check a few lines a delegate cited.
+      - Put everything one delegate needs into one brief. Ask for file:line references with short verbatim excerpts in its report, so you can answer and verify from the report instead of rereading files.
+      - Verify edits with the project's tests and check_diff, not by reading whole files. Spot-check at most two cited lines per report, with a line range.
+      - For a follow-up on the same work, pass `resume` with the delegate's session (Claude and Codex), so it keeps what it already read.
+      - Root-cause debugging and architecture still go to the architect route on Claude's deep tier.
+      - Keep your own messages short.

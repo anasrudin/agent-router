@@ -48,7 +48,7 @@ function parsePins(values: string[]): Pins {
 const workspaceOption = () => new Option("-w, --workspace <dir>", "workspace root").default(process.cwd())
 const permissionOption = () => new Option("--permission <mode>", "harness permission mode").choices(PERMISSIONS).default("default")
 const selfOption = () => new Option("--self <provider>", "backend Conductor runs on").argParser(provider).default("claude")
-const profileOption = () => new Option("--profile <name>", "routing profile (quality, balanced, economy, or one you define)")
+const profileOption = () => new Option("--profile <name>", "routing profile (quality, balanced, economy, offload, or one you define)")
 const planOption = () =>
   new Option("--plan <name>", "your subscriptions: claude-heavy, chatgpt-heavy, split, or none (overrides `plan` in the config)")
 

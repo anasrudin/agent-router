@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import type { RunOptions } from "../Backend"
-import { claudeArgs, READ_ONLY_BASH } from "../claude"
+import { CONDUCTOR_TOOLS, claudeArgs, READ_ONLY_BASH } from "../claude"
 import { createClaudeParser } from "../claude/parse"
 import type { OutputParser } from "../cli-runner"
 import type { BackendEvent } from "../events"
@@ -160,6 +160,26 @@ describe("argument mapping", () => {
     expect(claudeArgs({ ...base, mode: "run-commands" }, undefined, [])).toEqual(
       expect.arrayContaining(["--allowedTools", "Bash", "--disallowedTools"]),
     )
+  })
+  test("claude lean tools load only what each mode uses", () => {
+    expect(claudeArgs(base, undefined, [])).not.toContain("--tools")
+    const tools = (args: string[]) => args.at(args.indexOf("--tools") + 1)
+    expect(tools(claudeArgs(base, undefined, [], undefined, undefined, true))).toBe("Read,Bash")
+    expect(tools(claudeArgs({ ...base, mode: "run-commands" }, undefined, [], undefined, undefined, true))).toBe("Read,Bash")
+    expect(tools(claudeArgs({ ...base, mode: "edit" }, undefined, [], undefined, undefined, true))).toBe("Read,Edit,Write,Bash")
+    expect(CONDUCTOR_TOOLS).not.toContain("Agent")
+  })
+  test("codex resume: exec resume <id>, sandbox through config, prompt still on stdin", () => {
+    const ro = codexArgs({ ...base, resumeSessionId: "t-1" }, [])
+    expect(ro.slice(0, 2)).toEqual(["exec", "resume"])
+    expect(ro).toEqual(expect.arrayContaining(["-c", "sandbox_mode='read-only'"]))
+    expect(ro).not.toContain("--sandbox")
+    expect(ro.slice(-2)).toEqual(["t-1", "-"])
+    expect(codexArgs({ ...base, mode: "edit", resumeSessionId: "t-1" }, [])).toContain("sandbox_mode='workspace-write'")
+    const bypass = codexArgs({ ...base, mode: "edit", permission: "bypass", resumeSessionId: "t-1" }, [])
+    expect(bypass).toContain("--dangerously-bypass-approvals-and-sandbox")
+    expect(bypass.join(" ")).not.toContain("sandbox_mode")
+    expect(codexArgs(base, [])).not.toContain("resume")
   })
   test("codex sandbox follows mode and reads stdin", () => {
     expect(codexArgs(base, [])).toEqual(expect.arrayContaining(["--sandbox", "read-only"]))
