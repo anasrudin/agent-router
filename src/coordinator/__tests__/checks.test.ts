@@ -5,11 +5,14 @@ import { delegate } from "../delegate"
 import { Brief } from "../protocol"
 
 const cwd = process.cwd()
+// cmd.exe runs checks on Windows, so failing commands avoid POSIX shell syntax.
+const FAIL_3 = `node -e "console.error('broken'); process.exit(3)"`
+const FAIL_1 = `node -e "console.error('2 tests failed'); process.exit(1)"`
 
 describe("runCheck()", () => {
   test("passing and failing commands, with the output tail", async () => {
     expect(await runCheck("echo fine", cwd, 10_000)).toMatchObject({ ok: true, code: 0, output: "fine" })
-    expect(await runCheck("echo broken >&2; exit 3", cwd, 10_000)).toMatchObject({ ok: false, code: 3, output: "broken" })
+    expect(await runCheck(FAIL_3, cwd, 10_000)).toMatchObject({ ok: false, code: 3, output: "broken" })
   })
 
   test("a command that runs too long is killed and fails", async () => {
@@ -44,14 +47,14 @@ describe("runConfiguredChecks()", () => {
 
 describe("delegate() with project checks", () => {
   const brief = (mode: Brief["mode"]) => Brief.parse({ task: "Fix it.", why: "Broken.", acceptance: ["tests pass"], mode })
-  const config = { checks: { commands: ["echo typecheck ok", "echo 2 tests failed >&2; exit 1"] } }
+  const config = { checks: { commands: ["echo typecheck ok", FAIL_1] } }
 
   test("a failing check after an edit is a reject finding", async () => {
     const backends = fakeRegistry({ claude: [{ text: report("done", "- a.ts — fixed") }] })
     const r = await delegate(testSession(backends, config, "acceptEdits"), { taskClass: "code.edit", brief: brief("edit") })
     expect(r.checks.map((c) => [c.command, c.ok])).toEqual([
       ["echo typecheck ok", true],
-      ["echo 2 tests failed >&2; exit 1", false],
+      [FAIL_1, false],
     ])
     expect(r.findings.some((f) => f.severity === "reject" && f.message.includes("2 tests failed"))).toBe(true)
   })

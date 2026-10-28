@@ -15,7 +15,6 @@ describe("capOutput()", () => {
     const ws = mkdtempSync(path.join(tmpdir(), "ar-out-"))
     const text = `## Status\ndone\n${"x".repeat(1000)}\n## Confidence\nhigh`
     const capped = capOutput(text, ws, "openai/code.review", 200)
-    expect(capped.length).toBeLessThan(400)
     expect(capped.startsWith("## Status\ndone")).toBe(true)
     expect(capped.endsWith("## Confidence\nhigh")).toBe(true)
     const dir = path.join(ws, ".harness", "outputs")
@@ -23,6 +22,8 @@ describe("capOutput()", () => {
     expect(saved).toHaveLength(1)
     expect(saved[0]).toContain("openai_code.review")
     expect(capped).toContain(path.join(dir, saved[0] as string))
+    // The saved file's path varies in length by OS temp folder, so leave it out of the size check.
+    expect(capped.replace(path.join(dir, saved[0] as string), "").length).toBeLessThan(400)
     expect(readFileSync(path.join(dir, saved[0] as string), "utf8")).toBe(text)
     expect(readFileSync(path.join(dir, ".gitignore"), "utf8")).toBe("*\n")
   })
