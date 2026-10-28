@@ -1,0 +1,38 @@
+{
+  "task": "review",
+  "profile": "balanced",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 103958,
+  "conductor": {
+    "usd": 0.0402942,
+    "input": 90897,
+    "output": 1564
+  },
+  "delegates": [
+    {
+      "taskClass": "code.review",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "tier": "deep",
+      "usd": 0,
+      "tokens": {
+        "input": 185967,
+        "output": 5339
+      },
+      "status": "done",
+      "attempts": 1
+    }
+  ],
+  "approvals": [],
+  "answer": "The independent reviewer (OpenAI, gpt-6-luna, deep tier) found no correctness bugs in `src/router/escalation.ts`, so there is no top finding from it. It read the file, its caller, the policy code, the tests and conductor.md §4. It did not run tests, type-check or lint, and rated its confidence medium.\n\nI agree. I read the file myself and found nothing that breaks the ladder. The retry, fallback, tier-up and max-attempts branches match the spec.\n\nThe closest thing to a concern is `src/router/escalation.ts:66`. Tier-up uses `alive[0]`, the most-preferred live provider, rather than `last.provider`. After a fallback, the tier-up can therefore go back to the first provider, not the one that just failed. That fits \"preference order\", so it is a design choice and not a bug. I'd leave it, but it should be a deliberate choice.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "delegated_to_other_model": true,
+      "cites_line": true,
+      "states_agreement": true
+    }
+  }
+}

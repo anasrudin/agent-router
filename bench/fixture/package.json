@@ -1,0 +1,8 @@
+{
+  "name": "bench-fixture",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  }
+}

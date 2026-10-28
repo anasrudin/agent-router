@@ -1,0 +1,36 @@
+{
+  "task": "fix",
+  "profile": "economy",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 18414,
+  "conductor": {
+    "usd": 0.0882298,
+    "input": 112315,
+    "output": 784
+  },
+  "delegates": [],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    }
+  ],
+  "answer": "All 9 tests pass now (`node --test`). I changed only the source, in two places.\n\n1. **`src/bill.js`, off-by-one in `splitBill`:** the leftover-cent check was `i <= leftover`, so one payer too many got an extra cent. Splitting 900 across 3 gave `[301, 300, 300]`, which no longer added up to the total. It is now `i < leftover`. That fixed the \"even split\", \"leftover cents\" and \"total is preserved\" tests.\n\n2. **`src/duration.js`, no validation in `parseDuration`:** it only looked for `<digits><unit>` pieces anywhere in the string. So `\"10m and change\"` was accepted as 600 seconds. I added a check at the top that the whole string must be one or more `<digits><h|m|s>` groups, otherwise it throws `SyntaxError`. That fixed the \"rejects trailing junk\" test.\n\nThe old \"no matches\" check below the new one can no longer trigger. I left it in to keep the change small.\n\nI did this myself without delegating.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

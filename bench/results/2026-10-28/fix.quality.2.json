@@ -1,0 +1,36 @@
+{
+  "task": "fix",
+  "profile": "quality",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 25352,
+  "conductor": {
+    "usd": 0.2001502,
+    "input": 142992,
+    "output": 1411
+  },
+  "delegates": [],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    }
+  ],
+  "answer": "All 9 tests pass now (`node --test`: 9 pass, 0 fail). I changed one line in each of the two source files and didn't touch the tests.\n\n**Bug 1: `src/bill.js` gave out one cent too many (off-by-one).**\n`splitBill` adds an extra cent to each of the first `leftover` people, but the check was `i <= leftover`, so one more person than intended got a cent. Even an even split went wrong: `splitBill(900, 3)` has `leftover = 0`, but person 0 still got a cent, giving `[301, 300, 300]`, and the total no longer matched the bill. This one bug caused all three bill test failures. Fix: `i < leftover`.\n\n**Bug 2: `src/duration.js` accepted input with junk around a valid duration.**\n`parseDuration` collected every `\\d+[hms]` match it found anywhere in the string and only failed if there were none. So `\"10m and change\"` returned 600 instead of throwing. Fix: the whole string must now match `^(\\d+[hms])+$` before it is parsed, otherwise it throws `SyntaxError`. The existing parsing code is unchanged.\n\nOne thing I left alone: the parser still accepts a repeated unit like `\"1h1h\"` and adds the values up. No test covers that case, and keeping the change minimal meant not deciding it here.\n\nI did this myself without delegating because the fix was small.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

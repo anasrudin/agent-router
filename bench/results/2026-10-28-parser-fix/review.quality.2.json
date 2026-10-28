@@ -1,0 +1,45 @@
+{
+  "task": "review",
+  "profile": "quality",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 125364,
+  "conductor": {
+    "usd": 0.10460440000000001,
+    "input": 122524,
+    "output": 2064
+  },
+  "delegates": [
+    {
+      "taskClass": "code.review",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "tier": "deep",
+      "usd": 0,
+      "tokens": {
+        "input": 273640,
+        "output": 7162
+      },
+      "status": "done",
+      "attempts": [
+        "openai/deep: ok"
+      ]
+    }
+  ],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": false
+    }
+  ],
+  "answer": "The independent review ran on **OpenAI (gpt-6-luna, deep tier)**. It reported **no correctness findings** in `src/router/escalation.ts`, so I have no single most important finding to give you. It checked the function against the code that calls it, the routing schema and the existing tests, and typecheck and lint passed.\n\n**I agree.** I read the ladder and traced the main paths myself: the pinned-backend case, a backend that's down on the first attempt, and the case where every rung fails. Each one comes out right.\n\nNobody ran the escalation tests. The reviewer's sandbox blocked writing a temp directory, and my own attempt to run them was refused because this session is read-only.\n\nThe closest thing to an issue is minor and a design choice rather than a bug. At `src/router/escalation.ts:26`, a context overflow writes off that backend for the rest of the subtask, even though moving to a higher tier with a bigger context window might have worked.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "delegated_to_other_model": true,
+      "cites_line": true,
+      "states_agreement": true
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "economy",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 27993,
+  "conductor": {
+    "usd": 0.1179522,
+    "input": 125112,
+    "output": 1720
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "Failure handling is in `nextStep()` (`src/router/escalation.ts:41`). The delegate loop in `src/coordinator/delegate.ts:170` calls it after every attempt.\n\n**Ladder:**\n1. **Stop conditions (L44–47):** the attempt succeeded (`ok`), the delegate is `blocked`, the error was `cancelled`, or `history.length >= maxAttempts`. The default is 4 and the schema sets a minimum of 2 (`schema.ts:74,106`).\n2. **Dead providers (L49–55):** `SWITCH_IMMEDIATELY` (L21–27) covers `missing_executable`, `not_authenticated`, `untrusted_workspace`, `rate_limited` and `context_overflow`. A provider that hit one of these is dropped for the rest of the subtask.\n3. **Retry (L58):** one sharper-brief retry on the same backend. It only happens when `history.length === 1` and the provider isn't dead. `delegate.ts:177` resumes the same session only after a `report_failed`.\n4. **Fallback (L61–64):** the first untried live candidate, at the same tier. Skipped if the provider was pinned.\n5. **Tier up (L65–68):** `tierAbove(last.tier)` on `alive[0]`, if that provider hasn't been tried at that tier.\n6. **Stop (L70):** the ladder is exhausted and the Conductor asks the user.\n\n**Untested edge case:** `escalation.test.ts` never has a `context_overflow` or `untrusted_workspace` failure, and never has every candidate dead without pinning. `context_overflow` permanently blacklists the provider (L21–27, L53), even though a higher tier might have a larger context window. With `candidates: [\"claude\"]` that gives `alive = []`, so L66 finds no provider to raise the tier on and the ladder stops. No test checks that outcome.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

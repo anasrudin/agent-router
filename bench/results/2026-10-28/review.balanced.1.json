@@ -1,0 +1,38 @@
+{
+  "task": "review",
+  "profile": "balanced",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 125513,
+  "conductor": {
+    "usd": 0.0837558,
+    "input": 123391,
+    "output": 2248
+  },
+  "delegates": [
+    {
+      "taskClass": "code.review",
+      "provider": "gemini",
+      "model": "gemini-3-pro-preview",
+      "tier": "deep",
+      "usd": 0,
+      "tokens": {
+        "input": 287160,
+        "output": 5964
+      },
+      "status": "error",
+      "attempts": 3
+    }
+  ],
+  "approvals": [],
+  "answer": "I couldn't get the independent review. The router ran three attempts and then stopped with \"escalation ladder exhausted\":\n\n- **OpenAI, twice:** both reports were rejected because they weren't in the required report format (no `## Status` or `## Result`).\n- **Gemini:** it hit a quota error (rate limited).\n\nClaude is the only other backend, and it's the same model as me, so it wouldn't be independent.\n\n**My own read, not independent:** `src/router/escalation.ts:66` picks `alive[0]` for the tier-up. After a fallback, that can send the higher-tier attempt back to the first provider instead of the one that just failed, which breaks the same-backend rule for multi-step edits. This is inferred from reading the code, and I haven't run it.\n\nDo you want me to retry OpenAI with a stricter output format, or wait for the Gemini quota to reset?",
+  "score": {
+    "pass": false,
+    "checks": {
+      "delegated_to_other_model": true,
+      "cites_line": true,
+      "states_agreement": false
+    }
+  }
+}

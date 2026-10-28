@@ -1,0 +1,13 @@
+{
+  "profile": "balanced",
+  "conductor": {
+    "usd": 0.19089119999999998,
+    "input": 134521,
+    "output": 2766
+  },
+  "delegates": [],
+  "answer": "The ladder is a pure function, `nextStep()` in `src/router/escalation.ts:41`. The loop in `src/coordinator/delegate.ts:118-185` calls it after every attempt.\n\n**Walkthrough**\n1. **Classify the attempt** (`delegate.ts:147-165`). A backend error, a malformed report (no `## Status` or `## Result`) or a report with status `failed` counts as a failure. A `blocked` report is treated as a stop.\n2. **Stop conditions** (`escalation.ts:44-47`): success, `blocked`, `cancelled`, or reaching `max_attempts_per_subtask` (default 4, `schema.ts:106`).\n3. **Retry** (`:58`): after the first failure, retry once on the same backend with a \"Previous attempts\" note in the brief. It resumes the same session only after a `report_failed` (`delegate.ts:181`).\n4. **Fallback** (`:61-64`): move to the first untried provider. This is skipped when the user pinned a provider.\n5. **Tier up** (`:65-69`): raise standard to deep on the first live candidate.\n6. **Stop** (`:70`): ask the user.\n\nErrors in `SWITCH_IMMEDIATELY` (`:21`: `missing_executable`, `not_authenticated`, `untrusted_workspace`, `rate_limited`, `context_overflow`) skip the retry and mark that provider dead.\n\n**Untested edge case:** `timeout` and generic `failed` errors aren't in `SWITCH_IMMEDIATELY`. A first-attempt `timeout` therefore gets a same-backend \"sharper brief\" retry (`:58`). A sharper brief can't fix a timeout, and the retry spends one of the four attempts. `escalation.test.ts` only covers `missing_executable`, `rate_limited` and `not_authenticated` as backend errors. The ladder test table has no `timeout` or `failed` case.\n\nI read the code and tests but didn't run the test suite.",
+  "ms": 39801,
+  "ok": true,
+  "error": ""
+}

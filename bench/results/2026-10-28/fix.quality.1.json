@@ -1,0 +1,36 @@
+{
+  "task": "fix",
+  "profile": "quality",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 27628,
+  "conductor": {
+    "usd": 0.1950126,
+    "input": 141629,
+    "output": 1353
+  },
+  "delegates": [],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    }
+  ],
+  "answer": "I fixed two bugs in the source, and `node --test` now passes all 9 tests. The tests themselves are unchanged.\n\n**1. `src/bill.js`: off-by-one in `splitBill`** (caused 3 of the 4 failures)\nThe function gave an extra cent to people `0` through `leftover` using `i <= leftover`. That's one person too many: `splitBill(1000, 3)` returned `[334, 334, 333]`, which adds up to 1001. Even splits were wrong too, because with a leftover of 0, person 0 still got an extra cent (`[301, 300, 300]`). I changed the condition to `i < leftover`.\n\n**2. `src/duration.js`: `parseDuration` accepted input with trailing text**\nIt used `matchAll` to pick out `\\d+[hms]` pieces and only threw an error if there were none. So `\"10m and change\"` returned 600 instead of being rejected, and something like `\"3d1h\"` would have quietly returned 3600. It now checks the whole string first with `/^(?:\\d+[hms])+$/` and throws a `SyntaxError` if anything else is in it. The existing parsing logic is unchanged.\n\nThe diff is one line in each file. Since the change was this small, I made it myself and didn't hand it off or ask for a separate review.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

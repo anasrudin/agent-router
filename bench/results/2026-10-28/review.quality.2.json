@@ -1,0 +1,38 @@
+{
+  "task": "review",
+  "profile": "quality",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 248592,
+  "conductor": {
+    "usd": 0.0803042,
+    "input": 89867,
+    "output": 1548
+  },
+  "delegates": [
+    {
+      "taskClass": "code.review",
+      "provider": "gemini",
+      "model": "gemini-3-pro-preview",
+      "tier": "deep",
+      "usd": 0,
+      "tokens": {
+        "input": 428168,
+        "output": 19762
+      },
+      "status": "error",
+      "attempts": 3
+    }
+  ],
+  "approvals": [],
+  "answer": "I couldn't get an independent review, so I have no finding to give you. Both non-Claude reviewers failed:\n\n- **OpenAI (Codex, deep), 2 tries:** both replies were rejected because they didn't use the required report format (no `## Status` / `## Result` sections). They may have contained a real review, but I never got to see it.\n- **Gemini (deep), 1 try:** it hit its usage limit (\"You exceeded your current quota\").\n\nThe router then stopped with \"escalation ladder exhausted; ask the user\". I didn't swap in my own review, because I'm Claude and you asked for a different model.\n\nPick one:\n1. **Retry Codex once more** with a stricter instruction on the report format. This would be the 4th and final allowed attempt.\n2. **Wait for Gemini's quota to reset**, then rerun.\n3. **Let me review it myself.** This would be clearly labelled as not independent.",
+  "score": {
+    "pass": false,
+    "checks": {
+      "delegated_to_other_model": true,
+      "cites_line": false,
+      "states_agreement": false
+    }
+  }
+}

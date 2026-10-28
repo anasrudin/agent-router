@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"01a181f7-5cc6-7051-829c-1f333e8a65be"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'cat note.txt'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"/bin/bash -lc 'cat note.txt'","aggregated_output":"hello\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"hello"}}
+{"type":"turn.completed","usage":{"input_tokens":25818,"cached_input_tokens":23552,"cache_write_input_tokens":0,"output_tokens":40,"reasoning_output_tokens":0}}

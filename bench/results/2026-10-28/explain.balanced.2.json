@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "balanced",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 29992,
+  "conductor": {
+    "usd": 0.071143,
+    "input": 130169,
+    "output": 2328
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "**How a failed delegate is handled**\n\nThe loop in `src/coordinator/delegate.ts:118` runs the attempt, then classifies it:\n- A backend error is recorded at `:147-151`.\n- A malformed or `failed` report becomes `report_failed` at `:154-164`.\n- A `blocked` report becomes `blocked` at `:163`.\n\nIt then calls the pure `nextStep()` at `delegate.ts:170`. That function is in `src/router/escalation.ts`:\n1. **Stop conditions** (`:44-47`): success, `blocked`, `cancelled`, or the max-attempts cap.\n2. **Switch immediately** (`:21-27`, `:49-55`): `missing_executable`, `not_authenticated`, `untrusted_workspace`, `rate_limited` and `context_overflow` mark the provider dead and skip the retry.\n3. **Retry** (`:58`): one sharper-brief retry on the same backend. A `report_failed` retry resumes the same session (`delegate.ts:181`).\n4. **Fallback** (`:61-63`): the first untried live provider, unless the provider is pinned.\n5. **Tier up** (`:65-68`): the next tier on the first live candidate.\n6. **Stop** (`:70`): ask the user.\n\n**Edge case the tests don't cover**\n\nIn `escalation.test.ts`, every `errorKind` used is a switch-immediately kind or `cancelled`. A `timeout` or `failed` backend error is never tested through `nextStep`. It falls through to the soft-failure path, so it gets the same \"retry once with a sharper brief\" as a bad report. I confirmed this from reading the code and did not run it. The `delegate.test.ts:44` case uses these kinds, but it checks the delegate flow, not the ladder rule.\n\nI did not run the test suite.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

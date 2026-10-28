@@ -1,0 +1,40 @@
+{
+  "task": "review",
+  "profile": "balanced",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 88145,
+  "conductor": {
+    "usd": 0.04043,
+    "input": 91089,
+    "output": 1500
+  },
+  "delegates": [
+    {
+      "taskClass": "code.review",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "tier": "deep",
+      "usd": 0,
+      "tokens": {
+        "input": 159129,
+        "output": 4952
+      },
+      "status": "done",
+      "attempts": [
+        "openai/deep: ok"
+      ]
+    }
+  ],
+  "approvals": [],
+  "answer": "**Top finding (OpenAI gpt-6-luna, deep): `src/router/escalation.ts:61-64`. Fallback runs before tier-up, so tier-up is never reached when there are three or more candidates.**\n\nI agree. I traced it by hand with candidates `[claude, openai, gemini]` and `maxAttempts: 4`:\n\n1. `claude` fails, so line 58 retries `claude`.\n2. `claude` fails again, so line 61 falls back to `openai`.\n3. `openai` fails, and `gemini` is still untried, so line 61 falls back to `gemini`.\n4. `gemini` is attempt 4, which hits line 47 and stops.\n\nThe tier is never raised. That contradicts the retry → fallback → tier-up order in conductor.md §4 rule 7, and the comment at line 57 shows the author meant tier-up to be reachable.\n\nI'd rate it medium rather than major. It only happens with three or more candidates, and with two candidates tier-up is reached on attempt 4. The fix is to allow one fallback, then tier up, then try further providers.\n\nI didn't run the tests.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "delegated_to_other_model": true,
+      "cites_line": true,
+      "states_agreement": true
+    }
+  }
+}

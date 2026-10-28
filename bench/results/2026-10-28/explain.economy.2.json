@@ -1,0 +1,30 @@
+{
+  "task": "explain",
+  "profile": "economy",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 20413,
+  "conductor": {
+    "usd": 0.040740200000000004,
+    "input": 145967,
+    "output": 1187
+  },
+  "delegates": [],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": false
+    }
+  ],
+  "answer": "The ladder is the pure function `nextStep()` in `src/router/escalation.ts:41`. `src/coordinator/delegate.ts:170` calls it after each failed attempt, with `maxAttempts` taken from `escalation.max_attempts_per_subtask` (`delegate.ts:174`).\n\n**Walkthrough**\n1. **Terminal states** (`escalation.ts:44-47`): success, `blocked`, `cancelled`, or `history.length >= maxAttempts` all stop.\n2. **Dead providers** (`:49-55`): errors in `SWITCH_IMMEDIATELY` (`:21`) mark a provider dead. These are `missing_executable`, `not_authenticated`, `untrusted_workspace`, `rate_limited` and `context_overflow`.\n3. **Retry** (`:58`): if the provider isn't dead and this was the first attempt, retry once with a sharper brief.\n4. **Fallback** (`:61-64`): switch to the first untried live candidate, unless the provider is pinned.\n5. **Tier-up** (`:65-69`): raise the tier on `alive[0]`, if that provider hasn't been tried at the higher tier.\n6. **Otherwise** (`:70`): stop and ask the user.\n\n**Untested edge case:** the retry rung only checks `history.length === 1` (`:58`). If the first attempt was dead-provider (e.g. `rate_limited`), the fallback provider fails softly as attempt 2, and the ladder never retries it. If it fails softly as attempt 1 and the next step is a dead-provider failure, it also never gets a sharper-brief retry. The tests only cover dead-first, then a *second* soft failure on the same fallback (`escalation.test.ts:23-26`), and never check retry eligibility for a fallback provider's first soft failure.\n\nI read the code but didn't run the tests.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+	"files": { "includes": ["src/**", "bench/**", "!bench/results", "!src/desktop/dist", "!src/desktop/src-tauri"] },
+	"formatter": { "indentStyle": "space", "indentWidth": 2, "lineWidth": 140 },
+	"javascript": { "formatter": { "semicolons": "asNeeded" } },
+	"linter": { "enabled": true, "rules": { "preset": "recommended" } }
+}

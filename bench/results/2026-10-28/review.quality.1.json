@@ -1,0 +1,38 @@
+{
+  "task": "review",
+  "profile": "quality",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 100656,
+  "conductor": {
+    "usd": 0.1450106,
+    "input": 90238,
+    "output": 1582
+  },
+  "delegates": [
+    {
+      "taskClass": "code.review",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "tier": "deep",
+      "usd": 0,
+      "tokens": {
+        "input": 205460,
+        "output": 6207
+      },
+      "status": "done",
+      "attempts": 1
+    }
+  ],
+  "approvals": [],
+  "answer": "**Reviewer:** OpenAI (gpt-6-luna, deep tier). It's a different provider from me, the author.\n\n**Most important finding: `src/router/escalation.ts:61-63`.** The fallback branch keeps switching to providers that haven't been tried yet, and only raises the tier after all of them have failed. With three candidates (claude, openai, gemini), the sequence is claude/standard, a retry on claude/standard, openai/standard, then **gemini/standard** instead of **tier_up claude/deep**. That fourth attempt hits the 4-attempt cap, so the deep tier is never reached.\n\n**I agree.** I traced the inputs through the code and got the same `fallback: gemini/standard` result. The comment at line 57 shows the author meant tier-up to be reachable within the cap, and the ladder in conductor.md lists one fallback, not one per provider. Fix: only allow `fallback` if no switch has happened yet.\n\nThe reviewer also flagged that a configured `maxAttempts` above 4 isn't capped (line 47). That's minor, since the limit comes from config. They couldn't run the escalation tests because of a read-only filesystem error; typecheck and lint passed.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "delegated_to_other_model": true,
+      "cites_line": true,
+      "states_agreement": true
+    }
+  }
+}

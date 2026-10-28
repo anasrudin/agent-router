@@ -1,0 +1,13 @@
+{
+  "profile": "quality",
+  "conductor": {
+    "usd": 0.3208962,
+    "input": 246822,
+    "output": 2932
+  },
+  "delegates": [],
+  "answer": "Failures go through `runAttempts` in `src/coordinator/delegate.ts`. After every attempt it asks the pure function `nextStep` (`src/router/escalation.ts:41`) what to do next.\n\n**How an attempt is judged** (`delegate.ts:147-167`): a CLI error counts as `backend_error`. A malformed report, or one with status `failed`, counts as `report_failed`. A report with status `blocked` counts as `blocked`. Errors and successes are also recorded in the health tracker (`:166-167`).\n\n**The ladder:**\n1. **Stop** on success, `blocked`, `cancelled`, or when `max_attempts` is reached (default 4) (`escalation.ts:44-47`).\n2. **Retry** the same backend once with a sharper brief (`:58-60`). This rung is skipped if the backend is \"dead\": missing, not authenticated, rate-limited, untrusted workspace, or context overflow (`:21-27`). A failed report resumes the same session (`delegate.ts:181`), and earlier failures are added to the brief (`:182`).\n3. **Fall back** to an untried provider that isn't dead, unless the user pinned one (`:61-64`).\n4. **Raise the tier** (standard → deep) on the first provider that isn't dead (`:65-69`).\n5. **Stop** and ask the user (`:70`).\n\n**Untested edge case:** the tier-up step only looks at the last attempt's tier. Suppose `max_attempts` is 5 or more and a deep attempt fails with a \"dead\" error, for example claude/deep is rate-limited after openai/standard already failed. `tierAbove(\"deep\")` is then undefined, so the ladder stops and never tries openai/deep. No test sets `max` above 4 or kills a provider at the tier-up step (`escalation.test.ts:12-31`). I found this by reading the code; my attempt to run a quick test for it was blocked.",
+  "ms": 41523,
+  "ok": true,
+  "error": ""
+}
