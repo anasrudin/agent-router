@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.harness/worktrees/
+src/desktop/dist/
+src/desktop/src-tauri/target/
+src/desktop/src-tauri/binaries/
+src/desktop/src-tauri/gen/
