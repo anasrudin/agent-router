@@ -4,7 +4,7 @@ import path from "node:path"
 import type { ProviderId } from "../config/schema"
 import type { Detection, RunOptions } from "./Backend"
 import { BackendError, type BackendEvent, classifyErrorText } from "./events"
-import { type ProcessSpec, runProcess } from "./process"
+import { NONINTERACTIVE_ENV, type ProcessSpec, runProcess } from "./process"
 
 /** Turns one CLI's stdout into normalised events. Pure, so contract tests can feed it recorded output. */
 export interface OutputParser {
@@ -20,7 +20,7 @@ const isTerminal = (e: BackendEvent) => e.type === "done" || e.type === "error"
  * process exits, so a caller never sees `done` from a process that is still writing files.
  */
 export async function* runCli(provider: ProviderId, spec: ProcessSpec, parser: OutputParser): AsyncGenerator<BackendEvent> {
-  const proc = runProcess(spec)
+  const proc = runProcess({ ...spec, env: { ...NONINTERACTIVE_ENV, ...spec.env } })
   let terminal: BackendEvent | undefined
   const take = function* (events: BackendEvent[]) {
     for (const event of events) {

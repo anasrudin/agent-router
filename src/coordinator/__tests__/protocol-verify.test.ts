@@ -75,6 +75,40 @@ describe("parseReport()", () => {
   })
 })
 
+describe("scanDiff() comments", () => {
+  const added = (...lines: string[]) => ["--- a/src/a.ts", "+++ b/src/a.ts", ...lines.map((l) => `+${l}`)].join("\n")
+
+  test("comments that narrate the change are flagged for a look, not rejected", () => {
+    const findings = scanDiff(
+      added(
+        "// Added null check for the user",
+        "  # Updated the logic to use the cache",
+        "/* as requested by the user */",
+        "  // Now we loop over the rows",
+        "const x = 1 // Fixed the bug",
+      ),
+    )
+    expect(findings.map((f) => f.severity)).toEqual(["check", "check", "check", "check"])
+    expect(findings[0]?.message).toBe("src/a.ts: comment narrates the change, not the code: Added null check for the user")
+  })
+
+  test("comments that explain the code are fine", () => {
+    expect(
+      scanDiff(
+        added(
+          "// Removed entries are kept for undo",
+          "// Retries twice: the API drops the first request after idle",
+          "# Added to PATH by the installer, so may be missing",
+          "// Updated by the scheduler every minute",
+          "-- Updated nightly by cron job",
+        ),
+      ),
+    ).toEqual([])
+    const changelog = ["--- a/CHANGELOG.md", "+++ b/CHANGELOG.md", "+## Fixed crash on empty config", "+* Added support for Windows paths"]
+    expect(scanDiff(changelog.join("\n"))).toEqual([])
+  })
+})
+
 describe("scanDiff()", () => {
   const diff = [
     "diff --git a/src/a.ts b/src/a.ts",

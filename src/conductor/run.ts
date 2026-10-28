@@ -3,10 +3,10 @@ import type { PermissionMode } from "../backends/Backend"
 import { createClaudeParser } from "../backends/claude/parse"
 import { tempFile } from "../backends/cli-runner"
 import type { BackendEvent } from "../backends/events"
-import { buildInvocation, type ProcessExit, resolveExecutable, runProcess } from "../backends/process"
+import { buildInvocation, NONINTERACTIVE_ENV, type ProcessExit, resolveExecutable, runProcess } from "../backends/process"
 import { createBackends } from "../backends/registry"
 import { loadConfig } from "../config/load"
-import { isPlaceholderModel, type ProviderId, type Tier } from "../config/schema"
+import { isPlaceholderModel, type ProviderId, TIERS, type Tier } from "../config/schema"
 import { Session } from "../coordinator/session"
 import { mcpToolName, type Pins, TOOL_PERMISSIONS } from "../mcp/server"
 import { composeSystemPrompt } from "../prompts/render"
@@ -19,10 +19,12 @@ export interface SessionInit {
   selfProvider: ProviderId
   /** Routing profile; falls back to `default_profile` in the config. */
   profile?: string
+  /** Subscription plan preset, overriding `plan` in the config ("none" turns it off). */
+  plan?: string
 }
 
 export async function createSession(init: SessionInit): Promise<Session> {
-  const { config } = loadConfig(init.workspace, init.profile)
+  const { config } = loadConfig(init.workspace, init.profile, undefined, init.plan)
   const session = new Session({ ...init, config, backends: createBackends(config) })
   await session.detectBackends()
   return session
@@ -114,6 +116,7 @@ export async function prepareConductor(opts: Omit<ConductorOptions, "prompt">): 
             "--self",
             opts.selfProvider,
             ...(session.profile ? ["--profile", session.profile] : []),
+            ...(opts.plan ? ["--plan", opts.plan] : []),
             ...pinArgs(opts.pins),
             ...(opts.bridgeUrl ? ["--bridge", opts.bridgeUrl] : []),
             ...(opts.ledger ? ["--ledger", opts.ledger] : []),
@@ -174,8 +177,14 @@ export async function prepareConductor(opts: Omit<ConductorOptions, "prompt">): 
 /** Conductor's own tier: the profile's choice, else deep (the judgement and verification live here). */
 export function conductorTier(session: Session): { tier: Tier; reasoning?: string } {
   const profile = session.profile ? session.config.profiles[session.profile] : undefined
-  const tier = profile?.conductor.tier ?? "deep"
-  return { tier, reasoning: profile?.conductor.reasoning ?? (session.config.backends.claude.reasoning[tier] || undefined) }
+  const wanted = profile?.conductor.tier ?? "deep"
+  // A small Claude plan cannot carry Conductor on the top tier: its context is re-read on every step.
+  const cap = session.config.conductor_max_tier
+  const capped = cap !== undefined && TIERS.indexOf(wanted) > TIERS.indexOf(cap)
+  const tier = capped ? cap : wanted
+  // The profile's effort was chosen for its own tier; a capped Conductor uses the capped tier's.
+  const reasoning = (!capped && profile?.conductor.reasoning) || session.config.backends.claude.reasoning[tier] || undefined
+  return { tier, reasoning }
 }
 
 /** Start Conductor inside the wrapped Claude Code CLI, with the router's MCP server attached. */
@@ -242,6 +251,7 @@ export async function streamConductor(prepared: PreparedConductor, prompt: strin
       ...prepared.args,
     ],
     cwd: prepared.session.workspace,
+    env: NONINTERACTIVE_ENV,
     stdin: prompt,
     signal: opts.signal,
   })

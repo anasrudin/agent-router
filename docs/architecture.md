@@ -16,6 +16,8 @@ agent-router wraps three coding CLIs (Claude Code, Gemini CLI, Codex CLI) behind
 | Desktop server | `src/server/` | `serve`: a WebSocket server on `127.0.0.1` with a random token. It runs Conductor turns for the app, relays delegation events and approval prompts, and reads and writes model settings. |
 | Desktop app | `src/desktop/` | Tauri shell (`src-tauri/`) and the web UI (`ui/`). The release build compiles the core into a sidecar binary. |
 | Hooks | `src/hooks/` | Claude Code hook handlers, run as `agent-router hook …` by the CLI itself. |
+| Code navigation | `src/lsp/` | `lsp-mcp`: an MCP server attached to Claude and Codex delegates. It starts installed language servers on first use and answers `diagnostics`, `definition`, `references` and `symbols`. |
+| Plans | `src/config/plans.ts` | Turns your subscriptions into a config overlay: which backend leads, Conductor's tier cap, delegates at once per backend. |
 
 ## A request, end to end
 
@@ -47,12 +49,12 @@ Each Conductor turn starts its own MCP server process. Background jobs belong to
 ## Delegation lifecycle
 
 1. **Routing.** `decide()` reads the task class's route (`primary`, `tier`, `min_tier`, `fallback`) and applies the active profile overlay, escalation triggers (files touched, risk words, previous failure), privacy restrictions, author exclusion for `code.review`, and pins. Unhealthy backends are skipped.
-2. **Brief.** `renderBrief()` turns the brief fields into the delegation-protocol format and appends the `AGENTS.md` files found between each relevant file and the workspace root (4k characters per file, 12k in total).
-3. **Attempt.** The adapter builds the CLI arguments for the mode (read-only, run-commands, edit) and the harness permission mode, and the process runs under an `AbortController` tied to the request.
+2. **Brief.** `renderBrief()` turns the brief fields into the delegation-protocol format. `scopedRules()` adds the rule files that target the relevant files: Copilot and Cursor rules, `.claude/rules` for non-Claude backends, then the `AGENTS.md` files between each file and the workspace root (4k characters per file, 12k in total). Delegates that can write a file (edit mode, or Claude in run-commands mode) are told to save cited output under `.harness/evidence/`.
+3. **Attempt.** The adapter builds the CLI arguments for the mode (read-only, run-commands, edit) and the harness permission mode, attaches `lsp-mcp` when a language server is installed, and the process runs under an `AbortController` tied to the request, with `NONINTERACTIVE_ENV` (no pagers, editors or credential prompts).
 4. **Watchdog.** Every event re-arms a stall timer (`delegate_stall_seconds`). A run of identical tool calls (same name, same input with keys sorted) up to `max_identical_tool_calls` trips it as well. A trip aborts the attempt with error kind `stalled` or `tool_loop`.
 5. **Report.** `parseReport()` splits the final message into the protocol sections (Status, Result, Changes, Evidence, Confidence, Open question, Risks). Only those names end a section, so reviewers may use their own sub-headings. A malformed or failed report becomes an attempt error.
-6. **Escalation.** `nextStep()` picks the next rung (see below) or stops.
-7. **Checks.** After an edit-mode delegation that ended `done` or `partial`, `checks.commands` run in the workspace (or the delegate's worktree). Failures are added as `reject` findings.
+6. **Recovery, then escalation.** Before the ladder, two one-time recoveries keep the delegate's own work: a Claude delegate stopped by the watchdog is resumed in its session with a nudge, and a delegate that filled its context after making tool calls gets a fresh session on the same backend, told which files changed since the task started. Neither uses the last attempt. Otherwise `nextStep()` picks the next rung (see below) or stops.
+7. **Checks.** Cited evidence files are checked (inside `.harness/evidence/`, regular file, newer than the task, not empty). After an edit-mode delegation that ended `done` or `partial`, `checks.commands` run in the workspace (or the delegate's worktree). Failures are added as `reject` findings.
 8. **Result.** The report, routing metadata, findings and check results are formatted for Conductor. Text over 40,000 characters is cut to its head and tail, and the full report is saved under `.harness/outputs/`.
 
 ## Escalation ladder
@@ -92,6 +94,12 @@ Claude Code runs hook commands from a `--settings` file the harness writes to a 
 | `SessionStart` (matcher `compact`) → `hook compact-context` | Conductor | Returns the chat's delegation ledger as `additionalContext`, so session ids, worktrees and running jobs survive compaction. |
 
 Hook handlers fail open: an error lets Claude Code continue rather than blocking the turn.
+
+## Code navigation
+
+`agent-router lsp-mcp --workspace <dir>` is an MCP server over stdio. On a tool call it picks the language server for the file's extension, starts it once (JSON-RPC with Content-Length framing), opens or refreshes the file, and answers with 1-based positions and the source line. Diagnostics are pulled (`textDocument/diagnostic`, LSP 3.17) when the server supports it, as TypeScript 7 does, and otherwise waited for after `publishDiagnostics`. Paths outside the workspace are refused. Every tool is annotated `readOnlyHint`: Codex refuses unannotated MCP tools when it cannot ask for approval.
+
+Claude delegates get it through `--strict-mcp-config --mcp-config <file>` with `mcp__lsp` pre-allowed; Codex delegates through `-c mcp_servers.lsp.command=… -c mcp_servers.lsp.args=[…]`. Gemini delegates do not get it yet. Each delegate starts its own server process, so parallel delegates each run their own language server; it shares the delegate's process group, so it stops with it. A worktree delegate's server is found through the main workspace (`--tools-root`), since a fresh worktree has no `node_modules`. Codex gets the server as TOML literal strings, so no argument carries a `"` that `cmd.exe` would refuse when Codex is an npm `.cmd` shim.
 
 ## Delegation ledger
 

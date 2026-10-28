@@ -56,6 +56,7 @@ Shipped classes: `trivial`, `search.codebase`, `read.large`, `research.docs`, `p
 |---|---|---|
 | `max_parallel_agents` | 3 | Delegations running at once in a session. |
 | `max_parallel_per_provider` | 2 | Delegations running at once on one backend. |
+| `parallel_per_provider.<provider>` | — | Per-backend override of the above. Your `plan` sets it. |
 | `parallel_writers_need_worktree` | true | Parallel edit delegates must use `isolation: "worktree"`. |
 | `delegate_timeout_seconds` | 900 | Hard limit per attempt. |
 | `delegate_stall_seconds` | 300 | Watchdog: stop an attempt that emits nothing for this long. |
@@ -71,6 +72,40 @@ checks:
 ```
 
 Shell commands run after every edit-mode delegation that ends `done` or `partial`, in the delegate's worktree if it had one. A non-zero exit becomes a `reject` finding with the end of the output. They run only under `acceptEdits` or `bypass`. Under `default`, Conductor gets a finding asking it to run them itself. Under `acceptEdits`, Claude edit delegates may run exactly these commands. A command containing parentheses is not added to the delegate's allow list, because Claude Code's rule syntax uses them.
+
+## `plan`
+
+Your subscriptions, so routing matches what you can afford on each side. Either a preset name or tiers per provider:
+
+```yaml
+plan: chatgpt-heavy
+# or
+plan: { claude: 1, openai: 4, gemini_requests_per_day: 1000 }
+```
+
+| Preset | Claude | ChatGPT (Codex) | Gemini |
+|---|---|---|---|
+| `claude-heavy` | 4 | 1 | 1000/day |
+| `chatgpt-heavy` | 1 | 4 | 1000/day |
+| `split` | 3.5 | 3.5 | 1000/day |
+
+Tiers by monthly price: `1` = $20, `2` = $40, `3` = $200, `3.5` ≈ $255 (Claude) / $266 (ChatGPT), `4` ≈ $466 / $477. `0` means no subscription: that backend is never chosen. What a plan changes, applied above the profile and below your own files:
+
+- When one side pays at least 1.5× the other, it leads every route whose primary is Claude or Codex, and the other becomes the first fallback. Gemini routes (lookups, large reads, media) are unchanged.
+- A second opinion never goes to the backend that did the work.
+- With Claude at $40 or less, Conductor (which always runs on Claude) stays on the standard tier.
+- `limits.parallel_per_provider`: $20–40 → 1, $200+ → 2, $400+ → 3; Gemini at 1000+ requests/day → 2.
+
+`--plan <name>` and the app's **Plan** menu override the configured plan for a session; `none` turns it off.
+
+## `lsp`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | true | Give Claude and Codex delegates code-navigation tools when a language server is installed. |
+| `servers` | `[]` | Extra servers `{ name, command, args, extensions }`. One with a built-in's name replaces it. |
+
+Built-in servers, used when found on PATH or in the project's `node_modules/.bin`: `typescript` (TypeScript 7's `tsc --lsp --stdio` when the project uses TS 7, otherwise `typescript-language-server --stdio`), `pyright` (`pyright-langserver --stdio`), `pylsp`, `gopls`, `rust-analyzer`, `clangd`. The first server listed for an extension wins.
 
 ## `budget`
 

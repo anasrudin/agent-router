@@ -49,7 +49,14 @@ const NO_SUBAGENTS = ["Agent", "Task"]
 /** `Bash(<command>:*)` rules; a command with parentheses cannot be written as a rule and is left out. */
 export const commandRules = (commands: string[]) => commands.filter((c) => !/[()]/.test(c)).map((c) => `Bash(${c.trim()}:*)`)
 
-export function claudePermissionArgs(mode: AgentMode, permission: PermissionMode, allowedCommands: string[] = []): string[] {
+export function claudePermissionArgs(
+  mode: AgentMode,
+  permission: PermissionMode,
+  allowedCommands: string[] = [],
+  mcpServers: string[] = [],
+): string[] {
+  // Attached MCP servers are the harness's own read-only tools: allowed without asking.
+  const mcp = mcpServers.map((name) => `mcp__${name}`)
   if (mode === "edit") {
     if (permission === "bypass") return ["--permission-mode", "bypassPermissions", "--disallowedTools", ...NO_SUBAGENTS]
     // Nobody can answer a prompt in a headless delegate: without these, every command is refused,
@@ -60,6 +67,7 @@ export function claudePermissionArgs(mode: AgentMode, permission: PermissionMode
       "--allowedTools",
       ...READ_ONLY_BASH,
       ...commandRules(allowedCommands),
+      ...mcp,
       "--disallowedTools",
       ...NO_SUBAGENTS,
     ]
@@ -67,7 +75,7 @@ export function claudePermissionArgs(mode: AgentMode, permission: PermissionMode
   // dontAsk denies anything not pre-approved instead of prompting, so read-only stays read-only.
   // Claude Code has no OS sandbox here: an allowed Bash *can* write files; the brief forbids it.
   const bash = mode === "run-commands" ? ["Bash"] : READ_ONLY_BASH
-  return ["--permission-mode", "dontAsk", "--allowedTools", ...bash, "--disallowedTools", ...EDIT_TOOLS, ...NO_SUBAGENTS]
+  return ["--permission-mode", "dontAsk", "--allowedTools", ...bash, ...mcp, "--disallowedTools", ...EDIT_TOOLS, ...NO_SUBAGENTS]
 }
 
 /** A --settings file whose Stop hook runs `agent-router hook report-gate`; its folder holds the gate's counters. */
@@ -78,20 +86,32 @@ export function reportGateSettings(): { file: string; cleanup: () => void } {
   return settings
 }
 
-export function claudeArgs(options: RunOptions, systemPromptFile: string | undefined, extra: string[], settingsFile?: string): string[] {
+export function claudeArgs(
+  options: RunOptions,
+  systemPromptFile: string | undefined,
+  extra: string[],
+  settingsFile?: string,
+  mcpConfigFile?: string,
+): string[] {
   return [
     "-p",
     "--output-format",
     "stream-json",
     "--verbose",
-    // Delegates must not reach the harness's MCP server and delegate recursively.
+    // Delegates must not reach the harness's MCP server and delegate recursively: only what we attach.
     "--strict-mcp-config",
+    ...(mcpConfigFile ? ["--mcp-config", mcpConfigFile] : []),
     ...(options.model ? ["--model", options.model] : []),
     ...(options.reasoning ? ["--effort", options.reasoning] : []),
     ...(options.resumeSessionId ? ["--resume", options.resumeSessionId] : []),
     ...(systemPromptFile ? ["--append-system-prompt-file", systemPromptFile] : []),
     ...(settingsFile ? ["--settings", settingsFile] : []),
-    ...claudePermissionArgs(options.mode, options.permission, options.allowedCommands),
+    ...claudePermissionArgs(
+      options.mode,
+      options.permission,
+      options.allowedCommands,
+      mcpConfigFile ? (options.mcpServers ?? []).map((s) => s.name) : [],
+    ),
     ...extra,
   ]
 }
@@ -103,15 +123,25 @@ export function createClaudeBackend(config: BackendConfig): Backend {
     detect: () => detectCli(config.executable, CLAUDE_TESTED_VERSION),
     options: async () => CLAUDE_OPTIONS,
     async *run(options): AsyncGenerator<BackendEvent> {
-      const system = `${options.systemPrompt ?? ""}${options.mode === "read-only" ? READ_ONLY_SHELL_NOTE : ""}`
+      const servers = options.mcpServers ?? []
+      const notes = servers.map((s) => `\n\n${s.note}`).join("")
+      const system = `${options.systemPrompt ?? ""}${options.mode === "read-only" ? READ_ONLY_SHELL_NOTE : ""}${notes}`
       const sys = system.trim() ? tempFile("system-prompt.md", system) : undefined
       const gate = options.reportGate ? reportGateSettings() : undefined
+      const mcp = servers.length
+        ? tempFile(
+            "mcp.json",
+            JSON.stringify({
+              mcpServers: Object.fromEntries(servers.map((s) => [s.name, { type: "stdio", command: s.command, args: s.args }])),
+            }),
+          )
+        : undefined
       try {
         yield* runCli(
           "claude",
           {
             command: config.executable,
-            args: claudeArgs(options, sys?.file, config.extra_args, gate?.file),
+            args: claudeArgs(options, sys?.file, config.extra_args, gate?.file, mcp?.file),
             cwd: options.cwd,
             stdin: options.prompt,
             timeoutMs: options.timeoutMs,
@@ -122,6 +152,7 @@ export function createClaudeBackend(config: BackendConfig): Backend {
       } finally {
         sys?.cleanup()
         gate?.cleanup()
+        mcp?.cleanup()
       }
     },
   }

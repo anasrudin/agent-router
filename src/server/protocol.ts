@@ -80,7 +80,7 @@ export type BridgeReply = { type: "approval.response"; id: string; allow: boolea
 
 /** UI → server. */
 export type ClientMessage =
-  | { type: "start"; prompt: string; workspace: string; permission: PermissionMode; profile?: string }
+  | { type: "start"; prompt: string; workspace: string; permission: PermissionMode; profile?: string; plan?: string }
   | { type: "cancel" }
   | { type: "reset" }
   | { type: "status"; workspace: string }
@@ -108,6 +108,9 @@ export interface BackendStatus {
   executables: Record<ProviderId, string>
   profiles: ProfileInfo[]
   defaultProfile?: string
+  /** Subscription presets, and the plan the config sets (described), if any. */
+  plans: ProfileInfo[]
+  configuredPlan?: string
 }
 
 /** Server → UI. Bridge messages are forwarded as-is. */

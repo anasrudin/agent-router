@@ -131,6 +131,7 @@ fn stop_core(core: &Core) {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let core = match start_core(app.handle()) {
                 Ok((info, child, stdin)) => Core { info: Ok(info), process: Mutex::new(Some((child, Some(stdin)))) },

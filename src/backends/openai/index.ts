@@ -35,6 +35,24 @@ const CODEX_FALLBACK_OPTIONS: BackendOptions = {
   supportsTrustOverride: false,
 }
 
+/** A TOML literal string: no escapes, so no `"` that cmd.exe would refuse when codex is a .cmd shim. */
+const tomlLiteral = (v: string) => `'${v}'`
+
+/**
+ * `-c mcp_servers.<name>.*` overrides. A server whose command or arguments cannot be written as
+ * literal strings (a `'` or a line break in a path) is left out rather than mis-quoted.
+ */
+export function codexMcpArgs(servers: RunOptions["mcpServers"] = []): string[] {
+  return servers
+    .filter((s) => [s.command, ...s.args].every((v) => !/['\r\n]/.test(v)))
+    .flatMap((s) => [
+      "-c",
+      `mcp_servers.${s.name}.command=${tomlLiteral(s.command)}`,
+      "-c",
+      `mcp_servers.${s.name}.args=[${s.args.map(tomlLiteral).join(",")}]`,
+    ])
+}
+
 export function codexArgs(options: RunOptions, extra: string[]): string[] {
   return [
     "exec",
@@ -43,6 +61,7 @@ export function codexArgs(options: RunOptions, extra: string[]): string[] {
     ...(options.model ? ["-m", options.model] : []),
     ...(options.reasoning ? ["-c", `model_reasoning_effort=${options.reasoning}`] : []),
     ...codexSandboxArgs(options.mode, options.permission),
+    ...codexMcpArgs(options.mcpServers),
     ...extra,
     // "-" reads the prompt from stdin.
     "-",
@@ -70,7 +89,10 @@ export function createCodexBackend(config: BackendConfig): Backend {
           command: config.executable,
           args: codexArgs(options, config.extra_args),
           cwd: options.cwd,
-          stdin: withRolePreamble(options),
+          stdin: withRolePreamble({
+            ...options,
+            systemPrompt: [options.systemPrompt, ...(options.mcpServers ?? []).map((s) => s.note)].filter(Boolean).join("\n\n"),
+          }),
           timeoutMs: options.timeoutMs,
           signal: options.signal,
         },

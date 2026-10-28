@@ -87,6 +87,14 @@ export const Profile = z.object({
 })
 export type Profile = z.infer<typeof Profile>
 
+export const PlanSchema = z
+  .object({
+    claude: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(3.5), z.literal(4)]).optional(),
+    openai: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(3.5), z.literal(4)]).optional(),
+    gemini_requests_per_day: z.number().int().nonnegative().optional(),
+  })
+  .strict()
+
 export const RoutingConfig = z.object({
   backends: z.object({ claude: BackendConfig, gemini: BackendConfig, openai: BackendConfig }),
   routes: z.record(z.string(), RouteConfig),
@@ -111,6 +119,8 @@ export const RoutingConfig = z.object({
     .object({
       max_parallel_agents: z.number().int().positive().default(3),
       max_parallel_per_provider: z.number().int().positive().default(2),
+      /** Per-backend override of max_parallel_per_provider (set from your plan). */
+      parallel_per_provider: z.partialRecord(ProviderId, z.number().int().positive()).default({}),
       parallel_writers_need_worktree: z.boolean().default(true),
       delegate_timeout_seconds: z.number().int().positive().default(900),
       delegate_stall_seconds: z.number().int().positive().default(300),
@@ -120,6 +130,7 @@ export const RoutingConfig = z.object({
     .default({
       max_parallel_agents: 3,
       max_parallel_per_provider: 2,
+      parallel_per_provider: {},
       parallel_writers_need_worktree: true,
       delegate_timeout_seconds: 900,
       delegate_stall_seconds: 300,
@@ -145,6 +156,29 @@ export const RoutingConfig = z.object({
       timeout_seconds: z.number().int().positive().default(600),
     })
     .default({ commands: [], timeout_seconds: 600 }),
+  /** Code navigation for delegates through language servers (agent-router lsp-mcp). */
+  lsp: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** Added to the built-in list; an entry with a built-in's name replaces it. */
+      servers: z
+        .array(
+          z.object({
+            name: z.string().min(1),
+            command: z.string().min(1),
+            args: z.array(z.string()).default([]),
+            extensions: z.array(z.string().regex(/^\./)).min(1),
+          }),
+        )
+        .default([]),
+    })
+    .default({ enabled: true, servers: [] }),
+  /** Your subscriptions: a preset name (claude-heavy, chatgpt-heavy, split) or tiers per provider. */
+  plan: z.union([z.string(), PlanSchema]).optional(),
+  /** Set from the plan when the config is loaded: Conductor's highest tier. */
+  conductor_max_tier: Tier.optional(),
+  /** Set from the plan when the config is loaded; not written in files. */
+  active_plan: PlanSchema.optional(),
   profiles: z.record(z.string(), Profile).default({}),
   default_profile: z.string().optional(),
   /** Set from the chosen profile when the config is loaded; not written in files. */

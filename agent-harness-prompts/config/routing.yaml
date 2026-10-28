@@ -99,6 +99,32 @@ checks:
   timeout_seconds: 600
 
 # ---------------------------------------------------------------------------
+# Plan — your subscriptions, so the backend you pay most for does the frontier work.
+# A preset name, or tiers per provider. Tiers by monthly price: 1 = $20, 2 = $40,
+# 3 = $200, 3.5 ≈ $255 (Claude) / $266 (ChatGPT), 4 ≈ $466 (Claude) / $477 (ChatGPT);
+# 0 = no subscription (never used). Gemini is metered by requests (1000/day free).
+#   plan: claude-heavy     # Claude tier 4, ChatGPT tier 1, Gemini 1000/day
+#   plan: chatgpt-heavy    # ChatGPT tier 4, Claude tier 1, Gemini 1000/day
+#   plan: split            # both tier 3.5, Gemini 1000/day
+#   plan: { claude: 2, openai: 3, gemini_requests_per_day: 1000 }
+# The bigger side (1.5× or more) leads every Claude/Codex route with the other as
+# fallback; a small Claude plan ($40 or less) keeps Conductor off the deep tier;
+# delegates at once per backend follow the plan. Routes you set yourself still win.
+# Unset: routing exactly as written below.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Code navigation — delegates get diagnostics, definition, references and symbols
+# from an installed language server (typescript-language-server, or TypeScript 7's
+# own `tsc --lsp`; pyright/pylsp, gopls, rust-analyzer, clangd). Claude and Codex
+# delegates only. Add or replace servers by name:
+#   lsp: { servers: [{ name: pyright, command: basedpyright-langserver, args: ["--stdio"], extensions: [".py"] }] }
+# ---------------------------------------------------------------------------
+lsp:
+  enabled: true
+  servers: []
+
+# ---------------------------------------------------------------------------
 # Budget — never overrides min_tier; if the floor is unaffordable, Conductor asks.
 # ---------------------------------------------------------------------------
 budget:

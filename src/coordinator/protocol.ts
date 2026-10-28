@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { EVIDENCE_NOTE } from "./evidence"
 
 /** delegation-protocol.md §1 as data. Rendered to markdown by `renderBrief`; never sent as JSON. */
 export const Brief = z.object({
@@ -33,12 +34,14 @@ export interface RetryNote {
   problem: string
 }
 
-/** `directoryRules`: AGENTS.md files below the root that apply to the relevant files (see scopedAgentsMd). */
+/** `directoryRules`: rule files that apply to the relevant files (see scopedRules). */
 export function renderBrief(
   brief: Brief,
   workspace: string,
   previous: RetryNote[] = [],
   directoryRules: { file: string; text: string }[] = [],
+  /** Ask for saved command output (see keepsEvidence); defaults to edit mode, where every backend can. */
+  evidence = brief.mode === "edit",
 ): string {
   const sections = [
     `## Task\n${brief.task}`,
@@ -59,13 +62,13 @@ export function renderBrief(
     ].join("\n"),
     ...(directoryRules.length
       ? [
-          `## Directory rules\nThese AGENTS.md files apply to the relevant files. Where they differ, the deeper file wins.\n\n${directoryRules
+          `## Directory rules\nThese project rule files apply to the relevant files. Where they differ, the later (more specific) file wins.\n\n${directoryRules
             .map((r) => `### ${r.file}\n${fenced(r.text)}`)
             .join("\n\n")}`,
         ]
       : []),
     `## Acceptance criteria\n${brief.acceptance.map((a) => `- [ ] ${a}`).join("\n")}`,
-    `## Return format\nReply using the report format in delegation-protocol.md §2 (## Status, ## Result, ## Changes, ## Evidence, ## Confidence, ## Open questions / risks).${brief.return_extra ? ` ${brief.return_extra}` : ""}`,
+    `## Return format\nReply using the report format in delegation-protocol.md §2 (## Status, ## Result, ## Changes, ## Evidence, ## Confidence, ## Open questions / risks).${brief.return_extra ? ` ${brief.return_extra}` : ""}${evidence ? `\n\n${EVIDENCE_NOTE}` : ""}`,
   ]
   if (previous.length) {
     sections.push(

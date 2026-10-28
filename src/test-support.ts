@@ -16,11 +16,14 @@ export function testConfig(patch: unknown = {}): RoutingConfig {
 
 export type Scripted =
   | { text: string; sessionId?: string; costUsd?: number }
-  | { error: BackendErrorKind; message?: string }
+  /** `toolCalls`: tool calls made before the error (work in progress). */
+  | { error: BackendErrorKind; message?: string; toolCalls?: number; sessionId?: string }
   /** Emit nothing until aborted, then report "cancelled" the way a real CLI does. */
-  | { hang: true }
+  | { hang: true; sessionId?: string }
   /** Repeat one tool call `times` times, then finish with `text`. */
-  | { loop: number; text: string }
+  | { loop: number; text: string; sessionId?: string }
+  /** The adapter itself throws, as a bad argument or parser would. */
+  | { throws: string }
 
 /** A backend that replays scripted outcomes and records every call. */
 export function fakeBackend(id: ProviderId, script: Scripted[], supportsResume = id === "claude"): Backend & { calls: RunOptions[] } {
@@ -35,6 +38,8 @@ export function fakeBackend(id: ProviderId, script: Scripted[], supportsResume =
       calls.push(options)
       const next = script.shift()
       if (!next) throw new Error(`fake ${id}: no scripted response left`)
+      if ("throws" in next) throw new Error(next.throws)
+      if ("sessionId" in next && next.sessionId) yield { type: "session", sessionId: next.sessionId }
       if ("hang" in next) {
         await new Promise((resolve) => options.signal?.addEventListener("abort", resolve, { once: true }))
         yield { type: "error", error: new BackendError(id, "cancelled", "aborted") }
@@ -51,10 +56,10 @@ export function fakeBackend(id: ProviderId, script: Scripted[], supportsResume =
         return
       }
       if ("error" in next) {
+        for (let i = 0; i < (next.toolCalls ?? 0); i++) yield { type: "tool_call", name: "Read", input: { path: `f${i}.ts` } }
         yield { type: "error", error: new BackendError(id, next.error, next.message ?? next.error) }
         return
       }
-      if (next.sessionId) yield { type: "session", sessionId: next.sessionId }
       yield { type: "usage", usage: { inputTokens: 10, outputTokens: 5, costUsd: next.costUsd } }
       yield { type: "done", text: next.text }
     },

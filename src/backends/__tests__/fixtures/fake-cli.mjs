@@ -39,6 +39,9 @@ process.stdin.on("end", () => {
         total_cost_usd: 0.01,
       }),
     )
+  } else if (mode === "env") {
+    const env = Object.fromEntries(["GIT_TERMINAL_PROMPT", "GIT_PAGER", "GIT_EDITOR", "KEEP_ME"].map((k) => [k, process.env[k]]))
+    console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: JSON.stringify(env) }))
   } else if (mode === "ratelimit") {
     process.stderr.write("Error: 429 Too Many Requests\n")
     process.exit(1)

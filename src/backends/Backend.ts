@@ -26,6 +26,16 @@ export interface RunOptions {
   reportGate?: boolean
   /** Shell commands an edit-mode delegate may run without asking (the project's configured checks). */
   allowedCommands?: string[]
+  /** MCP servers to attach (stdio), for CLIs that take them per run. Others ignore this. */
+  mcpServers?: McpServerSpec[]
+}
+
+export interface McpServerSpec {
+  name: string
+  command: string
+  args: string[]
+  /** Told to the delegate so it knows the tools exist and when to use them. */
+  note: string
 }
 
 export interface Detection {
