@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "agent-router",
+  "version": "0.1.0",
+  "identifier": "dev.agent-router.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "beforeDevCommand": "npm run desktop:ui",
+    "beforeBuildCommand": "npm run desktop:ui && npm run desktop:core"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "agent-router",
+        "width": 1120,
+        "height": 780,
+        "minWidth": 560,
+        "minHeight": 480
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:*; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "externalBin": ["binaries/agent-router-core"],
+    "resources": { "../../../agent-harness-prompts/": "agent-harness-prompts/" }
+  }
+}

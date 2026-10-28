@@ -1,0 +1,36 @@
+{
+  "name": "agent-router",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agent-router": "src/cli.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/cli.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/desktop/ui && tsc --noEmit -p bench",
+    "lint": "biome lint src",
+    "test": "bun test src",
+    "build": "bun build src/cli.ts --target=bun --outdir=dist",
+    "desktop:ui": "bun run src/desktop/build-ui.ts",
+    "desktop:core": "bun run src/desktop/build-core.ts",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
+    "commander": "^15.0.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.3",
+    "@tauri-apps/cli": "^2.12.4",
+    "@types/bun": "^1.4.4",
+    "@types/node": "^26.6.5",
+    "bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
+}

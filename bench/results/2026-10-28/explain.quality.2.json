@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "quality",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 36671,
+  "conductor": {
+    "usd": 0.1696526,
+    "input": 132726,
+    "output": 2663
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "The loop sits in `src/coordinator/delegate.ts:118-185`. Each attempt is marked as one of four outcomes:\n\n- **`backend_error`**: the CLI emitted an error event (`:147-151`).\n- **`report_failed`**: the report isn't in protocol format, or the delegate says `failed` (`:156-161`).\n- **`blocked`** (`:162`), otherwise **`ok`**.\n\nAfter each attempt, `nextStep()` in `src/router/escalation.ts:41` picks the next move:\n\n1. **Stop** on `ok`, `blocked` or `cancelled`, or once `max_attempts_per_subtask` is reached (default 4, `schema.ts:106`) (`:44-47`).\n2. **Retry** the same backend once with a sharper brief, but only after the first attempt (`:58`). For a `report_failed`, it resumes the same session (`delegate.ts:181`), and earlier failures go into the brief (`:182`).\n3. **Fallback** to the first candidate not yet tried, unless the backend is pinned (`:61-63`). A backend that is missing, unauthenticated, rate-limited, untrusted or out of context is never retried (`:21-27`).\n4. **Tier up** on the first working candidate (`:65-68`).\n5. **Stop** and ask the user (`:70`).\n\n**Untested edge case:** the primary is dead (e.g. `missing_executable`), then the fallback fails softly. History then has two attempts, so the retry check at `:58` fails and the fallback never gets its retry; it goes straight to `tier_up`. The nearest test (`escalation.test.ts:19-23`) uses a three-attempt history that `nextStep()` itself would never produce, so it misses this.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

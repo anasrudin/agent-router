@@ -1,0 +1,40 @@
+{
+  "task": "review",
+  "profile": "economy",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 36885,
+  "conductor": {
+    "usd": 0.0372644,
+    "input": 90635,
+    "output": 1195
+  },
+  "delegates": [
+    {
+      "taskClass": "code.review",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "tier": "standard",
+      "usd": 0,
+      "tokens": {
+        "input": 70269,
+        "output": 671
+      },
+      "status": "done",
+      "attempts": [
+        "openai/standard: ok"
+      ]
+    }
+  ],
+  "approvals": [],
+  "answer": "**Finding (`src/router/escalation.ts:58`):** the first failure always gets a retry on the same provider. With `maxAttempts: 2`, that retry uses the last attempt. The cap check at line 47 then stops the ladder before any fallback or tier-up. For example, two soft failures on claude with `candidates: [\"claude\", \"openai\"]` and `pinned: false` return `stop`, and openai is never tried.\n\nThe review ran on OpenAI (gpt-6-luna). Its line reference to the cap check was off: the check is at line 47, not 50. I traced the logic by reading the file and did not run any tests.\n\n**I partly agree.** The behaviour is real, but it is a design tension and not clearly a bug. Conductor's documented cap is 3 attempts, and the full ladder needs four: first try, retry, fallback, tier-up. With a cap of 3, tier-up is unreachable.\n\nI would either skip the unconditional retry when a fallback exists and the cap is tight, or raise the default cap to 4. The delegate says the shipped default is 4, which I did not check.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "delegated_to_other_model": true,
+      "cites_line": true,
+      "states_agreement": true
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "task": "fix",
+  "profile": "balanced",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 17290,
+  "conductor": {
+    "usd": 0.0892927,
+    "input": 113710,
+    "output": 718
+  },
+  "delegates": [],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    }
+  ],
+  "answer": "All 9 tests now pass (`node --test`). I changed only the source, one line in each file.\n\n**Bugs**\n1. **`src/bill.js`, `splitBill`:** there was an off-by-one in the leftover-cent check. `i <= leftover` handed an extra cent to `leftover + 1` people, so the shares added up to more than the total. For example, 900 split three ways gave `[301, 300, 300]`. It is now `i < leftover`.\n2. **`src/duration.js`, `parseDuration`:** the input was never checked as a whole. The code only threw when nothing matched, so `\"10m and change\"` parsed as 10 minutes and `\"3d\"` was accepted too. It now throws a `SyntaxError` unless the entire string is made of `<digits><h|m|s>` pairs (`/^(\\d+[hms])+$/`).\n\nI made both fixes myself rather than delegating, since each was a one-line change.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

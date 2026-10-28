@@ -1,0 +1,36 @@
+{
+  "task": "fix",
+  "profile": "economy",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 19310,
+  "conductor": {
+    "usd": 0.0856112,
+    "input": 111847,
+    "output": 707
+  },
+  "delegates": [],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    }
+  ],
+  "answer": "All 9 tests now pass under `node --test`. I changed one line in each source file and left the tests alone.\n\n1. **`src/bill.js`, off-by-one in `splitBill`:** the leftover cents were handed out with `i <= leftover`, so one payer too many got an extra cent. The total was wrong, and so were the even split and the leftover-cents case. It is now `i < leftover`.\n2. **`src/duration.js`, unvalidated input in `parseDuration`:** it only checked that at least one `\\d+[hms]` match existed. Input like `\"10m and change\"` was accepted and the junk was ignored. It now requires the whole string to match `^(?:\\d+[hms])+$`, otherwise it throws `SyntaxError`.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

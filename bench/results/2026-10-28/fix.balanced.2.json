@@ -1,0 +1,36 @@
+{
+  "task": "fix",
+  "profile": "balanced",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 17823,
+  "conductor": {
+    "usd": 0.09093190000000001,
+    "input": 113829,
+    "output": 839
+  },
+  "delegates": [],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    }
+  ],
+  "answer": "All 9 tests now pass (`node --test`). I only changed source files, and there were two bugs.\n\n1. **`src/bill.js`, off-by-one in `splitBill`.** The check `i <= leftover` gave one extra cent to one payer too many. For example, `splitBill(900, 3)` returned `[301, 300, 300]`, so the total was also wrong. It is now `i < leftover`. This fixed the \"even split\", \"leftover cents\" and \"total is preserved\" tests.\n\n2. **`src/duration.js`, no validation of the whole string in `parseDuration`.** The regex scan ignored anything that didn't match, so `\"10m and change\"` was accepted as 600 seconds. I added a check that the entire input is one or more `<digits><h|m|s>` groups, and it throws `SyntaxError` otherwise. I left the existing zero-match check in place. It can no longer trigger, but removing it wasn't needed for the fix.\n\nI did the work myself without delegating, since it was small.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>agent-router</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true"></span>
+        <span>agent-router</span>
+      </div>
+      <button id="workspace" type="button" class="workspace" title="Choose the project folder Conductor works in">
+        <span class="label">Workspace</span>
+        <span id="workspace-path" class="path">Choose a folder…</span>
+      </button>
+      <label class="permission" title="What Conductor and its delegates may do without asking">
+        <span class="label">Permission</span>
+        <select id="permission">
+          <option value="default">Ask before changes</option>
+          <option value="acceptEdits">Accept edits</option>
+          <option value="bypass">Bypass (no prompts)</option>
+        </select>
+      </label>
+      <label class="permission" title="How much depth to buy above each task's quality floor">
+        <span class="label">Profile</span>
+        <select id="profile"><option value="">Default</option></select>
+      </label>
+      <fieldset id="backends" class="backends" aria-label="Backend status"></fieldset>
+      <button id="open-settings" type="button" class="ghost" title="Choose the model and reasoning effort for each backend and tier">Models</button>
+      <button id="new-chat" type="button" class="ghost" title="Start a new Conductor conversation">New chat</button>
+    </header>
+
+    <dialog id="settings" class="settings" aria-labelledby="settings-title">
+      <form id="settings-form" method="dialog">
+        <header class="settings-head">
+          <h2 id="settings-title">Models</h2>
+          <button type="button" class="ghost icon" id="settings-close" aria-label="Close">✕</button>
+        </header>
+        <p class="hint">Each task class runs at a tier (fast, standard or deep) from <code>routing.yaml</code>. Pick the model and reasoning effort each tier uses. <strong>Test</strong> makes one tiny real call to check a model works on your account.</p>
+        <fieldset class="scope">
+          <legend>Save to</legend>
+          <label><input type="radio" name="scope" value="project" checked /> This project <span class="mono muted" id="scope-project"></span></label>
+          <label><input type="radio" name="scope" value="user" /> All projects <span class="mono muted" id="scope-user"></span></label>
+        </fieldset>
+        <div id="settings-body" class="settings-body"><p class="muted">Loading models…</p></div>
+        <footer class="settings-foot">
+          <span id="settings-status" class="muted" role="status">Changes apply from the next request.</span>
+          <button type="button" class="ghost" id="settings-cancel">Cancel</button>
+          <button type="submit" class="primary" id="settings-save" disabled>Save</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <main id="log" class="log" aria-live="polite">
+      <section class="empty" id="empty">
+        <h1>What should Conductor do?</h1>
+        <p>Conductor plans the work, routes each part to Claude, Gemini or Codex by the rules in <code>routing.yaml</code>, and checks what comes back before answering.</p>
+        <ul class="tips">
+          <li><code>@gemini</code>, <code>@claude</code> or <code>@codex</code> pins a backend for this request.</li>
+          <li><code>/route code.review gemini</code> pins one kind of task.</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer class="composer">
+      <div id="banner" class="banner" hidden></div>
+      <form id="form">
+        <textarea id="prompt" rows="3" placeholder="Describe the task. Enter to send, Shift+Enter for a new line." autocomplete="off"></textarea>
+        <div class="actions">
+          <span id="cost" class="cost" title="Reported spend and tokens this session (Conductor + delegates)">$0.0000 · 0 tokens</span>
+          <button id="send" type="submit" class="primary">Send</button>
+        </div>
+      </form>
+    </footer>
+    <script type="module" src="main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "balanced",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 19885,
+  "conductor": {
+    "usd": 0.153292,
+    "input": 121191,
+    "output": 1190
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "**How a failed delegate is handled**\n\nEach attempt in `coordinator/delegate.ts` is classified as `ok`, `backend_error`, `report_failed` or `blocked` (`delegate.ts:148-163`). A backend error is also recorded in the health tracker (`:166`). Then `nextStep()` (`router/escalation.ts:41`) picks the next move (`delegate.ts:170-174`):\n\n1. **Terminal cases** stop the ladder: success, `blocked`, `cancelled`, or reaching `max_attempts_per_subtask` (default 4) (`escalation.ts:44-47`).\n2. **Retry** happens once with a sharper brief, only when the history length is 1 and the provider isn't dead (`:58`). A malformed report resumes the same session (`delegate.ts:181`).\n3. **Fallback** goes to the first untried live provider, unless the user pinned a backend (`:61-63`).\n4. **Tier up** goes to the next tier on the first live provider, if that tier hasn't been tried (`:65-69`).\n5. **Stop and ask the user** when none of the above applies (`:70`).\n\nBackend errors in `SWITCH_IMMEDIATELY` (`:21-27`) mark the provider dead and skip the retry.\n\n**Edge case the tests don't cover:** `nextStep` retries only when `history.length === 1` (`:58`), so a dead provider can't be retried. With a single live candidate and a non-dead soft failure at a later history length, the ladder skips straight to tier-up. For example, `[claude dead, then claude…]` can't occur, but `[openai dead, claude soft-fail]` has length 2 and never gets its sharper-brief retry. Nothing in `escalation.test.ts` covers a dead provider followed by a soft failure on the survivor.\n\nI read the test cases but didn't run them.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

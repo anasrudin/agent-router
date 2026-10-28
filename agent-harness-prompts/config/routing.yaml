@@ -1,0 +1,180 @@
+# Routing configuration — default policy for Conductor.
+# Users can override per project with .harness/routing.yaml, or per message with
+# @claude / @gemini / @codex or /route <class> <provider>.
+
+# ---------------------------------------------------------------------------
+# Backends: the three wrapped CLIs.
+# CLI flags live in the adapters (src/backends/<provider>/), not here: AGENTS.md
+# rule 3 keeps every flag, output format and session model inside src/backends/.
+# `extra_args` is appended verbatim for local needs (proxies, profiles).
+# A tier model written as "<...>" is a placeholder: the CLI's default model is
+# used and `agent-router doctor` warns, because tiers then stop meaning anything.
+# ---------------------------------------------------------------------------
+backends:
+  claude:
+    executable: claude                 # Claude Code CLI
+    tiers:
+      fast: haiku
+      standard: sonnet
+      deep: opus
+    reasoning: { deep: high }          # --effort; unset tiers use the CLI default
+    strengths: [code.edit, plan, debug.hard, architecture, docs.write]
+    max_context_tokens: 200000
+    multimodal: [image, pdf]
+
+  gemini:
+    executable: gemini                 # Gemini CLI
+    # Verified 2026-10-28 with Gemini CLI 0.66.0. gemini-2.5-* returned 404. gemini-3-pro-preview
+    # needs a paid API quota; on the free tier it fails as rate_limited and the router falls back.
+    # Gemini runs headless only in folders it trusts. `trust_workspace: true` (the desktop app's
+    # Models dialog has a checkbox for it) lets it run anyway, which also loads that folder's own
+    # Gemini settings and extensions without asking.
+    tiers:
+      fast: gemini-3-flash-preview
+      standard: gemini-3-flash-preview
+      deep: gemini-3-pro-preview
+    strengths: [read.large, research.docs, multimodal, search.codebase]
+    max_context_tokens: 1000000
+    multimodal: [image, pdf, audio, video]
+
+  openai:
+    executable: codex                  # OpenAI Codex CLI
+    # Verified 2026-10-28 with Codex CLI 0.165.0 (`codex debug models` lists gpt-6-luna,
+    # gpt-5.6-terra, gpt-5.6-luna for this account). Tiers differ by reasoning effort.
+    tiers:
+      fast: gpt-6-luna
+      standard: gpt-6-luna
+      deep: gpt-6-luna
+    reasoning: { fast: low, standard: medium, deep: xhigh }   # -c model_reasoning_effort
+    strengths: [code.tests, code.review, code.edit, debug.hard]
+    max_context_tokens: 272000
+    multimodal: [image]
+
+# ---------------------------------------------------------------------------
+# Task classes. `min_tier` is the quality floor: never route below it.
+# ---------------------------------------------------------------------------
+routes:
+  trivial:          { agent: conductor, primary: self,    tier: fast,     min_tier: fast }
+  search.codebase:  { agent: scout,     primary: gemini,  tier: fast,     min_tier: fast,     fallback: [claude] }
+  read.large:       { agent: librarian, primary: gemini,  tier: standard, min_tier: standard, fallback: [claude] }
+  research.docs:    { agent: librarian, primary: gemini,  tier: standard, min_tier: standard, fallback: [claude] }
+  plan:             { agent: planner,   primary: claude,  tier: deep,     min_tier: standard, fallback: [openai] }
+  code.edit:        { agent: worker,    primary: claude,  tier: standard, min_tier: standard, fallback: [openai], review: true }
+  code.tests:       { agent: worker,    primary: openai,  tier: standard, min_tier: standard, fallback: [claude] }
+  debug.hard:       { agent: architect, primary: claude,  tier: deep,     min_tier: deep,     fallback: [openai], second_opinion: openai }
+  architecture:     { agent: architect, primary: claude,  tier: deep,     min_tier: deep,     fallback: [openai], second_opinion: openai }
+  code.review:      { agent: reviewer,  primary: auto_not_author, tier: deep, min_tier: standard }
+  multimodal:       { agent: looker,    primary: gemini,  tier: standard, min_tier: standard, fallback: [claude] }
+  docs.write:       { agent: worker,    primary: claude,  tier: standard, min_tier: standard, fallback: [gemini] }
+
+# Escalate a code.edit to deep tier when any of these hold.
+escalation:
+  to_deep_when:
+    files_touched_gt: 5
+    previous_attempt_failed: true
+    task_mentions: [concurrency, security, migration, auth, payment]
+  max_attempts_per_subtask: 4
+
+# ---------------------------------------------------------------------------
+# Execution limits
+# ---------------------------------------------------------------------------
+limits:
+  max_parallel_agents: 3
+  max_parallel_per_provider: 2          # delegates running at once on any one backend
+  parallel_writers_need_worktree: true
+  delegate_timeout_seconds: 900
+  delegate_stall_seconds: 300           # stop a delegate that emits nothing for this long
+  max_identical_tool_calls: 12          # stop a delegate repeating the same tool call this many times in a row
+  backend_unhealthy_after_errors: 2     # mark unhealthy, use fallback for the rest of the session
+
+# ---------------------------------------------------------------------------
+# Checks — the project's own verification, run after every edit-mode delegation
+# (in the delegate's worktree if it had one). Failures reach Conductor as findings.
+# They run only in "acceptEdits"/"bypass" permission; in "default" Conductor is
+# told to run them itself. Set them per project in .harness/routing.yaml, e.g.
+#   checks: { commands: ["npm run typecheck", "npm test"] }
+# ---------------------------------------------------------------------------
+checks:
+  commands: []
+  timeout_seconds: 600
+
+# ---------------------------------------------------------------------------
+# Budget — never overrides min_tier; if the floor is unaffordable, Conductor asks.
+# ---------------------------------------------------------------------------
+budget:
+  session_usd: null                      # null = no cap
+  warn_at_fraction: 0.8
+
+# ---------------------------------------------------------------------------
+# Privacy — paths that must not be sent to some providers.
+# ---------------------------------------------------------------------------
+privacy:
+  never_send: ["**/.env*", "**/*.pem", "**/*.key", "**/secrets/**"]
+  provider_restrictions: {}
+  # example:
+  # provider_restrictions:
+  #   gemini: { deny_paths: ["internal/billing/**"] }
+
+# ---------------------------------------------------------------------------
+# Profiles — trade depth for cost *above* the quality floor. A profile may change
+# route tiers, reviews, second opinions, reasoning effort and escalation, never
+# min_tier, privacy or budget. Its overlay sits just above these defaults, so
+# anything set in the user or project config (e.g. via the Models dialog) wins.
+# ---------------------------------------------------------------------------
+default_profile: quality
+
+profiles:
+  quality:
+    label: Quality
+    description: Opus orchestrates and checks everything; every edit is independently reviewed.
+    conductor: { tier: deep }
+    guidance: ""
+
+  balanced:
+    label: Balanced
+    description: Sonnet orchestrates; deep models only where risk or difficulty calls for them.
+    # Most spend is Conductor's own context, re-read on every step. Hard judgement still reaches
+    # Opus: debug.hard and architecture keep their deep floor, and plans escalate on risk.
+    conductor: { tier: standard, reasoning: high }
+    overlay:
+      routes:
+        plan: { tier: standard }
+        code.edit: { review: when_escalated }
+      backends:
+        openai: { reasoning: { deep: high } }
+      escalation:
+        to_deep_when: { classes: [code.edit, plan] }
+    guidance: |
+      This session runs the Balanced profile: the same quality bar, with fewer tokens spent getting there.
+      - Every delegation starts a fresh CLI that re-reads its own instructions. Do lookups of three tool calls or fewer yourself instead of delegating them.
+      - Put related questions for the same agent into one brief instead of several.
+      - Give delegates file paths with line ranges and exact excerpts, not whole files or long pastes.
+      - For a follow-up on the same work, pass `resume` with the earlier session so the delegate keeps its context.
+      - Hard reasoning (root-cause debugging, architecture, risky plans) goes to the architect or planner, which run on deep models. Do not try to out-think them on your tier.
+      - Ask for a second opinion only when the first result is not high-confidence or the change is risky. Review edits when the route requires it (the delegate result says so).
+      - Keep your own messages short. Verification (§5) is unchanged: run the checks and read the diff.
+
+  economy:
+    label: Economy
+    description: Lowest tiers the quality floors allow; reviews only for risky work; no routine second opinions.
+    conductor: { tier: standard }
+    overlay:
+      routes:
+        plan: { tier: standard }
+        code.edit: { review: when_escalated }
+        code.review: { tier: standard }
+        debug.hard: { second_opinion: null }
+        architecture: { second_opinion: null }
+      backends:
+        claude: { reasoning: { deep: medium } }
+        openai: { reasoning: { fast: low, standard: low, deep: medium } }
+      escalation:
+        to_deep_when: { files_touched_gt: 10 }
+        max_attempts_per_subtask: 3
+    guidance: |
+      This session runs the Economy profile: spend as little as the quality floors allow.
+      - Do anything you can finish in about five tool calls yourself. Delegate only work that needs another backend's capability (very large input, media, independent review) or a deep-tier specialist.
+      - One brief per independent piece of work; batch related questions.
+      - Give delegates exact paths, line ranges and excerpts only.
+      - No second opinions unless the user asks or a delegate reports low confidence.
+      - Verification (§5) still applies to anything you deliver: never skip the build and tests.

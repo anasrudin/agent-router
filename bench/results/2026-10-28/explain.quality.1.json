@@ -1,0 +1,30 @@
+{
+  "task": "explain",
+  "profile": "quality",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 43486,
+  "conductor": {
+    "usd": 0.4080006,
+    "input": 230904,
+    "output": 3250
+  },
+  "delegates": [],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": false
+    }
+  ],
+  "answer": "A failed delegate goes through four steps: retry, fallback, raise tier, stop. One function, `nextStep()`, picks the step, and `runLadder()` calls it after every attempt.\n\n**Classifying each attempt** (`src/coordinator/delegate.ts`)\n- A backend error event makes the attempt `backend_error` (147–151).\n- A report missing `## Status` / `## Result`, or one with status `failed`, makes it `report_failed`. A `blocked` status makes it `blocked` (154–165).\n- Health is recorded at 166–167, then `nextStep()` is called (170–175).\n\n**Steps** (`src/router/escalation.ts`)\n1. It stops on success, `blocked`, `cancelled`, or `max_attempts` (44–47).\n2. These errors mark a provider dead, so it gets no retry: `missing_executable`, `not_authenticated`, `untrusted_workspace`, `rate_limited`, `context_overflow` (21–27, 49–55).\n3. **Retry** the same backend once, only when `history.length === 1` (58–60). A failed report resumes in the same session; anything else starts clean (`delegate.ts:181`). The failure is added to the next brief (`delegate.ts:182`).\n4. **Fallback** to the first live provider not yet tried, unless the user pinned one (61–64).\n5. **Raise tier** on the first live candidate (65–69).\n6. **Stop** and ask the user (70).\n\n**Untested edge case:** if the primary is dead on attempt 1, the fallback provider never gets its retry. The history is then 2 long, so the step-3 check fails and its first soft failure jumps straight to the deep tier. The test \"dead primary is not used for tier-up\" (`escalation.test.ts:19–23`) uses a history the ladder can't produce: an OpenAI retry that would never happen. `delegate.test.ts:33` only covers a fallback that succeeds.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

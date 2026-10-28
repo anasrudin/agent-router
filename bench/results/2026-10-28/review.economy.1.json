@@ -1,0 +1,38 @@
+{
+  "task": "review",
+  "profile": "economy",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 99527,
+  "conductor": {
+    "usd": 0.0649624,
+    "input": 90240,
+    "output": 1073
+  },
+  "delegates": [
+    {
+      "taskClass": "code.review",
+      "provider": "gemini",
+      "model": "gemini-3-flash-preview",
+      "tier": "standard",
+      "usd": 0,
+      "tokens": {
+        "input": 195659,
+        "output": 2242
+      },
+      "status": "error",
+      "attempts": 3
+    }
+  ],
+  "approvals": [],
+  "answer": "I couldn't get an independent review, so I have no finding from another model to report. The router stopped after 3 attempts, which is the limit.\n\n- **Attempts 1 and 2:** OpenAI (standard) returned output that wasn't in the required report format, so the router rejected it both times.\n- **Attempt 3:** Gemini failed with a rate-limit error because its daily quota is exhausted.\n\nI haven't given you a finding of my own. I wrote or read this file myself, so my opinion wouldn't be independent.\n\nOptions:\n1. Retry OpenAI pinned to `@codex` with a stricter return-format instruction.\n2. Wait for the Gemini quota to reset and retry.\n3. Run a Claude deep-tier review anyway. It's less independent, and I'd label it that way.\n\nWhich do you want?",
+  "score": {
+    "pass": false,
+    "checks": {
+      "delegated_to_other_model": true,
+      "cites_line": false,
+      "states_agreement": false
+    }
+  }
+}
