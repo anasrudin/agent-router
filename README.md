@@ -96,19 +96,23 @@ Tiers by monthly price: 1 = $20, 2 = $40, 3 = $200, 3.5 ≈ $255–266, 4 ≈ $4
 
 Choose one in the app's **Profile** menu, or with `--profile <name>` on the CLI. A profile only trades depth *above* each task class's quality floor: it can't lower `min_tier`, weaken privacy, or let an author review its own work. Anything you set yourself (Models dialog, user or project config) beats the profile.
 
-| | Quality (default) | Balanced | Economy |
-|---|---|---|---|
-| Conductor | Opus | Sonnet, high effort | Sonnet |
-| `plan` | deep | standard, deep when risky | standard |
-| Independent review of edits | every edit | edits raised to deep (large or risky) | same as Balanced |
-| Second opinion on debug/architecture | yes | yes | no |
-| Codex effort at deep | xhigh | high | medium |
-| Attempts per subtask | 4 | 4 | 3 |
-| Extra Conductor rules | — | do small lookups itself, batch briefs, send excerpts not files, resume sessions | delegate only what needs another backend or a deep specialist |
+| | Quality (default) | Balanced | Economy | Offload |
+|---|---|---|---|---|
+| Conductor | Opus | Sonnet, high effort | Sonnet | Sonnet, high effort |
+| `plan` | deep | standard, deep when risky | standard | standard, deep when risky (Claude) |
+| Who edits | Claude | Claude | Claude | Codex, Claude as fallback |
+| Lookups when Gemini is out | Claude | Claude | Claude | Codex, then Claude |
+| Independent review of edits | every edit | edits raised to deep (large or risky) | same as Balanced | same as Balanced |
+| Second opinion on debug/architecture | yes | yes | no | yes |
+| Codex effort at deep | xhigh | high | medium | high |
+| Attempts per subtask | 4 | 4 | 3 | 4 |
+| Extra Conductor rules | — | do small lookups itself, batch briefs, send excerpts not files, resume sessions | delegate only what needs another backend or a deep specialist | plan, brief and verify; no Edit or Write tool, so every change is delegated; verify from cited excerpts and tests |
+
+Offload is for spreading work across subscriptions: Claude stays the architect (Conductor, plans, root-cause debugging and architecture on Opus), while Codex on your ChatGPT plan and Gemini do the reading and editing. A plan that makes Claude the frontier (`claude-heavy`) still puts Claude on edits.
 
 "Risky" uses the same triggers as before: more than 5 files touched (10 in Economy), a previous failed attempt, or a task that mentions auth, security, payment, concurrency or migration. Define your own profiles under `profiles:` in your user or project config.
 
-Measured on 2026-10-28 (3 small tasks × 2 runs each): every profile passed every task; Balanced cost 58% less than Quality and Economy 65% less, with weaker reviews on Economy. Details and how to re-run: [bench/RESULTS.md](bench/RESULTS.md).
+Measured on 2026-10-28 (3 small tasks × 2 runs each): every profile passed every task; Balanced cost 58% less than Quality and Economy 65% less, with weaker reviews on Economy. Against one CLI without the router, every profile used more tokens than Sonnet alone (Economy +28%) and Codex alone used the fewest. After the lean Claude tool set, Economy uses 25% fewer Claude tokens than Sonnet alone and costs $0.052 vs $0.068 per task on Claude. Details and how to re-run: [bench/RESULTS.md](bench/RESULTS.md).
 
 ## Delegate safeguards
 
@@ -121,13 +125,15 @@ Measured on 2026-10-28 (3 small tasks × 2 runs each): every profile passed ever
 - **Background delegations:** Conductor can pass `background: true` to run independent subtasks at once, then collect them with `delegation_result` (`delegation_status` and `cancel_delegation` too). At most `limits.max_parallel_per_provider` (2) run on any one backend, so parallel work spreads instead of piling onto one rate limit. Unfinished jobs are cancelled when Conductor's turn ends.
 - **Survives context compaction:** each chat keeps a delegation ledger. When Claude Code compacts Conductor's context, a SessionStart hook puts back what ran, which delegate sessions to resume, open worktrees and jobs still running.
 - **No interactive prompts:** delegates, Conductor and project checks run with pagers, editors and credential prompts turned off (`GIT_PAGER=cat`, `GIT_EDITOR=:`, `GIT_TERMINAL_PROMPT=0`, `PIP_NO_INPUT`, …), so a command fails fast instead of waiting for input nobody can give.
-- **Nudge before giving up:** the first time a Claude delegate stalls or loops, the harness resumes its own session with a note on what went wrong instead of starting over, so its work so far counts. Neither this nor the context restart below spends the last attempt, which stays for another backend. Gemini and Codex delegates cannot be resumed yet and go straight to the ladder.
+- **Nudge before giving up:** the first time a Claude delegate stalls or loops, the harness resumes its own session with a note on what went wrong instead of starting over, so its work so far counts. Neither this nor the context restart below spends the last attempt, which stays for another backend. Codex delegates are resumed the same way (`codex exec resume`); Gemini delegates cannot be resumed yet and go straight to the ladder.
 - **Context full mid-task:** a delegate that fills its context after doing some work gets one fresh session on the same backend, told which files it changed during the task. A brief too large to start with goes up the ladder as before.
 - **Evidence files:** delegates that can write a file (any edit-mode delegate, and Claude delegates that run commands) save the output they cite under `.harness/evidence/` (git-ignored). A cited file that is missing, older than the task, empty, a symlink or outside that folder is a reject finding; citing none is a note for Conductor.
 - **Rules from other tools:** besides `AGENTS.md`, briefs carry `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md` (`applyTo`), `.cursor/rules/*.mdc` (`globs`, `alwaysApply`) and, for Gemini and Codex, `.claude/rules/*.md` (`paths`; Claude Code loads those itself), each only for the files it targets.
 - **Code navigation:** when a language server is installed, Claude and Codex delegates get `diagnostics`, `definition`, `references` and `symbols` tools from `agent-router lsp-mcp`. TypeScript 7 projects use TypeScript's own `tsc --lsp`; older ones `typescript-language-server`; also pyright or pylsp, gopls, rust-analyzer and clangd.
 - **Comments that narrate the change** ("Added null check", "as requested") are flagged by `check_diff` for a look.
 - **Desktop notifications** when a turn finishes or an approval is waiting while the app is in the background.
+- **Lean Claude tool set:** Conductor loads only Read, Edit, Write and Bash (plus the router's MCP tools), and Claude delegates only what their mode uses. Claude Code's other built-in tool definitions cost about 14k prompt tokens on every request. Set `lean_tools: false` under `backends.claude` to load them all.
+- **Codex sessions resume:** a follow-up passed with `resume` continues the Codex thread, so it keeps what it already read. Codex reports a resumed thread's running total, so the harness subtracts the earlier total (kept in the chat ledger) and counts only the new tokens.
 - **Read-only Claude delegates can search:** Claude Code 2.1.312 has no Grep/Glob tools, so read-only delegates may run `grep`, `ls`, `cat`, `head`, `tail` and `wc`, and nothing else (no `rg --pre`, `git`, `find`, or redirection). No delegate may start subagents.
 
 ![Two background delegations running at once](docs/screenshots/background-delegations.png)

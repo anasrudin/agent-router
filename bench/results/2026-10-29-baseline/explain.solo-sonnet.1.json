@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "solo-sonnet",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 13065,
+  "conductor": {
+    "usd": 0.0784976,
+    "input": 83940,
+    "output": 1176
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "Escalation is a pure function, `nextStep()` in `src/router/escalation.ts:45`. The ladder is retry, then fallback provider, then tier up, then ask the user.\n\n**Order of checks**\n- Stop immediately on success (`:48`), `blocked` (`:49`), `cancelled` (`:50`) or max attempts (`:51`).\n- Providers that failed with `missing_executable`, `not_authenticated`, `untrusted_workspace`, `rate_limited` or `context_overflow` are marked dead (`:21-27`, `:53`).\n\n**The rungs**\n1. **Retry** (`:82-87`): one retry with a sharper brief on the same backend. It is skipped for dead backends and for `timeout`, `stalled` and `tool_loop` (`:30`). It is also skipped when only one attempt is left and a later rung exists.\n2. **Fallback** (`:89-92`): switch to another live provider at the same tier. This never happens when the provider is pinned (`:62`).\n3. **Tier up** (`:93`): raise the tier to the next one above the highest tried, on any live provider.\n4. **Top-tier leftovers** (`:95-96`): any live provider not yet tried at the top tier.\n5. **Stop** (`:97`): \"ask the user\".\n\n**Untested edge case:** `context_overflow`. No case in `escalation.test.ts` uses it. The code treats it like a dead backend, so that provider is excluded from tier-up as well (`:53-54`, `:64`). A higher tier on the same provider might have a larger context window. With a single candidate, a `context_overflow` therefore goes straight to \"ladder exhausted\". That may or may not be intended, and nothing checks it. The `stalled` and `tool_loop` kinds also have no test.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

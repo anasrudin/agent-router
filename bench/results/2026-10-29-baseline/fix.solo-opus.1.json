@@ -1,0 +1,23 @@
+{
+  "task": "fix",
+  "profile": "solo-opus",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 18311,
+  "conductor": {
+    "usd": 0.1457156,
+    "input": 125711,
+    "output": 1190
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "All 9 tests pass now; before the fix, 4 of them failed. There were two bugs, each fixed with a one-line change:\n\n1. **`src/bill.js`: off-by-one in sharing out leftover cents.** The condition `i <= leftover` gave an extra cent to one person more than it should. Even a bill that split evenly came out wrong: `splitBill(900, 3)` gave `[301, 300, 300]`, so the total didn't add up. I changed it to `i < leftover`, so exactly `leftover` people each get one extra cent.\n\n2. **`src/duration.js`: parser ignored text it didn't recognise.** `matchAll` picked out any `\\d+[hms]` pieces anywhere in the string and skipped everything else. As a result, `\"10m and change\"` was read as 600 seconds instead of being rejected. I replaced the `parts.length === 0` check with a check that the whole string matches `/^(\\d+[hms])+$/`. Inputs with extra junk, unknown units like `3d`, or no duration at all now throw `SyntaxError`.\n\nNo test files were changed.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

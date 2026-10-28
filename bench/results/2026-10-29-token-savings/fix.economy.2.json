@@ -1,0 +1,36 @@
+{
+  "task": "fix",
+  "profile": "economy",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 29252,
+  "conductor": {
+    "usd": 0.056807100000000006,
+    "input": 64267,
+    "output": 759
+  },
+  "delegates": [],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    }
+  ],
+  "answer": "All 9 tests now pass under `node --test`. I changed only the source files, not the tests.\n\n**Bugs**\n1. **`src/bill.js`, `splitBill`:** the leftover-cent check was `i <= leftover`, which gave one extra person a cent. It is now `i < leftover`. That is what broke the even split, the leftover-cents case and the total-preserved check.\n2. **`src/duration.js`, `parseDuration`:** it matched `(\\d+)([hms])` pieces anywhere in the string and ignored the rest. Input like `\"10m and change\"` was accepted as 600 seconds, and `\"3d\"` would have been read as just `3` if it had another valid piece. I added a check at the top that the whole string is one or more number-plus-unit pieces (`/^(\\d+[hms])+$/`). Anything else throws `SyntaxError`.\n\nI did the work directly and didn't delegate to any other backend.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

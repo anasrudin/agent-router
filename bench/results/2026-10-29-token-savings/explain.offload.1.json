@@ -1,0 +1,42 @@
+{
+  "task": "explain",
+  "profile": "offload",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 55821,
+  "conductor": {
+    "usd": 0.07857109999999999,
+    "input": 65473,
+    "output": 1384
+  },
+  "delegates": [
+    {
+      "taskClass": "search.codebase",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "tier": "fast",
+      "usd": 0,
+      "tokens": {
+        "input": 120336,
+        "output": 2229
+      },
+      "status": "done",
+      "attempts": [
+        "gemini/fast: rate_limited",
+        "openai/fast: ok"
+      ]
+    }
+  ],
+  "approvals": [],
+  "answer": "A failed delegate goes through `runLadder()` in `src/coordinator/delegate.ts`, which asks `nextStep()` in `src/router/escalation.ts:45` what to do next.\n\n1. **Pre-ladder recovery** (`delegate.ts:326-342`):\n   - A stalled delegate or tool loop gets a nudge in the same session.\n   - A context overflow after tool calls gets a fresh same-provider session.\n   - Both are skipped on the last attempt but one.\n2. **Stop conditions** (`escalation.ts:48-51`): success, blocked, cancelled, or `history.length >= maxAttempts`.\n3. **Retry** (`escalation.ts:82-87`): one retry with a sharper brief. The failure is recorded in `retryNotes` (`delegate.ts:355-359`).\n4. **Fallback provider** (`escalation.ts:20-27, 78-82`): missing executable, auth, rate-limit, or context-overflow errors mark the provider dead. The ladder then moves to a live provider at the same tier.\n5. **Raise tier** (`escalation.ts:63-76, 89-93`): it picks an untried live provider at the next tier.\n6. **Give up** (`escalation.ts:94-97`): it returns a stop reason. It doesn't prompt the user itself.\n7. **Cap:** four attempts by default (`routing.yaml:71-76`), three under Economy.\n\nI opened `escalation.ts:48-51` and `delegate.ts:326-342` myself and they match the scout's report. I didn't open the rest of the cited lines or the tests.\n\n**Untested edge case:** context overflow after tool calls with only two attempts available. `delegate.ts:328` evaluates `canContinue` as false, so the fresh-session recovery is skipped and the general ladder decides. Tests cover this recovery only with the default budget (`delegate.test.ts:204-215`).",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

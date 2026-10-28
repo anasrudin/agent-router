@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "balanced",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 24205,
+  "conductor": {
+    "usd": 0.07448350000000001,
+    "input": 121465,
+    "output": 1934
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "A failed delegate goes through the harness loop in `src/coordinator/delegate.ts`. Each attempt is recorded, then the ladder picks the next step.\n\n1. **Classify the attempt** (`delegate.ts:287-321`). It becomes `backend_error`, `report_failed` (bad format or status \"failed\"), or `blocked`. The watchdog turns stalls and tool loops into errors at `:305`.\n2. **Harness shortcuts** (`:326-343`). These run before the ladder, and only while an attempt is still spare (`:328`).\n   - A stall or tool loop gets one resume nudge (`:329`).\n   - A context overflow after tool calls gets one fresh restart (`:336`).\n3. **`nextStep()`** (`src/router/escalation.ts:45`).\n   - It stops on success, `blocked`, `cancelled` or max attempts (`:48-51`).\n   - A dead backend moves to a live provider at the same tier (`:79-81`).\n   - Otherwise it makes one same-brief retry (`:82-87`), unless the error is in `SKIP_RETRY` (`:30`).\n   - Then it falls back to another provider (`:89-92`), then goes up a tier (`:93`), then tries any remaining provider at the top tier (`:95`).\n   - Otherwise it stops and asks the user (`:97`).\n4. **Apply the step** (`delegate.ts:356-359`). A failed report resumes the same session, and anything else starts clean.\n\n**Uncovered edge case:** `retried` (`escalation.ts:58`) treats any two consecutive attempts on the same provider and tier as a retry. A harness nudge or restart (`delegate.ts:329,336`) produces exactly that pair. A later non-stall failure, such as a malformed report, would then skip the \"sharper brief\" retry rung. I found no test combining a nudge or restart with a later `report_failed`. The nudge tests (`delegate.test.ts:159,175`) end in stalls or success.\n\nI read the code and grepped the tests but did not run anything.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

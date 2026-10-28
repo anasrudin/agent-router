@@ -1,0 +1,23 @@
+{
+  "task": "fix",
+  "profile": "solo-sonnet",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 15674,
+  "conductor": {
+    "usd": 0.0727902,
+    "input": 143573,
+    "output": 1271
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "All 9 tests pass now. There were two bugs, one in each source file.\n\n1. **`src/bill.js`, off-by-one in `splitBill`:** the check `i <= leftover` gave one extra person a leftover cent. I changed it to `i < leftover`, so exactly `leftover` people get one. This fixed the even-split, leftover-cents and total-preserved tests.\n\n2. **`src/duration.js`, no check on the whole string in `parseDuration`:** it only looked for `(\\d+)(h|m|s)` matches anywhere in the text. Input like `\"10m and change\"` was accepted and the junk was ignored. It now throws a `SyntaxError` unless the whole string matches `^(\\d+[hms])+$`. This fixed the trailing-junk test. The old \"no matches\" check is covered by the new one, so I replaced it rather than keeping both.\n\nI didn't touch the tests or commit anything.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

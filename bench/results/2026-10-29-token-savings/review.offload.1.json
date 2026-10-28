@@ -1,0 +1,45 @@
+{
+  "task": "review",
+  "profile": "offload",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 98422,
+  "conductor": {
+    "usd": 0.030457400000000003,
+    "input": 60549,
+    "output": 977
+  },
+  "delegates": [
+    {
+      "taskClass": "code.review",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "tier": "deep",
+      "usd": 0,
+      "tokens": {
+        "input": 261659,
+        "output": 4563
+      },
+      "status": "done",
+      "attempts": [
+        "openai/deep: ok"
+      ]
+    }
+  ],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": false
+    }
+  ],
+  "answer": "The independent review (Codex, `gpt-6-luna`, deep tier) found no significant issues in `src/router/escalation.ts`, so I have no top finding to report or agree with.\n\n- **Verdict:** approve. The reviewer says the ladder retries the failed provider, then switches to an eligible fallback, then raises the tier. It stops at the attempt limit or when no eligible steps remain.\n- **What ran:** typecheck and lint passed. The escalation tests did not run, because the review sandbox's filesystem is read-only (`EROFS` on `/tmp`).\n- **My check:** I tried to confirm the file and run the tests myself. The shell refused with `benchmark: read-only`, so I haven't verified anything independently.\n- **Confidence:** medium. The approval rests on one reviewer reading the code, with no test run behind it.\n\nIf you want more assurance, run `npx bun test src/router/__tests__/escalation.test.ts` somewhere writable. I can also get a second review from Gemini.",
+  "score": {
+    "pass": false,
+    "checks": {
+      "delegated_to_other_model": true,
+      "cites_line": false,
+      "states_agreement": true
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "task": "fix",
+  "profile": "economy",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 16593,
+  "conductor": {
+    "usd": 0.0602456,
+    "input": 76502,
+    "output": 688
+  },
+  "delegates": [],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    }
+  ],
+  "answer": "All 9 tests now pass (`node --test`). I fixed two bugs in the source and left the tests alone.\n\n1. **`src/bill.js`, off-by-one in `splitBill`.** The check `i <= leftover` handed an extra cent to one payer too many. `splitBill(900, 3)` returned `[301, 300, 300]`, which no longer added up to the total. It is now `i < leftover`.\n2. **`src/duration.js`, loose parsing in `parseDuration`.** The regex matched anywhere in the string, so `\"10m and change\"` was accepted as 10 minutes. It now also requires the whole string to be one or more `<digits><h|m|s>` groups, and throws `SyntaxError` otherwise.\n\nI only ran `node --test`.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

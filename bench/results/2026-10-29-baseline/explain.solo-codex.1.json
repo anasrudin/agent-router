@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "solo-codex",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 20110,
+  "conductor": {
+    "usd": 0,
+    "input": 60922,
+    "output": 897
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "The harness records backend errors, report failures, and blocked reports as attempts in [delegate.ts](/home/annas/Desktop/repo/agent-router/src/coordinator/delegate.ts:257). Before the ladder, it may resume a stalled Claude delegate once with a nudge, or restart after context overflow if the delegate already made tool calls ([delegate.ts](/home/annas/Desktop/repo/agent-router/src/coordinator/delegate.ts:296)).\n\nThen `nextStep()` applies the ladder, within the configured attempt limit ([escalation.ts](/home/annas/Desktop/repo/agent-router/src/router/escalation.ts:45)):\n\n1. Retry the same provider and tier once with a sharper brief, unless the error calls for skipping retry or the attempt budget favors a later rung ([escalation.ts](/home/annas/Desktop/repo/agent-router/src/router/escalation.ts:82)).\n2. Switch to a live fallback at the same tier.\n3. Raise the tier; at the top tier, try any remaining live provider.\n4. Stop on success, cancellation, blocking, exhausted attempts, or an exhausted ladder.\n\nTests cover the full retry → fallback → tier-up sequence and key skip-retry cases ([delegate.test.ts](/home/annas/Desktop/repo/agent-router/src/coordinator/__tests__/delegate.test.ts:50), [escalation.test.ts](/home/annas/Desktop/repo/agent-router/src/router/__tests__/escalation.test.ts:12)). One untested edge case: when multiple earlier providers are dead, the tests don’t verify that fallback selection skips all of them and chooses the next live candidate.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

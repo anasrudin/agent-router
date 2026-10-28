@@ -43,6 +43,17 @@ export const READ_ONLY_SHELL_NOTE = `
 
 You are read-only. The only shell commands allowed are grep, ls, cat, head, tail and wc. Pipes between them are fine. Anything else is refused, including rg, find, git, sed and redirection to a file. Search with \`grep -rn --exclude-dir=node_modules --exclude-dir=.git PATTERN PATH\`. If a command is refused, use one of the allowed ones before you report that you are blocked.`
 
+/**
+ * Built-in tools loaded when `lean_tools` is on. Everything else Claude Code ships (subagents,
+ * web, notebooks, scheduling, worktrees…) is never used here, yet its definitions cost about 14k
+ * prompt tokens per request. MCP tools from --mcp-config are not affected.
+ */
+export const CONDUCTOR_TOOLS = ["Read", "Edit", "Write", "Bash"]
+
+export function delegateTools(mode: AgentMode): string[] {
+  return mode === "edit" ? ["Read", "Edit", "Write", "Bash"] : ["Read", "Bash"]
+}
+
 /** Delegation goes through the router only: a delegate must not start its own subagents. */
 const NO_SUBAGENTS = ["Agent", "Task"]
 
@@ -92,6 +103,7 @@ export function claudeArgs(
   extra: string[],
   settingsFile?: string,
   mcpConfigFile?: string,
+  leanTools = false,
 ): string[] {
   return [
     "-p",
@@ -106,6 +118,7 @@ export function claudeArgs(
     ...(options.resumeSessionId ? ["--resume", options.resumeSessionId] : []),
     ...(systemPromptFile ? ["--append-system-prompt-file", systemPromptFile] : []),
     ...(settingsFile ? ["--settings", settingsFile] : []),
+    ...(leanTools ? ["--tools", delegateTools(options.mode).join(",")] : []),
     ...claudePermissionArgs(
       options.mode,
       options.permission,
@@ -141,7 +154,7 @@ export function createClaudeBackend(config: BackendConfig): Backend {
           "claude",
           {
             command: config.executable,
-            args: claudeArgs(options, sys?.file, config.extra_args, gate?.file, mcp?.file),
+            args: claudeArgs(options, sys?.file, config.extra_args, gate?.file, mcp?.file, config.lean_tools),
             cwd: options.cwd,
             stdin: options.prompt,
             timeoutMs: options.timeoutMs,

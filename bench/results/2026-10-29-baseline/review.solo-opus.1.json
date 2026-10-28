@@ -1,0 +1,23 @@
+{
+  "task": "review",
+  "profile": "solo-opus",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 36770,
+  "conductor": {
+    "usd": 0.2054202,
+    "input": 140624,
+    "output": 2782
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "I read `escalation.ts`, its callers in `policy.ts` and `delegate.ts`, and the related tests. I found no crash or logic error. One design gap stands out.\n\n**Finding (line 26, used at lines 53–54):** a `context_overflow` error marks that provider as unusable for the whole subtask, at every tier. Escalation then never tries a higher tier on that provider, even if that model has a larger context window. With a single candidate (a pinned provider, or only one configured), the ladder stops after the first overflow. It goes: dead provider → no fallback → `tierUp` finds no live provider → \"escalation ladder exhausted\". That contradicts the comment in `delegate.ts:304`, which says \"a brief too large to start with goes up the ladder.\"\n\n**Do I agree after checking?** Partly. The test at `delegate.test.ts:228` deliberately switches providers on overflow, so the switch itself is intended. But the single-provider dead end is real and untested. It only matters if a higher tier actually has a larger context window. One fix is to have `context_overflow` block only the tier that failed, not the whole provider.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "cites_line": true,
+      "states_agreement": true
+    }
+  }
+}

@@ -15,6 +15,8 @@ export interface LedgerEntry {
   tier?: string
   status?: string
   sessionId?: string
+  /** The session's running token total, for backends that report one (Codex), so a resume counts only its own. */
+  sessionTokens?: { input: number; output: number }
   worktree?: string
   error?: string
 }
@@ -61,6 +63,11 @@ export function closeInterrupted(file: string | undefined): void {
     const { at: _at, ...rest } = e
     appendLedger(file, { ...rest, event: "failed", error: "interrupted: the turn ended before it finished" })
   }
+}
+
+/** The last running total recorded for a delegate session, if its backend reports one. */
+export function lastSessionTokens(entries: LedgerEntry[], sessionId: string): LedgerEntry["sessionTokens"] {
+  return entries.findLast((e) => e.sessionId === sessionId && e.sessionTokens)?.sessionTokens
 }
 
 const MAX_LISTED = 25

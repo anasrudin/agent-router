@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "solo-codex",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 13418,
+  "conductor": {
+    "usd": 0,
+    "input": 54453,
+    "output": 561
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "`delegate()` starts `runLadder()` with the routed provider and tier ([delegate.ts:123–152](src/coordinator/delegate.ts:123), [delegate.ts:158–177](src/coordinator/delegate.ts:158)). After each attempt it calls `nextStep()` to choose what happens next.\n\nThe ladder is:\n\n1. Stop on success, a blocked report, cancellation, or the attempt limit ([escalation.ts:48–51](src/router/escalation.ts:48)).\n2. Skip retry for backend errors such as missing executables, authentication failures, rate limits, or context overflow; those providers are treated as dead ([escalation.ts:20–27](src/router/escalation.ts:20), [escalation.ts:53–54](src/router/escalation.ts:53)).\n3. Otherwise, retry once on the same provider with a sharper brief, unless the error is timeout, stalled, or a tool loop ([escalation.ts:29–30](src/router/escalation.ts:29), [escalation.ts:82–87](src/router/escalation.ts:82)).\n4. Switch to a fallback provider, then raise the tier; at the top tier it can try remaining providers, then stop and ask the user ([escalation.ts:89–97](src/router/escalation.ts:89)).\n\nOne untested edge case: the tests don’t cover an empty `history`. `nextStep()` throws in that case ([escalation.ts:45–47](src/router/escalation.ts:45)); the table tests only supply nonempty histories ([escalation.test.ts:12–13](src/router/__tests__/escalation.test.ts:12)).",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

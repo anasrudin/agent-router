@@ -1,0 +1,40 @@
+{
+  "task": "review",
+  "profile": "balanced",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 64910,
+  "conductor": {
+    "usd": 0.0950752,
+    "input": 105619,
+    "output": 1415
+  },
+  "delegates": [
+    {
+      "taskClass": "code.review",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "tier": "deep",
+      "usd": 0,
+      "tokens": {
+        "input": 126125,
+        "output": 2000
+      },
+      "status": "done",
+      "attempts": [
+        "openai/deep: ok"
+      ]
+    }
+  ],
+  "approvals": [],
+  "answer": "**Top finding (OpenAI reviewer, gpt-6-luna): `src/router/escalation.ts:51`.** The stop check uses the caller's `maxAttempts` and never enforces the prompt's \"never exceed 4 attempts\" rule. With `maxAttempts: 5` and history `[claude/standard, claude/standard, openai/standard, claude/deep]`, lines 95–96 return a fallback to `openai/deep`, which is a fifth attempt.\n\n**I disagree that this is a major bug.** I checked the config. `max_attempts_per_subtask` defaults to 4 and the schema (`schema.ts:119`) accepts any positive integer. The function takes the limit as a parameter, and the tests at `escalation.test.ts:63` and `:96` use `max: 5` on purpose. So a configurable limit above 4 looks intentional, not a bug in `nextStep`. The only real gap is that the \"never exceed 4\" wording in the prompt can contradict a user who sets a higher value. That is a docs or prompt mismatch, not a defect in this file.\n\nThe reviewer couldn't run the tests because its sandbox was read-only. I didn't run them either.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "delegated_to_other_model": true,
+      "cites_line": true,
+      "states_agreement": true
+    }
+  }
+}

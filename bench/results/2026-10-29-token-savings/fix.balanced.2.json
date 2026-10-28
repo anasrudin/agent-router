@@ -1,0 +1,36 @@
+{
+  "task": "fix",
+  "profile": "balanced",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 29468,
+  "conductor": {
+    "usd": 0.0995389,
+    "input": 73216,
+    "output": 859
+  },
+  "delegates": [],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    }
+  ],
+  "answer": "All 9 tests now pass with `node --test`. I changed only the source files, not the tests.\n\n**Bugs**\n1. **`src/bill.js`, `splitBill`:** The leftover-cent check was `i <= leftover`, which gave one payer too many an extra cent. For example, 900 split 3 ways came out as `[301, 300, 300]`, so totals didn't add up. It is now `i < leftover`, so exactly `leftover` people get the extra cent.\n2. **`src/duration.js`, `parseDuration`:** The code used `matchAll` to pull out any `<number><unit>` pieces and ignored the rest. So `\"10m and change\"` was accepted as 600 seconds. It now checks that the whole string matches `^(\\d+[hms])+$` and throws `SyntaxError` otherwise. That check also covers the old \"no matches\" case, so I removed the `parts.length === 0` check.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

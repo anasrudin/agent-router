@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "balanced",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 24316,
+  "conductor": {
+    "usd": 0.13328420000000002,
+    "input": 94736,
+    "output": 1816
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "A failed attempt is recorded and then goes through two pre-ladder recoveries and the pure `nextStep()` ladder.\n\n**Recording the failure** (`src/coordinator/delegate.ts`)\n- Backend errors, adapter throws and watchdog trips (`:287-307`) and malformed or `failed` reports (`:310-319`) all become typed attempts, pushed at `:324`.\n\n**Pre-ladder recoveries** (`delegate.ts:328-342`)\n- A stalled or tool-looping delegate gets one nudge in its own session.\n- A `context_overflow` after tool use gets one fresh-session restart.\n- Both require a spare attempt beyond the last.\n\n**Ladder** (`src/router/escalation.ts:45-97`)\n1. Stop on success, `blocked`, `cancelled` or max attempts (`:48-51`).\n2. A dead provider (`SWITCH_IMMEDIATELY`, `:21`) is dropped and the ladder switches to another provider at the same tier (`:79-81`).\n3. Otherwise retry once with a sharper brief (`:82-88`), skipped for timeout, stalled and tool_loop (`:30`).\n4. Fallback to another provider (`:89-92`; not when pinned).\n5. Tier up (`:93`).\n6. Try any untried provider at the top tier, or stop and ask the user (`:95-97`).\n\n`delegate.ts:356-357` resumes the session only for a retry after a `report_failed`, and adds the failure to the retry notes.\n\n**Untested edge case**\n- The nudge and restart attempts repeat the same provider and tier. `retried` (`escalation.ts:58`) therefore counts them as the retry rung.\n- A nudge that then returns a malformed report would skip the sharper-brief retry.\n- The escalation table has no such history. `delegate.test.ts:159-175` only covers stall-then-ok and stall, stall, openai.\n\nI read the tests by grep, so I may have missed a case.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process"
 import type { PermissionMode } from "../backends/Backend"
+import { CONDUCTOR_TOOLS } from "../backends/claude"
 import { createClaudeParser } from "../backends/claude/parse"
 import { tempFile } from "../backends/cli-runner"
 import type { BackendEvent } from "../backends/events"
@@ -154,6 +155,7 @@ export async function prepareConductor(opts: Omit<ConductorOptions, "prompt">): 
     ...(settings ? ["--settings", settings.file] : []),
     ...(model ? ["--model", model] : []),
     ...(reasoning ? ["--effort", reasoning] : []),
+    ...(session.config.backends.claude.lean_tools ? ["--tools", conductorTools(session).join(",")] : []),
     "--permission-mode",
     CLAUDE_PERMISSION[opts.permission],
     "--allowedTools",
@@ -185,6 +187,12 @@ export function conductorTier(session: Session): { tier: Tier; reasoning?: strin
   // The profile's effort was chosen for its own tier; a capped Conductor uses the capped tier's.
   const reasoning = (!capped && profile?.conductor.reasoning) || session.config.backends.claude.reasoning[tier] || undefined
   return { tier, reasoning }
+}
+
+/** Conductor's built-in tools under `lean_tools`: the profile's list, or the default lean set. */
+export function conductorTools(session: Session): string[] {
+  const profile = session.profile ? session.config.profiles[session.profile] : undefined
+  return profile?.conductor.tools ?? CONDUCTOR_TOOLS
 }
 
 /** Start Conductor inside the wrapped Claude Code CLI, with the router's MCP server attached. */

@@ -1,0 +1,36 @@
+{
+  "task": "fix",
+  "profile": "balanced",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 17845,
+  "conductor": {
+    "usd": 0.0654755,
+    "input": 78493,
+    "output": 851
+  },
+  "delegates": [],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    }
+  ],
+  "answer": "All 9 tests now pass (`node --test`). I changed two source lines and left the tests alone.\n\n**Bugs**\n1. **`src/bill.js`, off-by-one in `splitBill`:** the check `i <= leftover` gave an extra cent to one payer too many. For example, `splitBill(900, 3)` returned `[301, 300, 300]`, so the total no longer matched. It is now `i < leftover`. This fixed the \"even split\", \"leftover cents\" and \"total is preserved\" tests.\n2. **`src/duration.js`, incomplete validation in `parseDuration`:** it only threw when no `\\d+[hms]` match was found anywhere in the input. A string like `\"10m and change\"` contained one match, so it was accepted and returned 600. It now throws unless the whole string is one or more `<digits><unit>` pairs, using `/^(\\d+[hms])+$/`. `\"3d\"` and `\"soon\"` still throw as before.\n\nI made the edits myself without delegating, since they were small.\n\nThe stricter check also rejects input with spaces, such as `\"1h 30m\"`. No test covers that case, so say if you want spaces allowed.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

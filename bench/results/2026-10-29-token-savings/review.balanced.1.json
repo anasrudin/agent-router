@@ -1,0 +1,40 @@
+{
+  "task": "review",
+  "profile": "balanced",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 99352,
+  "conductor": {
+    "usd": 0.0412773,
+    "input": 61837,
+    "output": 1247
+  },
+  "delegates": [
+    {
+      "taskClass": "code.review",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "tier": "deep",
+      "usd": 0,
+      "tokens": {
+        "input": 322734,
+        "output": 3101
+      },
+      "status": "done",
+      "attempts": [
+        "openai/deep: ok"
+      ]
+    }
+  ],
+  "approvals": [],
+  "answer": "The independent reviewer found no issues in `src/router/escalation.ts`, so I have no top finding to give you. It ran on OpenAI (gpt-6-luna, deep tier), since the file was written by Claude.\n\nIts verdict was **approve**. It read the whole ladder (lines 45–98), the caller in `src/coordinator/delegate.ts`, the candidate construction in `src/router/policy.ts`, and the escalation tests and docs. `npm run typecheck` and `npm run lint` both passed.\n\n**Do I agree?** Mostly. I read the file myself and saw nothing that is clearly a bug. The ladder order matches Conductor §4 rule 7, and the attempt cap and dead-provider handling look sound.\n\n**Caveat:** The reviewer could not run `bun test src/router/__tests__/escalation.test.ts`. Its read-only sandbox blocked the temp directory (`EROFS`), so it rated its confidence medium. Run that test yourself before treating the file as verified.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "delegated_to_other_model": true,
+      "cites_line": true,
+      "states_agreement": true
+    }
+  }
+}

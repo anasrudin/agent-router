@@ -1,0 +1,23 @@
+{
+  "task": "fix",
+  "profile": "solo-opus",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 19298,
+  "conductor": {
+    "usd": 0.134607,
+    "input": 81428,
+    "output": 1100
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "All 9 tests pass now (4 were failing before). I made one small change in each source file and didn't touch the tests.\n\n**Bug 1: off-by-one in `splitBill`** (`src/bill.js`)\nThe leftover check used `i <= leftover`, so one extra person always got an extra cent. With an even split, where the leftover is 0, the first person still got 1 cent too many: `[301, 300, 300]` for 900 split 3 ways. This broke three tests, including the one checking that the total is preserved. I changed it to `i < leftover`, so exactly `leftover` people get the extra cent.\n\n**Bug 2: `parseDuration` accepted trailing junk** (`src/duration.js`)\nThe parser picked out every number-plus-unit piece anywhere in the string and only threw an error if it found none. So `\"10m and change\"` was quietly read as 600 seconds. I added an anchored check, `/^(\\d+[hms])+$/`, so the whole string has to be number-plus-unit pieces with nothing else. The unchanged regex still calculates the total. The check also rejects input that has junk before or between the pieces, like `\"x10m\"` or `\"1h 30m\"`.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

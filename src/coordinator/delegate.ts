@@ -32,7 +32,11 @@ export interface DelegateRequest {
   onStart?: (decision: RouteDecision, agent: string) => void
   onEvent?: (provider: ProviderId, event: BackendEvent) => void
   signal?: AbortSignal
+  /** Running total last reported for the session in `route.sticky`, when its backend reports totals (from the ledger). */
+  priorSessionTokens?: Tokens
 }
+
+export type Tokens = { input: number; output: number }
 
 export interface AttemptRecord extends Attempt {
   model?: string
@@ -54,8 +58,10 @@ export interface DelegateResult {
   attempts: AttemptRecord[]
   stopReason: string
   costUsd: number
-  /** Summed over every attempt, as each CLI reported it (Claude counts cache reads as input). */
-  tokens: { input: number; output: number }
+  /** Summed over every attempt, this delegation's own share (Claude counts cache reads as input). */
+  tokens: Tokens
+  /** The last session's running total, for backends that report one (Codex); the ledger keeps it for a later resume. */
+  sessionTokens?: Tokens
   /** Structural problems found in the report. Conductor still runs the build and tests itself. */
   findings: Finding[]
   /** Results of `checks.commands` run after an edit-mode delegation; empty when none ran. */
@@ -120,6 +126,24 @@ function contextRestartNote(changed: string[], toolCalls: number): string {
   return `The previous session ran out of context window after ${toolCalls} tool calls, so this is a fresh session on the same backend. ${files}\n\nRead only the parts of files you need (line ranges, grep), not whole large files.`
 }
 
+/**
+ * Add one attempt's usage. With `totals` (a backend that reports running totals), a resumed session's
+ * earlier total is subtracted, so a resume counts only what it added; an unknown earlier total
+ * counts the whole report, which overstates rather than hides spend.
+ */
+export function addAttemptTokens(
+  tokens: Tokens,
+  reported: Tokens,
+  totals: Map<string, Tokens> | undefined,
+  resumed: string | undefined,
+  sessionId: string | undefined,
+): void {
+  const before = resumed ? totals?.get(resumed) : undefined
+  tokens.input += Math.max(0, reported.input - (before?.input ?? 0))
+  tokens.output += Math.max(0, reported.output - (before?.output ?? 0))
+  if (totals && sessionId && (reported.input || reported.output)) totals.set(sessionId, reported)
+}
+
 /** Run one subtask through routing, the backend, and the escalation ladder (conductor.md §2 steps 3–5). */
 export async function delegate(session: Session, req: DelegateRequest): Promise<DelegateResult> {
   const brief = req.brief
@@ -169,7 +193,10 @@ async function runLadder(
   let tier = decision.tier
   let resumeSessionId = decision.resumeSessionId
   let costUsd = 0
-  const tokens = { input: 0, output: 0 }
+  const tokens: Tokens = { input: 0, output: 0 }
+  // Running totals per session, for backends whose usage includes earlier runs of a resumed session.
+  const sessionTotals = new Map<string, Tokens>()
+  if (resumeSessionId && req.priorSessionTokens) sessionTotals.set(resumeSessionId, req.priorSessionTokens)
   let text = ""
   let report: Report | undefined
   let stopReason = ""
@@ -197,6 +224,8 @@ async function runLadder(
     const backend = session.backends[provider]
     const system = composeSystemPrompt(agentPromptPath(agent), promptVars(session, model))
     const attempt: AttemptRecord = { provider, tier, model, outcome: "ok" }
+    const resumed = backend.supportsResume ? resumeSessionId : undefined
+    const reported: Tokens = { input: 0, output: 0 }
     let toolCalls = 0
     const prompt =
       followUp ??
@@ -237,7 +266,7 @@ async function runLadder(
           cwd,
           mode: req.brief.mode,
           permission: session.permission,
-          resumeSessionId: backend.supportsResume ? resumeSessionId : undefined,
+          resumeSessionId: resumed,
           timeoutMs,
           signal: attemptAbort.signal,
           reportGate: true,
@@ -251,8 +280,8 @@ async function runLadder(
           else if (event.type === "tool_call") toolCalls += 1
           else if (event.type === "usage") {
             costUsd += event.usage.costUsd ?? 0
-            tokens.input += event.usage.inputTokens
-            tokens.output += event.usage.outputTokens
+            reported.input += event.usage.inputTokens
+            reported.output += event.usage.outputTokens
           } else if (event.type === "done") text = event.text
           else if (event.type === "error") {
             attempt.outcome = "backend_error"
@@ -270,6 +299,7 @@ async function runLadder(
         req.signal?.removeEventListener("abort", onCancel)
       }
     })
+    addAttemptTokens(tokens, reported, backend.cumulativeUsage ? sessionTotals : undefined, resumed, attempt.sessionId)
     // The CLI reports the watchdog's abort as "cancelled"; record why it was really stopped.
     if (trip && !req.signal?.aborted) {
       attempt.outcome = "backend_error"
@@ -362,6 +392,7 @@ async function runLadder(
     stopReason,
     costUsd,
     tokens,
+    sessionTokens: last.sessionId ? sessionTotals.get(last.sessionId) : undefined,
     findings,
     checks,
   }

@@ -1,0 +1,42 @@
+{
+  "task": "explain",
+  "profile": "offload",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 61540,
+  "conductor": {
+    "usd": 0.0457518,
+    "input": 88206,
+    "output": 1882
+  },
+  "delegates": [
+    {
+      "taskClass": "search.codebase",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "tier": "fast",
+      "usd": 0,
+      "tokens": {
+        "input": 124655,
+        "output": 1211
+      },
+      "status": "done",
+      "attempts": [
+        "gemini/fast: rate_limited",
+        "openai/fast: ok"
+      ]
+    }
+  ],
+  "approvals": [],
+  "answer": "A failed delegate goes through the ladder in `nextStep` (`src/router/escalation.ts:45`). `src/coordinator/delegate.ts:345-359` loops on it.\n\n1. **Stop conditions first** (`escalation.ts:48-51`): success, `blocked`, `cancelled`, or `history.length >= maxAttempts`. The cap defaults to 4 (`src/config/schema.ts:119-124`, `routing.yaml:70-76`).\n2. **Retry** once on the same provider and tier with a sharper brief (`escalation.ts:82-87`). It is skipped for `timeout`, `stalled` and `tool_loop` (`:30`), and for dead backends (`:21-27`).\n3. **Fallback** to another live provider at the same tier (`:89-92`, `:79-81`). A pinned provider never falls back (`:62`).\n4. **Tier up** (`:93`).\n5. **Last chance:** any untried provider at the top tier (`:95-96`).\n6. **Otherwise stop:** \"ask the user\" (`:97`).\n\n**Untested edge case:** a pinned provider that fails with `timeout`, `stalled`, `tool_loop` or `context_overflow`. The tests cover pinned only with a plain failure and with a dead backend (`escalation.test.ts:40-48`). From reading the code, a pinned provider with a skip-retry error should go straight to `tier_up` (`:82` and `:62`). Nothing checks that. The grep also found no test using `stalled`, `tool_loop` or `context_overflow` at all.\n\nI read the ladder code myself. The test coverage comes from a scout's report plus a grep of `escalation.test.ts`. I did not run the tests.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}
