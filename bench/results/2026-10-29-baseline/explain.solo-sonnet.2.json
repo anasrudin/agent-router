@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "solo-sonnet",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 16961,
+  "conductor": {
+    "usd": 0.0683352,
+    "input": 115479,
+    "output": 1661
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "The ladder is a pure function, `nextStep()` in `src/router/escalation.ts:45`. `delegate.ts` calls it at `src/coordinator/delegate.ts:315`, inside the attempt loop that starts around line 194.\n\n**Before the ladder (`delegate.ts`)**\n- Stalled or tool-loop trips get one same-session nudge (`:299`).\n- A `context_overflow` after tool use gets one restart (`:306`).\n\n**Ladder order**\n1. **Stop conditions** (`escalation.ts:48-51`): `ok`, `blocked`, `cancelled`, or `maxAttempts` reached.\n2. **Dead backend** (`:53`, `:79-81`): `missing_executable`, `not_authenticated`, `untrusted_workspace`, `rate_limited` and `context_overflow` (`:21-27`) skip the retry. The ladder switches provider at the same tier.\n3. **Retry once** with a sharper brief (`:82-87`). `timeout`, `stalled` and `tool_loop` skip this (`:30`). It is also skipped when one attempt is left and a later rung exists.\n4. **Fallback provider** (`:89-92`), unless the provider is pinned (`:62`).\n5. **Tier up** (`:93`).\n6. **Top-tier sweep** over untried live providers (`:95-96`).\n7. **Stop** with \"ask the user\" (`:97`).\n\nAt `delegate.ts:326`, a retry after `report_failed` resumes the previous session.\n\n**Untested edge case:** `stalled`, `tool_loop` and `context_overflow` never appear in `escalation.test.ts`. Only `timeout`, `rate_limited`, `not_authenticated`, `missing_executable` and `failed` do. So nothing checks that a stalled or looping attempt skips the retry (`:30`). Nothing checks either that a `context_overflow` fallback, which switches immediately, avoids landing on a provider with a smaller window.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

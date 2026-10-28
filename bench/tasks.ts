@@ -16,6 +16,8 @@ export interface Workspace {
 export interface Task {
   id: string
   prompt: string
+  /** Prompt for a single model run without the router (bench/baseline.ts), when `prompt` needs the router. */
+  soloPrompt?: string
   workspace: () => Workspace
   score: (run: RunResult, ws: Workspace) => Score
 }
@@ -61,6 +63,9 @@ export function fixtureWorkspace(): Workspace {
   return { dir, writable: true }
 }
 
+/** Baseline runs (bench/baseline.ts) use profiles named `solo-<model>`: one CLI, no router. */
+export const isSolo = (run: RunResult) => run.profile.startsWith("solo-")
+
 export const has = (text: string, ...needles: string[]) => needles.every((n) => text.includes(n))
 
 export const TASKS: Task[] = [
@@ -96,10 +101,13 @@ export const TASKS: Task[] = [
     id: "review",
     prompt:
       "Get an independent code review of src/router/escalation.ts from a model other than yourself. Then give me the single most important finding with a line reference, and say whether you agree with it. Under 150 words.",
+    // A lone model cannot ask another one, so it reviews the file itself.
+    soloPrompt:
+      "Review src/router/escalation.ts for bugs. Then give me the single most important finding with a line reference, and say whether you agree with it after checking the code. Under 150 words.",
     workspace: repoWorkspace,
     score: (run) => {
       const checks = {
-        delegated_to_other_model: run.delegates.some((d) => d.provider !== "claude"),
+        ...(isSolo(run) ? {} : { delegated_to_other_model: run.delegates.some((d) => d.provider !== "claude") }),
         cites_line: /escalation\.ts:\d+|\blines? \d+|:\d+/i.test(run.answer),
         states_agreement: /\b(agree|disagree)\b/i.test(run.answer),
       }

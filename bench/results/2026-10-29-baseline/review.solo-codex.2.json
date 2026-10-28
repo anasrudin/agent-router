@@ -1,0 +1,23 @@
+{
+  "task": "review",
+  "profile": "solo-codex",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 17438,
+  "conductor": {
+    "usd": 0,
+    "input": 47677,
+    "output": 550
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "I agree with the finding at [escalation.ts:64](/home/annas/Desktop/repo/agent-router/src/router/escalation.ts:64): `tierUp` can select a different provider even when `pinned` is true. The fallback helper respects the pin, but this higher-tier path searches all live candidates without checking it. If the pinned provider is unavailable at the higher tier, escalation can switch providers despite the pin. `tierUp` should be restricted to the pinned provider when `pinned` is true.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "cites_line": true,
+      "states_agreement": true
+    }
+  }
+}

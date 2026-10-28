@@ -1,0 +1,23 @@
+{
+  "task": "fix",
+  "profile": "solo-sonnet",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 15112,
+  "conductor": {
+    "usd": 0.0725558,
+    "input": 143612,
+    "output": 1246
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "All 9 tests now pass. There were two bugs, one in each source file.\n\n1. **`src/bill.js`, off-by-one in `splitBill`.** The leftover-cent check was `i <= leftover`, so one payer too many got an extra cent. With 3 people and 1 leftover cent, that gave `[301, 300, 300]`, which sums to more than the total. I changed it to `i < leftover`.\n\n2. **`src/duration.js`, `parseDuration` was too lenient.** It pulled out any `<digits><unit>` matches and ignored everything else. `\"10m and change\"` was accepted as 10 minutes, and `\"3d\"` only failed because it matched nothing. I added a check that the whole string must be one or more `<digits><h|m|s>` groups, and it throws `SyntaxError` otherwise.\n\nI didn't touch the tests.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

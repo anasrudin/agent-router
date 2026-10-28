@@ -1,0 +1,23 @@
+{
+  "task": "fix",
+  "profile": "solo-codex",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 24129,
+  "conductor": {
+    "usd": 0,
+    "input": 70079,
+    "output": 1003
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "All tests pass.\n\n- In [bill.js](/tmp/ar-bench-fix-AvCy3I/src/bill.js), the leftover-cent check used `i <= leftover`, giving one extra cent to a payer. It now uses `i < leftover`.\n- In [duration.js](/tmp/ar-bench-fix-AvCy3I/src/duration.js), parsing accepted valid-looking fragments while ignoring junk. It now validates the entire string and accepts units only in `h`, `m`, `s` order, without duplicates.\n\nVerified with `node --test`: 2 suites passed.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

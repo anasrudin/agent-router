@@ -1,0 +1,23 @@
+{
+  "task": "fix",
+  "profile": "solo-codex",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 33827,
+  "conductor": {
+    "usd": 0,
+    "input": 117971,
+    "output": 879
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "All tests pass with `node --test`.\n\n- In [bill.js](/tmp/ar-bench-fix-sWouC9/src/bill.js), the leftover-cent check used `i <= leftover`, adding a cent even when there was no remainder. It now uses `i < leftover`.\n- In [duration.js](/tmp/ar-bench-fix-sWouC9/src/duration.js), the parser accepted valid duration fragments while ignoring trailing junk. It now rejects input unless the whole string matches the supported format.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

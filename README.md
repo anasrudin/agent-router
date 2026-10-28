@@ -108,7 +108,7 @@ Choose one in the app's **Profile** menu, or with `--profile <name>` on the CLI.
 
 "Risky" uses the same triggers as before: more than 5 files touched (10 in Economy), a previous failed attempt, or a task that mentions auth, security, payment, concurrency or migration. Define your own profiles under `profiles:` in your user or project config.
 
-Measured on 2026-10-28 (3 small tasks × 2 runs each): every profile passed every task; Balanced cost 58% less than Quality and Economy 65% less, with weaker reviews on Economy. Details and how to re-run: [bench/RESULTS.md](bench/RESULTS.md).
+Measured on 2026-10-28 (3 small tasks × 2 runs each): every profile passed every task; Balanced cost 58% less than Quality and Economy 65% less, with weaker reviews on Economy. Against one CLI without the router, every profile used more tokens than Sonnet alone (Economy +28%) and Codex alone used the fewest. Details and how to re-run: [bench/RESULTS.md](bench/RESULTS.md).
 
 ## Delegate safeguards
 

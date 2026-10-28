@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "solo-opus",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 25579,
+  "conductor": {
+    "usd": 0.21705999999999998,
+    "input": 134422,
+    "output": 1983
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "The ladder lives in `nextStep()` in `src/router/escalation.ts:45`. It runs after every failed attempt and decides what happens next:\n\n1. **Stop conditions** (`:48-51`): it stops on success, on a blocked delegate (Conductor or the user must answer), on cancellation, or when the attempt count reaches `maxAttempts`.\n2. **Dead backends** (`:21-27`, `:53`): a backend that is missing, signed out, in an untrusted folder, rate-limited or out of context is marked dead and never used again. The next attempt goes to a live provider at the same tier (`:79-81`).\n3. **Retry** (`:82-87`): the same backend gets one retry with a sharper brief. Timeouts, stalls and tool loops skip this (`:30`). With one attempt left, the retry is skipped if a later rung could run instead (`:85`).\n4. **Fallback** (`:89-92`): one switch to another provider at the same tier. Pinned runs never fall back (`:62`).\n5. **Tier-up** (`:93`): a higher tier on the first live provider not yet tried there.\n6. **Top tier** (`:95-96`): any provider not yet tried at the highest tier still gets a turn. After that it stops and asks the user (`:97`).\n\n**Untested edge case:** every test starts at the `standard` tier. If an attempt starts at `fast`, the default 4 attempts go fast, fast, fallback at fast, then `standard`. The cap is hit before `deep` is ever tried. I found this by tracing the code, not by running it. The `stalled` and `tool_loop` error kinds also have no `nextStep` test; only `timeout` does.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

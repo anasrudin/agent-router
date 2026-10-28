@@ -1,0 +1,23 @@
+{
+  "task": "review",
+  "profile": "solo-sonnet",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 20567,
+  "conductor": {
+    "usd": 0.057645900000000014,
+    "input": 87809,
+    "output": 2045
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "**Most important finding: line 64.** `tierUp` doesn't check `pinned`, unlike `fallbackAt` on line 62. If `candidates` held more than one provider while `pinned` was true, a tier-up could move the task to a different provider and override the user's pin.\n\n**Do I agree?** Only as a latent hazard, not a live bug. `src/router/policy.ts:131` sets `preferred = [req.override]` whenever the provider is pinned. `candidates` is then at most that one provider. So `alive.find(...)` on line 64 can only return the pinned provider. `delegate.ts:318` passes the decision's `candidates` through unchanged.\n\nThe guard would only matter if someone later changed how candidates are built, such as adding the capability-fit fallback to pinned requests. A one-line `pinned ? last.provider : ...` on line 64 would make `escalation.ts` safe without relying on `policy.ts`.\n\nI found no confirmed bugs in the ladder logic. I traced the dead-provider, retry, fallback and top-tier paths, and each one terminates and respects `maxAttempts`. I did not run the tests.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "cites_line": true,
+      "states_agreement": true
+    }
+  }
+}

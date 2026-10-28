@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "solo-opus",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 35417,
+  "conductor": {
+    "usd": 0.40929340000000003,
+    "input": 222570,
+    "output": 3054
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "I traced the failure path through `src/coordinator/delegate.ts` and `src/router/escalation.ts`. I read the code and both test files but didn't run anything.\n\n**How a failure is handled**\n1. **Recording the attempt.** Each attempt ends as `ok`, `backend_error`, `report_failed` or `blocked` (`delegate.ts:257-291`). A watchdog stop is recorded as `stalled` or `tool_loop` (`:274-278`).\n2. **Before the ladder.** A delegate that stalls or loops can be resumed once with a short nudge (`:299-305`). One that fills its context after doing some work gets one fresh session (`:306-313`).\n3. **The ladder** (`nextStep`, `escalation.ts:45`):\n   - It stops on success, `blocked`, cancel, or when attempts run out (`:48-51`).\n   - A backend that is down (missing, signed out, untrusted folder, rate-limited, context full) is marked dead and switched away from (`:21-27`, `:79-81`).\n   - Otherwise it retries once with a sharper brief. Timeouts, stalls and loops skip this retry (`:30`, `:82-87`).\n   - Next it tries one fallback provider (`:89-92`), then a higher tier (`:93`), then any provider not yet tried at the top tier (`:95-96`). After that it stops and asks the user (`:97`).\n4. **After each rung.** Only a rejected report is retried in the same session (`delegate.ts:326`).\n\n**Edge case the tests miss**\nThe context-full restart's attempt still counts toward the backend being dead, because `deadProviders` (`escalation.ts:53`) includes every `context_overflow` attempt. If the fresh session then returns a bad report, that backend gets no retry and can't be used for tier-up, even though it just ran. The only test of a restart ends in success (`delegate.test.ts:204`).",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}
