@@ -76,6 +76,22 @@ Choose them in the desktop app under **Models**, which saves to this project or 
 
 Gemini only runs headless in folders it trusts. Trust the folder in Gemini once, or tick the trust checkbox under Gemini in **Models** (`trust_workspace: true`).
 
+## Plans (your subscriptions)
+
+Tell the router what you pay for, and the backend with more paid capacity does the frontier work. Choose a plan in the app's **Plan** menu, with `--plan <name>`, or with `plan:` in your config.
+
+| Plan | Claude | ChatGPT (Codex) | Gemini | Effect |
+|---|---|---|---|---|
+| `claude-heavy` | tier 4, ~$466/mo | tier 1, $20 | 1000 req/day | Claude leads every Claude/Codex route (Codex tests too), Codex is fallback and second opinion |
+| `chatgpt-heavy` | tier 1, $20 | tier 4, ~$477/mo | 1000 req/day | Codex leads plans, edits, tests and debugging; Claude is fallback and second opinion; Conductor runs on Sonnet, not Opus |
+| `split` | tier 3.5, ~$255 | tier 3.5, ~$266 | 1000 req/day | Routing as shipped |
+
+Tiers by monthly price: 1 = $20, 2 = $40, 3 = $200, 3.5 ≈ $255–266, 4 ≈ $466–477, and 0 = no subscription (that backend is never used). Custom: `plan: { claude: 2, openai: 3, gemini_requests_per_day: 1000 }`. A side leads when it pays at least 1.5× the other. The plan also sets how many delegates run at once on each backend ($20–40: 1, $200: 2, $400+: 3). Lookups stay on Gemini either way, and routes you set yourself win over the plan. Conductor itself always runs on Claude.
+
+![Plan menu](docs/screenshots/plan-menu.png)
+
+![Under ChatGPT-heavy, the planner runs on Codex](docs/screenshots/plan-chatgpt-heavy.png)
+
 ## Profiles
 
 Choose one in the app's **Profile** menu, or with `--profile <name>` on the CLI. A profile only trades depth *above* each task class's quality floor: it can't lower `min_tier`, weaken privacy, or let an author review its own work. Anything you set yourself (Models dialog, user or project config) beats the profile.
@@ -104,11 +120,19 @@ Measured on 2026-10-28 (3 small tasks × 2 runs each): every profile passed ever
 - **Project checks:** set `checks.commands` (e.g. `["npm run typecheck", "npm test"]`) in `.harness/routing.yaml`. They run after every edit-mode delegation, in the delegate's worktree if it had one, and failures reach Conductor as findings. They run only under "Accept edits" or "Bypass"; under "Ask before changes" Conductor is told to run them itself. Under "Accept edits", Claude edit delegates may also run exactly these commands themselves.
 - **Background delegations:** Conductor can pass `background: true` to run independent subtasks at once, then collect them with `delegation_result` (`delegation_status` and `cancel_delegation` too). At most `limits.max_parallel_per_provider` (2) run on any one backend, so parallel work spreads instead of piling onto one rate limit. Unfinished jobs are cancelled when Conductor's turn ends.
 - **Survives context compaction:** each chat keeps a delegation ledger. When Claude Code compacts Conductor's context, a SessionStart hook puts back what ran, which delegate sessions to resume, open worktrees and jobs still running.
+- **No interactive prompts:** delegates, Conductor and project checks run with pagers, editors and credential prompts turned off (`GIT_PAGER=cat`, `GIT_EDITOR=:`, `GIT_TERMINAL_PROMPT=0`, `PIP_NO_INPUT`, …), so a command fails fast instead of waiting for input nobody can give.
+- **Nudge before giving up:** the first time a Claude delegate stalls or loops, the harness resumes its own session with a note on what went wrong instead of starting over, so its work so far counts. Neither this nor the context restart below spends the last attempt, which stays for another backend. Gemini and Codex delegates cannot be resumed yet and go straight to the ladder.
+- **Context full mid-task:** a delegate that fills its context after doing some work gets one fresh session on the same backend, told which files it changed during the task. A brief too large to start with goes up the ladder as before.
+- **Evidence files:** delegates that can write a file (any edit-mode delegate, and Claude delegates that run commands) save the output they cite under `.harness/evidence/` (git-ignored). A cited file that is missing, older than the task, empty, a symlink or outside that folder is a reject finding; citing none is a note for Conductor.
+- **Rules from other tools:** besides `AGENTS.md`, briefs carry `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md` (`applyTo`), `.cursor/rules/*.mdc` (`globs`, `alwaysApply`) and, for Gemini and Codex, `.claude/rules/*.md` (`paths`; Claude Code loads those itself), each only for the files it targets.
+- **Code navigation:** when a language server is installed, Claude and Codex delegates get `diagnostics`, `definition`, `references` and `symbols` tools from `agent-router lsp-mcp`. TypeScript 7 projects use TypeScript's own `tsc --lsp`; older ones `typescript-language-server`; also pyright or pylsp, gopls, rust-analyzer and clangd.
+- **Comments that narrate the change** ("Added null check", "as requested") are flagged by `check_diff` for a look.
+- **Desktop notifications** when a turn finishes or an approval is waiting while the app is in the background.
 - **Read-only Claude delegates can search:** Claude Code 2.1.312 has no Grep/Glob tools, so read-only delegates may run `grep`, `ls`, `cat`, `head`, `tail` and `wc`, and nothing else (no `rg --pre`, `git`, `find`, or redirection). No delegate may start subagents.
 
 ![Two background delegations running at once](docs/screenshots/background-delegations.png)
 
-The watchdog, output cap, directory rules, report gate, background delegations, keyword modes, compaction recovery and project checks follow ideas from oh-my-openagent. They were reimplemented here, not copied, because most of that project is under a non-open-source license. Its LSP diagnostics were not ported as such: project checks give a language-neutral equivalent without a language-server runtime.
+The watchdog, output cap, directory rules, report gate, background delegations, keyword modes, compaction recovery, project checks, non-interactive environment, nudges, context restarts, evidence files, rule files, code navigation, comment checks and notifications follow ideas from oh-my-openagent. They were reimplemented here, not copied: most of that project is under a non-open-source license, and its MIT LSP package depends on parts that are not MIT. One idea did not carry over: hints after a failed edit. Claude Code 2.1.312 rejects a bad Edit before any hook runs, so no hook can see it.
 
 ## Documentation
 

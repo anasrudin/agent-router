@@ -1,3 +1,4 @@
+import { excludedByPlan } from "../config/plans"
 import { isPlaceholderModel, type MediaKind, maxTier, PROVIDERS, type ProviderId, type RoutingConfig, type Tier } from "../config/schema"
 import type { HealthTracker } from "./health"
 
@@ -78,6 +79,7 @@ function unfitReason(ctx: PolicyContext, provider: ProviderId, req: RouteRequest
     return `unhealthy (${ctx.health.snapshot()[provider].reason ?? "errors"})`
   }
   if (req.exclude?.includes(provider)) return "already tried for this subtask"
+  if (excludedByPlan(ctx.config.active_plan, provider)) return "not in your plan (no subscription)"
   const denied = ctx.config.privacy.provider_restrictions[provider]?.deny_paths ?? []
   for (const file of req.files ?? []) {
     const hit = matchesAny(file, denied)

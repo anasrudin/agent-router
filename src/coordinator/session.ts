@@ -64,7 +64,8 @@ export class Session implements PolicyContext {
   providerSlot(provider: ProviderId): Semaphore {
     let slot = this.providerSlots.get(provider)
     if (!slot) {
-      slot = new Semaphore(this.config.limits.max_parallel_per_provider)
+      const limits = this.config.limits
+      slot = new Semaphore(limits.parallel_per_provider[provider] ?? limits.max_parallel_per_provider)
       this.providerSlots.set(provider, slot)
     }
     return slot

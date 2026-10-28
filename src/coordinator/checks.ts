@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import type { PermissionMode } from "../backends/Backend"
-import { killTree } from "../backends/process"
+import { killTree, NONINTERACTIVE_ENV } from "../backends/process"
 import type { Finding } from "./verify"
 
 export interface CheckResult {
@@ -17,7 +17,13 @@ const OUTPUT_TAIL = 2_000
 /** Run one shell command in `cwd` and keep the tail of its output. */
 export async function runCheck(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<CheckResult> {
   return await new Promise<CheckResult>((resolve) => {
-    const child = spawn(command, { cwd, shell: true, detached: process.platform !== "win32", windowsHide: true })
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      env: { ...process.env, ...NONINTERACTIVE_ENV },
+      detached: process.platform !== "win32",
+      windowsHide: true,
+    })
     let output = ""
     const keep = (chunk: Buffer) => {
       output = (output + chunk.toString("utf8")).slice(-OUTPUT_TAIL * 2)

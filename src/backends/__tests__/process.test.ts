@@ -8,7 +8,10 @@ import { buildInvocation, resolveExecutable } from "../process"
 
 const FAKE = path.join(import.meta.dir, "fixtures", "fake-cli.mjs")
 
-async function collect(mode: string, opts: { stdin?: string; timeoutMs?: number; signal?: AbortSignal; command?: string } = {}) {
+async function collect(
+  mode: string,
+  opts: { stdin?: string; timeoutMs?: number; signal?: AbortSignal; command?: string; env?: Record<string, string> } = {},
+) {
   const events: BackendEvent[] = []
   for await (const e of runCli(
     "claude",
@@ -19,6 +22,7 @@ async function collect(mode: string, opts: { stdin?: string; timeoutMs?: number;
       stdin: opts.stdin,
       timeoutMs: opts.timeoutMs,
       signal: opts.signal,
+      env: opts.env,
     },
     createClaudeParser(),
   )) {
@@ -36,6 +40,18 @@ describe("runCli with a real child process", () => {
     expect(events[0]).toEqual({ type: "session", sessionId: "fake-session" })
     expect(terminals(events)).toEqual([{ type: "done", text: `got 100000 chars: ${"x".repeat(20)}` }])
   })
+  test("delegates run with prompts for pagers, editors and credentials turned off; caller env still wins", async () => {
+    const events = await collect("env", { env: { KEEP_ME: "yes", GIT_PAGER: "less" } })
+    const done = terminals(events)[0]
+    expect(done?.type).toBe("done")
+    expect(JSON.parse(done?.type === "done" ? done.text : "{}")).toEqual({
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_PAGER: "less",
+      GIT_EDITOR: ":",
+      KEEP_ME: "yes",
+    })
+  })
+
   test("non-zero exit maps stderr to a typed error", async () => {
     const events = await collect("ratelimit")
     expect(terminals(events)).toHaveLength(1)

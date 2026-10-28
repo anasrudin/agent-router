@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { spawnSync } from "node:child_process"
+import { writeFileSync } from "node:fs"
+import path from "node:path"
 import { fakeRegistry, report, testSession } from "../../test-support"
 import { DelegationError, delegate } from "../delegate"
 import { Brief } from "../protocol"
@@ -142,6 +145,89 @@ describe("delegate()", () => {
       const r = await run
       expect(r.attempts.map((a) => a.errorKind)).toEqual(["cancelled"])
       expect(r.stopReason).toBe("cancelled")
+    })
+
+    test("a stalled delegate that can resume is nudged in its own session once, then the ladder takes over", async () => {
+      const backends = fakeRegistry({
+        claude: [
+          { hang: true, sessionId: "c1" },
+          { text: report("done"), sessionId: "c1" },
+        ],
+      })
+      const r = await delegate(testSession(backends, limits(1)), { taskClass: "plan", brief: brief() })
+      expect(r.attempts.map((a) => `${a.provider}:${a.errorKind ?? a.outcome}`)).toEqual(["claude:stalled", "claude:ok"])
+      const second = backends.claude.calls[1]
+      expect(second?.resumeSessionId).toBe("c1")
+      expect(second?.prompt).toContain("no output for 1 s")
+      expect(second?.prompt).not.toContain("## Acceptance criteria")
+    })
+
+    test("a second stall is not nudged again", async () => {
+      const backends = fakeRegistry({
+        claude: [
+          { hang: true, sessionId: "c1" },
+          { hang: true, sessionId: "c1" },
+        ],
+        openai: [{ text: report("done") }],
+      })
+      const r = await delegate(testSession(backends, limits(1)), { taskClass: "plan", brief: brief() })
+      expect(r.attempts.map((a) => `${a.provider}:${a.errorKind ?? a.outcome}`)).toEqual(["claude:stalled", "claude:stalled", "openai:ok"])
+      expect(backends.openai.calls[0]?.prompt).toContain("## Acceptance criteria")
+    })
+
+    test("a looping delegate is told to change approach", async () => {
+      const backends = fakeRegistry({ claude: [{ loop: 50, text: report("done"), sessionId: "c1" }, { text: report("done") }] })
+      const r = await delegate(testSession(backends, limits(60, 5)), { taskClass: "plan", brief: brief() })
+      expect(r.status).toBe("done")
+      expect(backends.claude.calls[1]?.prompt).toContain("Change your approach")
+    })
+  })
+
+  test("an adapter that throws is a failed attempt, and the ladder moves on", async () => {
+    const backends = fakeRegistry({ claude: [{ throws: "Argument not safe to pass through cmd.exe" }], openai: [{ text: report("done") }] })
+    const r = await delegate(testSession(backends), { taskClass: "plan", brief: brief() })
+    expect(r.status).toBe("done")
+    expect(r.attempts[0]).toMatchObject({ provider: "claude", errorKind: "failed", message: expect.stringContaining("cmd.exe") })
+  })
+
+  test("with two attempts, a stall goes to another backend instead of spending the last on a nudge", async () => {
+    const backends = fakeRegistry({ claude: [{ hang: true, sessionId: "c1" }], openai: [{ text: report("done") }] })
+    const session = testSession(backends, {
+      limits: { delegate_stall_seconds: 1 },
+      escalation: { max_attempts_per_subtask: 2 },
+    })
+    const r = await delegate(session, { taskClass: "plan", brief: brief() })
+    expect(r.attempts.map((a) => `${a.provider}:${a.errorKind ?? a.outcome}`)).toEqual(["claude:stalled", "openai:ok"])
+  })
+
+  describe("context window full", () => {
+    test("mid-task: a fresh session on the same backend, told what already changed", async () => {
+      const backends = fakeRegistry({
+        claude: [{ error: "context_overflow", toolCalls: 7, sessionId: "c1" }, { text: report("done") }],
+      })
+      const r = await delegate(testSession(backends), { taskClass: "plan", brief: brief() })
+      expect(r.attempts.map((a) => `${a.provider}:${a.errorKind ?? a.outcome}`)).toEqual(["claude:context_overflow", "claude:ok"])
+      const second = backends.claude.calls[1]
+      expect(second?.resumeSessionId).toBeUndefined()
+      expect(second?.prompt).toContain("ran out of context window after 7 tool calls")
+      expect(second?.prompt).toContain("No files were changed yet.")
+    })
+
+    test("edits that were uncommitted before the task are not credited to the delegate", async () => {
+      const backends = fakeRegistry({ claude: [{ error: "context_overflow", toolCalls: 3 }, { text: report("done") }] })
+      const session = testSession(backends)
+      const git = (...args: string[]) => spawnSync("git", args, { cwd: session.workspace })
+      git("init", "-q")
+      writeFileSync(path.join(session.workspace, "mine.txt"), "the user's own work in progress")
+      await delegate(session, { taskClass: "plan", brief: brief() })
+      expect(backends.claude.calls[1]?.prompt).toContain("No files were changed yet.")
+      expect(backends.claude.calls[1]?.prompt).not.toContain("mine.txt")
+    })
+
+    test("a brief too large to start with goes straight to another backend", async () => {
+      const backends = fakeRegistry({ claude: [{ error: "context_overflow" }], openai: [{ text: report("done") }] })
+      const r = await delegate(testSession(backends), { taskClass: "plan", brief: brief() })
+      expect(r.attempts.map((a) => `${a.provider}:${a.errorKind ?? a.outcome}`)).toEqual(["claude:context_overflow", "openai:ok"])
     })
   })
 })

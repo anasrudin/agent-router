@@ -109,7 +109,7 @@ textarea {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  min-width: 140px;
+  min-width: 120px;
   flex: 1 1 180px;
   max-width: 420px;
   padding: 4px 10px;
@@ -670,6 +670,16 @@ textarea:focus {
 }
 #settings-status.warn {
   color: var(--warn);
+}
+
+/* Five controls and three chips do not fit one row below this: the chips keep only their dots. */
+@media (max-width: 1280px) {
+  .chip {
+    padding: 5px;
+  }
+  .chip-name {
+    display: none;
+  }
 }
 
 @media (max-width: 720px) {

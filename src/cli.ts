@@ -15,8 +15,11 @@ import { startServer } from "./server/serve"
 
 const VERSION = "0.1.0"
 
+import { describePlan } from "./config/plans"
 import { ledgerContext, newLedgerPath, readLedger } from "./coordinator/ledger"
 import { reportGate } from "./hooks/report-gate"
+import { serveLspStdio } from "./lsp/mcp"
+import { installedServers } from "./lsp/servers"
 import { decide, RoutingError } from "./router/policy"
 
 const PERMISSIONS = ["default", "acceptEdits", "bypass"] as const
@@ -46,12 +49,15 @@ const workspaceOption = () => new Option("-w, --workspace <dir>", "workspace roo
 const permissionOption = () => new Option("--permission <mode>", "harness permission mode").choices(PERMISSIONS).default("default")
 const selfOption = () => new Option("--self <provider>", "backend Conductor runs on").argParser(provider).default("claude")
 const profileOption = () => new Option("--profile <name>", "routing profile (quality, balanced, economy, or one you define)")
+const planOption = () =>
+  new Option("--plan <name>", "your subscriptions: claude-heavy, chatgpt-heavy, split, or none (overrides `plan` in the config)")
 
 interface CommonOpts {
   workspace: string
   permission: PermissionMode
   self: ProviderId
   profile?: string
+  plan?: string
 }
 
 /** The model Conductor runs on under the session's profile, for rendering its prompt. */
@@ -70,11 +76,18 @@ const program = new Command()
   .addOption(permissionOption())
   .addOption(selfOption())
   .addOption(profileOption())
+  .addOption(planOption())
   .option("--show-system-prompt", "print Conductor's rendered system prompt and exit")
   .action(async (words: string[], opts: CommonOpts & { showSystemPrompt?: boolean }) => {
     const workspace = path.resolve(opts.workspace)
     if (opts.showSystemPrompt) {
-      const session = await createSession({ workspace, permission: opts.permission, selfProvider: opts.self, profile: opts.profile })
+      const session = await createSession({
+        workspace,
+        permission: opts.permission,
+        selfProvider: opts.self,
+        profile: opts.profile,
+        plan: opts.plan,
+      })
       process.stdout.write(conductorSystemPrompt(session, conductorModel(session)).text)
       return
     }
@@ -87,6 +100,7 @@ const program = new Command()
       selfProvider: opts.self,
       // A keyword in the message (`@economy`, `ultrawork`) beats --profile.
       profile: overrides.profile ?? opts.profile,
+      plan: opts.plan,
       // The original wording goes to Conductor too, so it can see and acknowledge the override.
       prompt: raw !== undefined && overrides.ultrawork ? `${raw}\n\n${ULTRAWORK_NOTE}` : raw,
       pins: { provider: overrides.provider, routes: overrides.routes },
@@ -99,11 +113,18 @@ program
   .command("doctor")
   .description("check config, prompts and each backend CLI")
   .addOption(workspaceOption())
-  .action(async (opts: { workspace: string }) => {
+  .addOption(planOption())
+  .action(async (opts: { workspace: string; plan?: string }) => {
     const workspace = path.resolve(opts.workspace)
-    const { sources } = loadConfig(workspace)
+    const { sources } = loadConfig(workspace, undefined, undefined, opts.plan)
     process.stdout.write(`config: ${sources.join(" + ")} — valid\n`)
-    const session = await createSession({ workspace, permission: "default", selfProvider: "claude" })
+    const session = await createSession({ workspace, permission: "default", selfProvider: "claude", plan: opts.plan })
+    const plan = session.config.active_plan
+    process.stdout.write(
+      plan
+        ? `plan: ${describePlan(plan)}; Conductor runs on ${conductorTier(session).tier}\n`
+        : "plan: none set (`plan:` in routing.yaml or --plan claude-heavy|chatgpt-heavy|split)\n",
+    )
     const snap = session.health.snapshot()
     let ok = true
     for (const p of PROVIDERS) {
@@ -150,6 +171,7 @@ program
   .option("--files-touched <n>", "how many files the change touches", (v) => Number.parseInt(v, 10))
   .option("--task <text>", "task text (risk words can raise the tier)")
   .addOption(profileOption())
+  .addOption(planOption())
   .action(
     async (
       taskClass: string,
@@ -163,6 +185,7 @@ program
         filesTouched?: number
         task?: string
         profile?: string
+        plan?: string
       },
     ) => {
       const session = await createSession({
@@ -170,6 +193,7 @@ program
         permission: "default",
         selfProvider: "claude",
         profile: opts.profile,
+        plan: opts.plan,
       })
       try {
         const decision = decide(session, {
@@ -206,6 +230,7 @@ program
   .addOption(workspaceOption())
   .addOption(permissionOption())
   .addOption(profileOption())
+  .addOption(planOption())
   .action(
     async (opts: {
       task: string
@@ -220,12 +245,14 @@ program
       workspace: string
       permission: PermissionMode
       profile?: string
+      plan?: string
     }) => {
       const session = await createSession({
         workspace: path.resolve(opts.workspace),
         permission: opts.permission,
         selfProvider: "claude",
         profile: opts.profile,
+        plan: opts.plan,
       })
       const taskClass = opts.class ?? guessTaskClass(opts.task)
       const brief = Brief.parse({
@@ -261,6 +288,7 @@ program
   .addOption(permissionOption())
   .addOption(selfOption())
   .addOption(profileOption())
+  .addOption(planOption())
   .option("--pin <provider|class=provider>", "routing pin from the user's message (repeatable)", collect, [])
   .option("--bridge <url>", "desktop server to report delegations and approval prompts to")
   .option("--ledger <file>", "record this chat's delegations here (read back after context compaction)")
@@ -270,6 +298,7 @@ program
       permission: opts.permission,
       selfProvider: opts.self,
       profile: opts.profile,
+      plan: opts.plan,
     })
     // Conductor closing our stdin, or a stop signal to its process group, means it has gone:
     // stop every delegate it started (each in its own process group) before exiting.
@@ -284,6 +313,18 @@ program
     process.once("SIGINT", shutdown)
     const bridge = opts.bridge ? await Bridge.connect(opts.bridge).catch(() => undefined) : undefined
     await serveStdio(session, parsePins(opts.pin), { bridge, signal: lifetime.signal, ledger: opts.ledger })
+  })
+
+program
+  .command("lsp-mcp", { hidden: true })
+  .description("serve code-navigation tools backed by installed language servers over stdio (attached to delegates)")
+  .addOption(workspaceOption())
+  .option("--tools-root <dir>", "where to find the project's node_modules/.bin (the main workspace, for a worktree)")
+  .action(async (opts: { workspace: string; toolsRoot?: string }) => {
+    const workspace = path.resolve(opts.workspace)
+    const toolsRoot = path.resolve(opts.toolsRoot ?? workspace)
+    const { config } = loadConfig(workspace)
+    await serveLspStdio(workspace, installedServers(toolsRoot, config.lsp.servers), toolsRoot)
   })
 
 // Claude Code hook commands. A hook must never break the run it guards: any error lets it continue.

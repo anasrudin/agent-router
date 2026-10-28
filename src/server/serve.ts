@@ -3,8 +3,9 @@ import path from "node:path"
 import type { ServerWebSocket } from "bun"
 import { createBackends } from "../backends/registry"
 import { prepareConductor, SELF_ENTRY, streamConductor } from "../conductor/run"
-import { loadConfig } from "../config/load"
-import { PROVIDERS, type ProviderId } from "../config/schema"
+import { loadConfig, resolvePlan } from "../config/load"
+import { describePlan, PLAN_PRESETS } from "../config/plans"
+import { PROVIDERS, type ProviderId, type RoutingConfig } from "../config/schema"
 import { newLedgerPath } from "../coordinator/ledger"
 import { Session } from "../coordinator/session"
 import { type Overrides, parseOverrides, ULTRAWORK_NOTE } from "../router/classify"
@@ -52,6 +53,18 @@ export async function backendStatus(workspace: string): Promise<BackendStatus> {
     executables: Object.fromEntries(PROVIDERS.map((p) => [p, config.backends[p].executable])) as Record<ProviderId, string>,
     profiles: Object.entries(config.profiles).map(([name, p]) => ({ name, label: p.label, description: p.description })),
     defaultProfile: config.default_profile,
+    plans: Object.entries(PLAN_PRESETS).map(([name, p]) => ({ name, label: p.label, description: describePlan(p.plan) })),
+    configuredPlan: describeConfiguredPlan(config.plan),
+  }
+}
+
+/** The config's own plan in words, or undefined when none is set or it does not resolve. */
+function describeConfiguredPlan(plan: RoutingConfig["plan"]): string | undefined {
+  try {
+    const resolved = resolvePlan(plan)
+    return resolved ? describePlan(resolved) : undefined
+  } catch {
+    return undefined
   }
 }
 
@@ -116,6 +129,7 @@ export function startServer(opts: ServeOptions) {
         permission: msg.permission,
         selfProvider: "claude",
         profile,
+        plan: msg.plan,
         pins: { provider: overrides.provider, routes: overrides.routes },
         entry: SELF_ENTRY,
         bridgeUrl,

@@ -30,6 +30,25 @@ export interface RunningProcess {
 const STDERR_LIMIT = 64 * 1024
 
 /**
+ * Environment for headless agents. Nobody can answer a pager, an editor or a credential prompt,
+ * so a command that opens one would hang until the watchdog's stall timer. These make the common
+ * tools fail fast or skip the prompt instead. `GIT_EDITOR=:` works on Windows too: git runs the
+ * editor through its bundled sh.
+ */
+export const NONINTERACTIVE_ENV: Record<string, string> = {
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_EDITOR: ":",
+  GIT_SEQUENCE_EDITOR: ":",
+  GIT_PAGER: "cat",
+  GCM_INTERACTIVE: "never",
+  GH_PROMPT_DISABLED: "1",
+  GH_PAGER: "cat",
+  DEBIAN_FRONTEND: "noninteractive",
+  PIP_NO_INPUT: "1",
+  ...(process.platform === "win32" ? {} : { PAGER: "cat", MANPAGER: "cat", EDITOR: ":", VISUAL: ":" }),
+}
+
+/**
  * Find an executable on PATH the way the OS would. On Windows this honours PATHEXT,
  * because npm-installed CLIs are `.cmd` shims that spawn() cannot find by bare name.
  */

@@ -21,6 +21,40 @@ const cells = (line: string) =>
     .split("|")
     .map((c) => c.trim())
 
+const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/
+
+interface ListItem {
+  indent: number
+  ordered: boolean
+  start: number
+  text: string
+  children: ListItem[]
+}
+
+/** Items indented deeper than the one before them become its children. */
+function nestItems(flat: ListItem[]): ListItem[] {
+  const roots: ListItem[] = []
+  const stack: ListItem[] = []
+  for (const item of flat) {
+    while (stack.length && (stack.at(-1) as ListItem).indent >= item.indent) stack.pop()
+    const parent = stack.at(-1)
+    if (parent) parent.children.push(item)
+    else roots.push(item)
+    stack.push(item)
+  }
+  return roots
+}
+
+function renderList(items: ListItem[]): string {
+  const first = items[0] as ListItem
+  // Models often separate numbered items with blank lines; keep counting instead of restarting at 1.
+  const open = first.ordered ? (first.start > 1 ? `<ol start="${first.start}">` : "<ol>") : "<ul>"
+  const body = items
+    .map((it) => `<li>${it.text.split("\n").map(inline).join("<br>")}${it.children.length ? renderList(it.children) : ""}</li>`)
+    .join("")
+  return `${open}${body}</${first.ordered ? "ol" : "ul"}>`
+}
+
 export function renderMarkdown(source: string): string {
   const lines = source.replace(/\r\n/g, "\n").split("\n")
   const out: string[] = []
@@ -56,17 +90,28 @@ export function renderMarkdown(source: string): string {
       )
       continue
     }
-    const list = /^\s*([-*]|\d+\.)\s+/.exec(line)
-    if (list) {
-      const ordered = /\d/.test(list[1] as string)
-      const items: string[] = []
-      while (i < lines.length && /^\s*([-*]|\d+\.)\s+/.test(lines[i] as string)) {
-        items.push((lines[i++] as string).replace(/^\s*([-*]|\d+\.)\s+/, "").replace(/^\[( |x)\]\s*/, (_, x) => (x === "x" ? "☑ " : "☐ ")))
+    if (LIST_ITEM.test(line)) {
+      const flat: ListItem[] = []
+      while (i < lines.length) {
+        const current = lines[i] as string
+        const item = LIST_ITEM.exec(current)
+        if (item) {
+          const marker = item[2] as string
+          flat.push({
+            indent: (item[1] as string).replace(/\t/g, "    ").length,
+            ordered: /\d/.test(marker),
+            start: Number.parseInt(marker, 10) || 1,
+            text: (item[3] as string).replace(/^\[( |x)\]\s*/, (_, x) => (x === "x" ? "☑ " : "☐ ")),
+            children: [],
+          })
+        } else if (flat.length && /^\s{2,}\S/.test(current)) {
+          // An indented line under an item continues it.
+          const last = flat.at(-1) as ListItem
+          last.text += `\n${current.trim()}`
+        } else break
+        i++
       }
-      // Models often separate numbered items with blank lines; keep counting instead of restarting at 1.
-      const start = ordered ? Number.parseInt(list[1] as string, 10) : 1
-      const open = ordered ? (start > 1 ? `<ol start="${start}">` : "<ol>") : "<ul>"
-      out.push(`${open}${items.map((it) => `<li>${inline(it)}</li>`).join("")}</${ordered ? "ol" : "ul"}>`)
+      out.push(renderList(nestItems(flat)))
       continue
     }
     if (!line.trim()) {
@@ -77,7 +122,8 @@ export function renderMarkdown(source: string): string {
     while (
       i < lines.length &&
       (lines[i] as string).trim() &&
-      !/^(#{1,4}\s|\s*([-*]|\d+\.)\s|\s*(`{3,}|~{3,}))/.test(lines[i] as string) &&
+      !/^(#{1,4}\s|\s*(`{3,}|~{3,}))/.test(lines[i] as string) &&
+      !LIST_ITEM.test(lines[i] as string) &&
       !isTableRow(lines[i] as string)
     ) {
       para.push(lines[i++] as string)

@@ -4,6 +4,7 @@ import type { PermissionMode } from "../../backends/Backend"
 import type { ProviderId } from "../../config/schema"
 import type { BackendStatus, ClientMessage, DelegationSummary, ProfileInfo, ServerMessage, WireEvent } from "../../server/protocol"
 import { escapeHtml, renderMarkdown } from "./markdown"
+import { notifyIfAway } from "./notify"
 import { createSettings } from "./settings"
 
 interface ServerInfo {
@@ -17,6 +18,7 @@ const promptBox = $<HTMLTextAreaElement>("prompt")
 const sendButton = $<HTMLButtonElement>("send")
 const permissionSelect = $<HTMLSelectElement>("permission")
 const profileSelect = $<HTMLSelectElement>("profile")
+const planSelect = $<HTMLSelectElement>("plan")
 const banner = $<HTMLDivElement>("banner")
 
 const PROVIDER_LABEL: Record<ProviderId, string> = { claude: "Claude", gemini: "Gemini", openai: "Codex" }
@@ -127,13 +129,36 @@ function renderProfiles(profiles: ProfileInfo[], defaultProfile: string | undefi
   profileSelect.title = profiles.find((p) => p.name === chosen)?.description ?? ""
 }
 
+/** Presets plus "as configured" (the config's own plan, or none); the choice is remembered per machine. */
+function renderPlans(plans: ProfileInfo[], configured: string | undefined) {
+  const saved = prefs.get("plan") ?? ""
+  planSelect.replaceChildren(new Option(configured ? "As configured" : "None set", ""))
+  ;(planSelect.options[0] as HTMLOptionElement).title = configured ?? "No plan: routing as configured, no plan-based limits"
+  for (const p of plans) {
+    const option = new Option(p.label, p.name)
+    option.title = p.description
+    planSelect.add(option)
+  }
+  planSelect.value = plans.some((p) => p.name === saved) ? saved : ""
+  planSelect.title = planSelect.selectedOptions[0]?.title ?? ""
+}
+
 function renderBackends(status: BackendStatus) {
   const box = $("backends")
   box.replaceChildren()
   for (const p of Object.keys(status.health) as ProviderId[]) {
     const h = status.health[p]
-    const chip = el("span", "chip", `<span class="dot ${h.healthy ? "ok" : "bad"}"></span>${PROVIDER_LABEL[p]}`)
-    chip.title = h.healthy ? `${status.executables[p]} ${h.version ?? ""}`.trim() : `${status.executables[p]}: ${h.reason ?? "unavailable"}`
+    const chip = el(
+      "span",
+      "chip",
+      `<span class="dot ${h.healthy ? "ok" : "bad"}"></span><span class="chip-name">${PROVIDER_LABEL[p]}</span>`,
+    )
+    const detail = h.healthy
+      ? `${status.executables[p]} ${h.version ?? ""}`.trim()
+      : `${status.executables[p]}: ${h.reason ?? "unavailable"}`
+    // The name hides on narrow windows, so the tooltip and the accessible name carry it too.
+    chip.title = `${PROVIDER_LABEL[p]}: ${detail}`
+    chip.setAttribute("aria-label", chip.title)
     box.append(chip)
   }
   if (!status.health.claude.healthy)
@@ -294,6 +319,7 @@ function approvalRequest(msg: Extract<ServerMessage, { type: "approval.request" 
   }
   append(card)
   ;(card.querySelector("button") as HTMLButtonElement).focus()
+  notifyIfAway("agent-router: approval needed", title)
 }
 
 // ── Server connection ───────────────────────────────────────────────────
@@ -310,6 +336,7 @@ function onMessage(msg: ServerMessage) {
     case "status":
       renderBackends(msg.backends)
       renderProfiles(msg.backends.profiles, msg.backends.defaultProfile)
+      renderPlans(msg.backends.plans, msg.backends.configuredPlan)
       return
     case "turn.started": {
       state.turnEl = el("section", "turn")
@@ -331,6 +358,7 @@ function onMessage(msg: ServerMessage) {
     case "turn.finished":
       state.turnEl?.querySelector(".status-line")?.remove()
       if (!msg.ok && msg.error) append(el("div", "error", escapeHtml(msg.error)))
+      notifyIfAway("agent-router", msg.ok ? "Your request is done." : `Stopped: ${(msg.error ?? "error").slice(0, 160)}`)
       setRunning(false)
       state.turnEl = undefined
       return
@@ -395,6 +423,7 @@ function submit() {
     workspace: state.workspace,
     permission: permissionSelect.value as PermissionMode,
     profile: profileSelect.value || undefined,
+    plan: planSelect.value || undefined,
   })
 }
 
@@ -430,6 +459,10 @@ permissionSelect.addEventListener("change", () => prefs.set("permission", permis
 profileSelect.addEventListener("change", () => {
   prefs.set("profile", profileSelect.value)
   profileSelect.title = profileSelect.selectedOptions[0]?.title ?? ""
+})
+planSelect.addEventListener("change", () => {
+  prefs.set("plan", planSelect.value)
+  planSelect.title = planSelect.selectedOptions[0]?.title ?? ""
 })
 showWorkspacePath(state.workspace)
 

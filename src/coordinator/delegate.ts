@@ -1,14 +1,20 @@
+import { execFile } from "node:child_process"
 import { existsSync } from "node:fs"
 import path from "node:path"
+import type { McpServerSpec } from "../backends/Backend"
 import type { BackendEvent } from "../backends/events"
 import { isPlaceholderModel, type ProviderId, type Tier } from "../config/schema"
+import { LSP_MCP_NAME } from "../lsp/mcp"
+import { installedServers } from "../lsp/servers"
 import { agentPromptPath, composeSystemPrompt, PROMPTS_DIR } from "../prompts/render"
-import { scopedAgentsMd } from "../prompts/scoped-rules"
+import { scopedRules } from "../prompts/scoped-rules"
 import { promptVars } from "../prompts/vars"
 import { estimateTokens } from "../router/classify"
 import { type Attempt, nextStep } from "../router/escalation"
 import { decide, type RouteDecision, type RouteRequest } from "../router/policy"
+import { SELF_ENTRY } from "../self"
 import { type CheckResult, runConfiguredChecks } from "./checks"
+import { checkEvidence, keepsEvidence, prepareEvidenceDir } from "./evidence"
 import { type Brief, parseReport, type Report, type RetryNote, renderBrief } from "./protocol"
 import type { Session } from "./session"
 import { checkReport, type Finding } from "./verify"
@@ -65,6 +71,55 @@ function describeFailure(attempt: AttemptRecord, text: string): string {
   return `Your report was rejected: ${attempt.message}\n\nReport received:\n${text.slice(0, 4000)}`
 }
 
+/**
+ * The code-navigation MCP server for a delegate working in `cwd`, when a language server for the
+ * project is installed. It runs this same program (`agent-router lsp-mcp`).
+ */
+export function lspServerSpec(session: Session, cwd: string): McpServerSpec | undefined {
+  if (!session.config.lsp.enabled) return undefined
+  const servers = installedServers(session.workspace, session.config.lsp.servers)
+  if (!servers.length) return undefined
+  const languages = [...new Set(servers.flatMap((s) => s.extensions))].join(" ")
+  return {
+    name: LSP_MCP_NAME,
+    command: SELF_ENTRY.runtime,
+    // A worktree has no node_modules of its own: servers are found where detection found them.
+    args: [...(SELF_ENTRY.script ? [SELF_ENTRY.script] : []), "lsp-mcp", "--workspace", cwd, "--tools-root", session.workspace],
+    note: `You have code-navigation tools from a language server (MCP server "${LSP_MCP_NAME}") for ${languages} files: diagnostics (type errors in a file), definition, references (line and column are 1-based) and symbols (a file's outline). Prefer them to grep for finding where something is defined or used, and run diagnostics on each file you edit before reporting.`,
+  }
+}
+
+/** Sent into a stopped delegate's own session (same backend, same tier) instead of starting over. */
+export function nudgeMessage(trip: WatchdogTrip, stallSeconds: number): string {
+  const why =
+    trip.kind === "stalled"
+      ? `The harness stopped your last step: there was no output for ${stallSeconds} s. A command was most likely waiting for input, or never finishing. Do not run it again the same way: add non-interactive flags or a timeout, or do without it.`
+      : `The harness stopped you: you ${trip.message}. Repeating it will not give a different result. Change your approach.`
+  return `${why}\n\nContinue the task from where you are; your earlier work in this session still counts. When you are done, or cannot go further, reply with the report in the required format (## Status, ## Result, ## Changes, ## Evidence, ## Confidence, ## Open questions / risks).`
+}
+
+/** `git status --porcelain` lines, or none if this is not a repository (or git is slow or missing). */
+function gitChanges(cwd: string): Promise<Set<string>> {
+  return new Promise((resolve) => {
+    execFile("git", ["status", "--porcelain"], { cwd, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) =>
+      resolve(new Set(error ? [] : stdout.split("\n").filter((l) => l.trim() && !l.includes(".harness/")))),
+    )
+  })
+}
+
+async function changedSince(cwd: string, before: Promise<Set<string>>): Promise<string[]> {
+  const [then, now] = await Promise.all([before, gitChanges(cwd)])
+  return [...now].filter((line) => !then.has(line))
+}
+
+/** What a fresh session needs after the previous one filled its context mid-task. */
+function contextRestartNote(changed: string[], toolCalls: number): string {
+  const files = changed.length
+    ? `Files changed in the working tree during this task (keep this work; check it rather than redoing it):\n${changed.slice(0, 50).join("\n")}`
+    : "No files were changed yet."
+  return `The previous session ran out of context window after ${toolCalls} tool calls, so this is a fresh session on the same backend. ${files}\n\nRead only the parts of files you need (line ranges, grep), not whole large files.`
+}
+
 /** Run one subtask through routing, the backend, and the escalation ladder (conductor.md §2 steps 3–5). */
 export async function delegate(session: Session, req: DelegateRequest): Promise<DelegateResult> {
   const brief = req.brief
@@ -119,7 +174,22 @@ async function runLadder(
   let report: Report | undefined
   let stopReason = ""
   const timeoutMs = session.config.limits.delegate_timeout_seconds * 1000
-  const directoryRules = scopedAgentsMd(session.workspace, req.brief.relevant_files)
+  const maxAttempts = session.config.escalation.max_attempts_per_subtask
+  // Set for one attempt when it continues the previous session with a short message instead of the brief.
+  let followUp: string | undefined
+  let nudged = false
+  let restarted = false
+  const startedAt = Date.now()
+  // What was already uncommitted, so a restarted delegate is not told the user's own edits are its work.
+  const before = gitChanges(cwd)
+  const lsp = lspServerSpec(session, cwd)
+  if (req.brief.mode !== "read-only") {
+    try {
+      prepareEvidenceDir(cwd)
+    } catch {
+      // A read-only checkout: the delegate cannot save receipts either, and checkEvidence says so.
+    }
+  }
 
   for (;;) {
     const rawModel = session.config.backends[provider].tiers[tier]
@@ -127,6 +197,17 @@ async function runLadder(
     const backend = session.backends[provider]
     const system = composeSystemPrompt(agentPromptPath(agent), promptVars(session, model))
     const attempt: AttemptRecord = { provider, tier, model, outcome: "ok" }
+    let toolCalls = 0
+    const prompt =
+      followUp ??
+      renderBrief(
+        req.brief,
+        cwd,
+        retryNotes,
+        scopedRules(session.workspace, req.brief.relevant_files, provider),
+        keepsEvidence(req.brief.mode, provider),
+      )
+    followUp = undefined
     text = ""
     report = undefined
 
@@ -148,8 +229,8 @@ async function runLadder(
       })
 
       try {
-        for await (const event of backend.run({
-          prompt: renderBrief(req.brief, cwd, retryNotes, directoryRules),
+        const events = backend.run({
+          prompt,
           systemPrompt: system.text,
           model,
           reasoning: session.config.backends[provider].reasoning[tier],
@@ -161,10 +242,13 @@ async function runLadder(
           signal: attemptAbort.signal,
           reportGate: true,
           allowedCommands: session.config.checks.commands,
-        })) {
+          mcpServers: lsp ? [lsp] : [],
+        })
+        for await (const event of events) {
           watchdog.observe(event)
           req.onEvent?.(provider, event)
           if (event.type === "session") attempt.sessionId = event.sessionId
+          else if (event.type === "tool_call") toolCalls += 1
           else if (event.type === "usage") {
             costUsd += event.usage.costUsd ?? 0
             tokens.input += event.usage.inputTokens
@@ -176,6 +260,11 @@ async function runLadder(
             attempt.message = event.error.message
           }
         }
+      } catch (error) {
+        // An adapter that throws (bad arguments, a broken parser) is a failed attempt the ladder can move past.
+        attempt.outcome = "backend_error"
+        attempt.errorKind = "failed"
+        attempt.message = `${provider} adapter error: ${(error as Error).message}`
       } finally {
         watchdog.stop()
         req.signal?.removeEventListener("abort", onCancel)
@@ -204,11 +293,30 @@ async function runLadder(
     else session.health.recordSuccess(provider)
     attempts.push(attempt)
 
+    // Before the ladder: two failures where the delegate's own work is worth keeping.
+    // Never on the last attempt but one: like the ladder, keep a rung for another backend.
+    const canContinue = !req.signal?.aborted && attempts.length + 1 < maxAttempts
+    if (canContinue && !nudged && attempt.sessionId && backend.supportsResume && (trip?.kind === "stalled" || trip?.kind === "tool_loop")) {
+      // A stalled delegate usually sits on a command waiting for input; its session still holds its progress.
+      nudged = true
+      resumeSessionId = attempt.sessionId
+      followUp = nudgeMessage(trip, session.config.limits.delegate_stall_seconds)
+      continue
+    }
+    if (canContinue && !restarted && attempt.errorKind === "context_overflow" && toolCalls > 0) {
+      // It filled its context while working, so the brief fits: a fresh session on the same backend
+      // can carry on from the files it already changed. A brief too large to start with goes up the ladder.
+      restarted = true
+      resumeSessionId = undefined
+      retryNotes.push({ attempt: attempts.length, provider, problem: contextRestartNote(await changedSince(cwd, before), toolCalls) })
+      continue
+    }
+
     const step = nextStep({
       history: attempts,
       candidates: decision.candidates,
       pinned: decision.pinned,
-      maxAttempts: session.config.escalation.max_attempts_per_subtask,
+      maxAttempts,
     })
     if (step.action === "stop") {
       stopReason = step.reason
@@ -224,7 +332,10 @@ async function runLadder(
 
   const last = attempts.at(-1) as AttemptRecord
   const usable = last.outcome === "ok" || last.outcome === "blocked"
-  const findings = usable && report ? checkReport(report, req.brief) : []
+  const findings =
+    usable && report
+      ? [...checkReport(report, req.brief), ...checkEvidence(report, cwd, req.brief.mode, attempts.at(-1)?.provider ?? provider, startedAt)]
+      : []
   let checks: CheckResult[] = []
   if (usable && req.brief.mode === "edit" && (report?.status === "done" || report?.status === "partial")) {
     const ran = await runConfiguredChecks(

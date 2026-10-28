@@ -65,5 +65,10 @@ function itemEvents(phase: unknown, item: Record<string, unknown> | undefined, o
   if (item.type === "file_change" && phase === "item.completed") {
     return [{ type: "tool_call", name: "file_change", input: item.changes }]
   }
+  if (item.type === "mcp_tool_call") {
+    // Named the way Claude Code names MCP tools, so the app and the watchdog treat both alike.
+    if (phase === "item.started") return [{ type: "tool_call", name: `mcp__${item.server}__${item.tool}`, input: item.arguments }]
+    if (phase === "item.completed") return [{ type: "tool_result", ok: item.status === "completed" && !item.error }]
+  }
   return []
 }

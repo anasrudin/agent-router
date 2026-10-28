@@ -22,6 +22,7 @@ src/
   conductor/        Conductor launch: system prompt, MCP config, hook settings
   coordinator/      one delegation: attempts, watchdog, report protocol, checks, ledger, worktrees
   hooks/            Claude Code hook handlers
+  lsp/              lsp-mcp: LSP client, MCP tools, language-server selection
   mcp/              router MCP server
   prompts/          prompt rendering, directory AGENTS.md rules
   router/           classify, decide, escalation ladder, health
@@ -40,6 +41,7 @@ Tests sit next to the code in `__tests__/` folders and run with `bun test`. No t
 - **Processes:** `fixtures/fake-cli.mjs` stands in for a CLI. It can print lines, hang, spawn grandchildren and ignore SIGTERM, which tests the process-tree kill and timeouts.
 - **Delegation:** `src/test-support.ts` provides scripted backends. A scripted result can be a report, an error, `{ hang: true }` (for the watchdog's stall timer) or `{ loop: n, text }` (n identical tool calls). `testSession(backends, patch, permission)` builds a session around them.
 - **MCP:** `src/mcp/__tests__/` drives the server over the SDK's in-memory transport, including background jobs.
+- **LSP:** `src/lsp/__tests__/fixtures/fake-lsp.mjs` is a small language server (push or pull diagnostics), so the `lsp-mcp` tools are tested without installing real servers.
 
 The process tests depend on timing. If one fails only under load, run it alone before changing code.
 
@@ -58,6 +60,11 @@ Checked on Claude Code 2.1.312, Gemini CLI 0.66.0 and Codex CLI 0.165.0. Recheck
 - Under `dontAsk`, Claude Code refuses a compound command or redirection whose extra part is not allowed.
 - `--settings <file>` accepts hooks in headless runs. Stop hook input includes `last_assistant_message`, `stop_hook_active` and `session_id`, and `{"decision":"block","reason":…}` continues the turn.
 - `/compact` works headless (`-p --resume`) and fires `SessionStart` with `source: "compact"`. Its `additionalContext` reaches the next turn.
+- Claude Code loads `.claude/rules/*.md` itself in headless runs, including path-scoped rules.
+- `PostToolUseFailure` hooks fire for failed Bash commands. An Edit whose old text is missing or not unique is rejected before any hook (`PreToolUse` included), so no hook can react to it.
+- Codex runs MCP tools in `exec` only when they are annotated `readOnlyHint: true`; otherwise "MCP tool call requires approval, but approval policy is never". Its `--json` stream reports them as `mcp_tool_call` items.
+- TypeScript 7 has no `tsserver.js`, so `typescript-language-server` cannot drive it; `tsc --lsp --stdio` is its language server and only supports pull diagnostics.
+- Claude Code refuses long `sleep` commands on its own.
 - Gemini runs headless only in trusted folders.
 - The harness never reads or writes a CLI's credential store. Sign-in is each CLI's job.
 

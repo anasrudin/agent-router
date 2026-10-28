@@ -11,6 +11,7 @@ import { geminiArgs } from "../gemini"
 import { createGeminiParser } from "../gemini/parse"
 import { codexArgs, parseCodexModels } from "../openai"
 import { createCodexParser } from "../openai/parse"
+import { buildInvocation } from "../process"
 
 const FIXTURES = path.join(import.meta.dir, "fixtures")
 
@@ -98,6 +99,14 @@ describe("codex exec --json (recorded 0.165.0)", () => {
     expect(events).toContainEqual({ type: "usage", usage: { inputTokens: 25818, outputTokens: 40 } })
     expect(terminal(events)).toEqual([{ type: "done", text: "hello" }])
   })
+
+  test("MCP tool calls are tool calls, named as Claude Code names them", () => {
+    const events = replay(createCodexParser(), "codex-mcp.jsonl")
+    expect(events).toEqual([
+      { type: "tool_call", name: "mcp__lsp__symbols", input: { file: "src/math.ts" } },
+      { type: "tool_result", ok: true },
+    ])
+  })
 })
 
 describe("argument mapping", () => {
@@ -120,6 +129,16 @@ describe("argument mapping", () => {
     expect(edit.slice(edit.indexOf("--disallowedTools") + 1)).not.toContain("Edit")
     expect(edit).toEqual(expect.arrayContaining(["--disallowedTools", "Agent", "Task"]))
   })
+  test("claude: attached MCP servers come from our config only, and their tools are allowed without asking", () => {
+    const opts = { ...base, mcpServers: [{ name: "lsp", command: "bun", args: [], note: "n" }] }
+    const ro = claudeArgs(opts, undefined, [], undefined, "/tmp/mcp.json")
+    expect(ro).toEqual(expect.arrayContaining(["--strict-mcp-config", "--mcp-config", "/tmp/mcp.json"]))
+    expect(ro.slice(ro.indexOf("--allowedTools"), ro.indexOf("--disallowedTools"))).toContain("mcp__lsp")
+    const edit = claudeArgs({ ...opts, mode: "edit", permission: "acceptEdits" }, undefined, [], undefined, "/tmp/mcp.json")
+    expect(edit.slice(edit.indexOf("--allowedTools"), edit.indexOf("--disallowedTools"))).toContain("mcp__lsp")
+    expect(claudeArgs(base, undefined, [])).not.toContain("--mcp-config")
+  })
+
   test("claude edit (accept edits) may run the project's configured checks, and nothing broader", () => {
     const args = claudeArgs({ ...base, mode: "edit", allowedCommands: ["node --test", "npm run lint", "make $(evil)"] }, undefined, [])
     expect(args).toEqual(
@@ -147,6 +166,14 @@ describe("argument mapping", () => {
     expect(codexArgs({ ...base, mode: "edit" }, [])).toEqual(expect.arrayContaining(["--sandbox", "workspace-write"]))
     expect(codexArgs({ ...base, mode: "edit", permission: "bypass" }, [])).toContain("--dangerously-bypass-approvals-and-sandbox")
     expect(codexArgs(base, []).at(-1)).toBe("-")
+    const lsp = { name: "lsp", command: "C:\\bun.exe", args: ["cli.ts", "lsp-mcp"], note: "n" }
+    const mcp = codexArgs({ ...base, mcpServers: [lsp] }, [])
+    expect(mcp).toEqual(
+      expect.arrayContaining(["-c", "mcp_servers.lsp.command='C:\\bun.exe'", "-c", "mcp_servers.lsp.args=['cli.ts','lsp-mcp']"]),
+    )
+    // Literal strings: nothing cmd.exe would refuse when codex is an npm .cmd shim.
+    expect(() => buildInvocation("C:\\npm\\codex.cmd", mcp, "win32")).not.toThrow()
+    expect(codexArgs({ ...base, mcpServers: [{ ...lsp, args: ["it's"] }] }, []).join(" ")).not.toContain("mcp_servers")
   })
   test("gemini approval follows mode; model omitted when placeholder; streams JSON", () => {
     expect(geminiArgs(base, [])).toEqual(expect.arrayContaining(["--approval-mode", "default", "--output-format", "stream-json"]))
