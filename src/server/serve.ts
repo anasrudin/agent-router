@@ -8,7 +8,9 @@ import { describePlan, PLAN_PRESETS } from "../config/plans"
 import { PROVIDERS, type ProviderId, type RoutingConfig } from "../config/schema"
 import { checkpointDiff, revertCheckpoint } from "../coordinator/checkpoints"
 import { newLedgerPath } from "../coordinator/ledger"
+import { applyWorktree, previewMerge, removeDelegateWorktree } from "../coordinator/merge"
 import { Session } from "../coordinator/session"
+import { describePreview } from "../mcp/server"
 import { type Overrides, parseOverrides, ULTRAWORK_NOTE } from "../router/classify"
 import { QuotaTracker } from "../router/quota"
 import { toWire } from "./bridge"
@@ -354,6 +356,27 @@ export function startServer(opts: ServeOptions) {
           .catch((e: unknown) =>
             reply(socket, { type: "thread.reverted", requestId: msg.requestId, ok: false, message: errorText(e), files: [] }),
           )
+        return
+      case "worktree.action":
+        Promise.resolve()
+          .then((): ServerMessage => {
+            const ws = assertDirectory(msg.workspace)
+            if (msg.action === "preview") {
+              const preview = previewMerge(ws, msg.worktree)
+              return { type: "worktree.result", requestId: msg.requestId, ok: true, message: describePreview(preview), preview }
+            }
+            const r = msg.action === "apply" ? applyWorktree(ws, msg.worktree) : removeDelegateWorktree(ws, msg.worktree, msg.force)
+            if (r.ok) {
+              pendingNotes.push(
+                msg.action === "apply"
+                  ? `The user applied the worktree of thread "${msg.title}" to the workspace (uncommitted).`
+                  : `The user removed the worktree of thread "${msg.title}" (${msg.worktree}).`,
+              )
+            }
+            return { type: "worktree.result", requestId: msg.requestId, ok: r.ok, message: r.message }
+          })
+          .then((m) => reply(socket, m))
+          .catch((e: unknown) => reply(socket, { type: "worktree.result", requestId: msg.requestId, ok: false, message: errorText(e) }))
         return
       case "queue.remove":
         queue.remove(msg.id)
