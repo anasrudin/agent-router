@@ -13,7 +13,9 @@ import type {
   WireEvent,
   WorktreePreview,
 } from "../../server/protocol"
+import { closePopovers, installTooltips, popover } from "./chrome"
 import { type DiffFile, formatReview, parseUnifiedDiff, type ReviewComment } from "./diff"
+import { agentLogoSvg } from "./icons"
 import { escapeHtml, renderMarkdown, resultLine } from "./markdown"
 import { notifyIfAway } from "./notify"
 import { type Answer, formatAnswers, letter, type QuestionForm, splitQuestions } from "./questions"
@@ -56,6 +58,8 @@ const state = {
   workspace: prefs.get("workspace") ?? "",
   running: false,
   turnEl: undefined as HTMLElement | undefined,
+  /** This turn's "Worked for" fold: Conductor's own work, folded once the turn ends. */
+  fold: undefined as { el: HTMLDetailsElement; body: HTMLElement; started: number; tools: number } | undefined,
   threads: new Map<string, Thread>(),
   /** The thread open in the detail panel; undefined shows Conductor's chat alone. */
   selected: undefined as string | undefined,
@@ -101,7 +105,10 @@ function addUsage(usd: number | undefined, input = 0, output = 0) {
   state.tokensIn += input
   state.tokensOut += output
   const cost = $("cost")
-  cost.textContent = `$${state.costUsd.toFixed(4)} · ${compact(state.tokensIn + state.tokensOut)} tokens`
+  cost.replaceChildren(
+    Object.assign(el("span"), { textContent: `$${state.costUsd.toFixed(4)}` }),
+    Object.assign(el("span"), { textContent: `${compact(state.tokensIn + state.tokensOut)} tokens` }),
+  )
   cost.title = `Reported this session: $${state.costUsd.toFixed(4)}, ${state.tokensIn.toLocaleString()} input (cache reads included) and ${state.tokensOut.toLocaleString()} output tokens. Gemini and Codex do not report cost.`
 }
 
@@ -171,11 +178,9 @@ function showWorkspacePath(dir: string) {
   const label = $("workspace-path")
   label.replaceChildren()
   label.classList.toggle("is-path", Boolean(dir))
-  if (dir) {
-    label.textContent = dir.split(/[\\/]/).filter(Boolean).pop() ?? dir
-  } else {
-    label.textContent = "Choose a folder…"
-  }
+  const name = dir ? (dir.split(/[\\/]/).filter(Boolean).pop() ?? dir) : ""
+  label.textContent = name || "Choose a folder…"
+  $("crumb-workspace").textContent = name || "No folder"
   $("workspace").title = dir || "Choose the project folder Conductor works in"
 }
 
@@ -190,6 +195,7 @@ function renderProfiles(profiles: ProfileInfo[], defaultProfile: string | undefi
   const chosen = profiles.find((p) => p.name === saved)?.name ?? defaultProfile ?? profiles[0]?.name ?? ""
   profileSelect.value = chosen
   profileSelect.title = profiles.find((p) => p.name === chosen)?.description ?? ""
+  renderModeSummary()
 }
 
 /** Presets plus "as configured" (the config's own plan, or none); the choice is remembered per machine. */
@@ -204,6 +210,7 @@ function renderPlans(plans: ProfileInfo[], configured: string | undefined) {
   }
   planSelect.value = plans.some((p) => p.name === saved) ? saved : ""
   planSelect.title = planSelect.selectedOptions[0]?.title ?? ""
+  renderModeSummary()
 }
 
 /** "5h 72%, resets Sat 14:10" */
@@ -270,11 +277,51 @@ function describeTool(input: unknown): string {
   return String(detail)
 }
 
+/** The turn's fold, created with Conductor's first tool call (Ghostex: one per turn, its work collapsed). */
+function turnFold() {
+  if (state.fold) return state.fold
+  const fold = document.createElement("details")
+  fold.className = "turn-fold"
+  fold.open = true
+  const summary = document.createElement("summary")
+  const body = el("div", "fold-body")
+  fold.append(summary, body)
+  append(fold)
+  state.fold = { el: fold, body, started: Date.now(), tools: 0 }
+  renderFoldSummary(false)
+  return state.fold
+}
+
+function renderFoldSummary(done: boolean) {
+  const f = state.fold
+  if (!f) return
+  const summary = f.el.querySelector("summary") as HTMLElement
+  const secs = Math.max(1, Math.round((Date.now() - f.started) / 1000))
+  summary.replaceChildren(
+    ...(done ? [] : [el("span", "spinner")]),
+    Object.assign(el("span", "fold-title"), {
+      textContent: done ? `Worked for ${secs < 60 ? `${secs}s` : `${Math.round(secs / 60)}m`}` : "Working",
+    }),
+    Object.assign(el("span", "count-pill"), { textContent: `${f.tools} tool call${f.tools === 1 ? "" : "s"}` }),
+  )
+}
+
+/** At the turn's end: fold the work away and keep the final reply below it, where it is read. */
+function closeFold() {
+  const f = state.fold
+  if (!f) return
+  const last = f.body.lastElementChild
+  if (last?.classList.contains("md") && state.turnEl) state.turnEl.append(last)
+  renderFoldSummary(true)
+  f.el.open = false
+  state.fold = undefined
+}
+
 function conductorEvent(event: WireEvent) {
   switch (event.type) {
     case "text":
       for (const seg of splitQuestions(event.text)) {
-        if (seg.kind === "markdown") append(el("div", "md", renderMarkdown(seg.text)))
+        if (seg.kind === "markdown") append(el("div", "md", renderMarkdown(seg.text)), state.fold?.body ?? state.turnEl ?? log)
         else {
           append(renderQuestionForm(seg.form))
           notifyIfAway("agent-router: Conductor has questions", seg.form.title ?? seg.form.questions[0]?.question ?? "")
@@ -287,7 +334,10 @@ function conductorEvent(event: WireEvent) {
       const label = TOOL_LABELS[event.name] ?? event.name.replace(/^mcp__[^_]+__/, "")
       const line = el("div", "tool mono", `<span class="name">${escapeHtml(label)}</span><span class="tool-detail"></span>`)
       ;(line.querySelector(".tool-detail") as HTMLElement).textContent = describeTool(event.input)
-      append(line)
+      const fold = turnFold()
+      fold.tools += 1
+      renderFoldSummary(false)
+      append(line, fold.body)
       return
     }
     case "usage":
@@ -396,10 +446,10 @@ interface Thread {
   startedAt: number
   finishedAt?: number
   tokens: number
-  activity: string[]
+  activity: { who: string; text: string }[]
   summary?: DelegationSummary
   error?: string
-  /** The row in this turn's Threads card. */
+  /** The thread's one-line card in the transcript. */
   chatRow?: HTMLElement
   /** The thread's diff between its checkpoints, once loaded. */
   diff?: { files: DiffFile[]; truncated: boolean; error?: string }
@@ -422,7 +472,6 @@ interface Thread {
   }
 }
 
-const PROVIDER_GLYPH: Record<ProviderId, string> = { claude: "C", gemini: "G", openai: "X" }
 const threadsNav = $<HTMLElement>("threads")
 const detail = $<HTMLElement>("detail")
 
@@ -448,15 +497,28 @@ function statusText(t: Thread): string {
 }
 
 function glyph(provider: ProviderId): HTMLElement {
-  const g = el("span", `glyph ${provider}`)
-  g.textContent = PROVIDER_GLYPH[provider]
+  const g = el("span", `glyph ${provider}`, agentLogoSvg(provider))
   g.title = PROVIDER_LABEL[provider]
   return g
 }
 
+const PEOPLE_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5.5" cy="5.5" r="2" /><circle cx="11" cy="6" r="1.6" /><path d="M1.8 13a3.7 3.7 0 0 1 7.4 0M9.5 12.5a3 3 0 0 1 5 0" /></svg>`
+const STATUS_WORDS: Record<string, string> = {
+  running: "Working",
+  done: "Done",
+  partial: "Partly done",
+  blocked: "Needs you",
+  error: "Error",
+  failed: "Failed",
+}
+
 function statusMark(status: string): HTMLElement {
+  // A dot that carries live state; its word is in the tooltip and the accessible name.
   const mark = el("span", `mark s-${status}`)
-  mark.setAttribute("aria-label", status)
+  const word = STATUS_WORDS[status] ?? status
+  mark.title = word
+  mark.setAttribute("role", "img")
+  mark.setAttribute("aria-label", word)
   return mark
 }
 
@@ -467,24 +529,24 @@ function renderSidebar() {
   const head = el("div", `tree-row conductor${state.selected ? "" : " selected"}`)
   head.innerHTML = `<svg class="crown" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12.5h12M2.5 11 1.8 5l3.6 2.6L8 3l2.6 4.6L14.2 5l-.7 6z" /></svg><span class="row-title"></span>`
   ;(head.querySelector(".row-title") as HTMLElement).textContent = state.chatTitle
-  if (state.running) head.append(el("span", "spinner"))
-  if (list.length) head.append(el("span", "row-count", `${list.length}`))
+  if (list.length) {
+    // The crew badge: people and a count, as Ghostex marks a coordinator's threads.
+    const count = el("span", "row-count", `${PEOPLE_ICON}<span>${list.length}</span>`)
+    count.title = `${list.length} thread${list.length > 1 ? "s" : ""}`
+    head.append(count)
+  }
+  if (state.running) head.append(statusMark("running"))
   head.addEventListener("click", () => selectThread(undefined))
   threadsNav.append(head)
   for (const t of list) {
     const row = el("button", `tree-row thread${state.selected === t.id ? " selected" : ""}`) as HTMLButtonElement
     row.type = "button"
-    row.title = `${t.agent} · ${t.taskClass}\n${t.task}`
+    row.title = `${t.agent}, ${t.taskClass}\n${t.task}`
     const title = el("span", "row-title")
     title.textContent = taskTitle(t.task)
     const tail = el("span", "row-age")
     tail.textContent = age(t.startedAt, t.finishedAt)
-    row.append(
-      glyph(t.provider),
-      title,
-      t.summary || t.error ? statusMark(t.error ? "error" : (t.summary?.status ?? "")) : el("span", "spinner"),
-      tail,
-    )
+    row.append(glyph(t.provider), title, statusMark(t.error ? "error" : (t.summary?.status ?? "running")), tail)
     row.addEventListener("click", () => selectThread(t.id))
     threadsNav.append(row)
   }
@@ -500,30 +562,65 @@ function taskTitle(task: string): string {
   return first.length > 60 ? `${first.slice(0, 57)}…` : first.replace(/\.$/, "")
 }
 
-/** This turn's Threads card, created with the turn's first delegation. */
-function threadsCard(): HTMLElement {
-  const turn = state.turnEl ?? log
-  let card = turn.querySelector<HTMLElement>(":scope > .threads-card")
-  if (!card) {
-    card = el("article", "threads-card")
-    card.innerHTML = `<header><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="5" r="2" /><circle cx="11" cy="5" r="2" /><path d="M1.5 13a3.5 3.5 0 0 1 7 0M7.5 13a3.5 3.5 0 0 1 7 0" /></svg><span>Threads</span><span class="count muted"></span></header><div class="rows"></div>`
-    append(card)
-  }
-  return card
+const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+
+/**
+ * A delegation in the transcript: one line, like Ghostex's "Message to" cards. The agent's mark,
+ * who ran it and its task, the time, and a status pill; it opens the thread.
+ */
+function renderAgentCard(t: Thread) {
+  if (!t.chatRow) return
+  const status = t.error ? "error" : (t.summary?.status ?? "running")
+  const who = el("span", "card-who")
+  who.append(
+    Object.assign(el("strong"), { textContent: t.agent.charAt(0).toUpperCase() + t.agent.slice(1) }),
+    Object.assign(el("span", "muted"), { textContent: ` on ${PROVIDER_LABEL[t.provider]}` }),
+  )
+  const pill = el("span", `pill ${status}`)
+  pill.textContent = STATUS_WORDS[status] ?? status
+  t.chatRow.replaceChildren(
+    glyph(t.provider),
+    who,
+    Object.assign(el("span", "card-task"), { textContent: taskTitle(t.task) }),
+    Object.assign(el("span", "card-time muted"), { textContent: clock(t.startedAt) }),
+    pill,
+  )
+  t.chatRow.title = statusText(t)
 }
 
-function renderChatRow(t: Thread) {
-  if (!t.chatRow) return
-  const row = t.chatRow
-  row.replaceChildren(
-    t.summary || t.error ? statusMark(t.error ? "error" : (t.summary?.status ?? "")) : el("span", "spinner"),
-    Object.assign(el("span", "row-name"), { textContent: taskTitle(t.task) }),
-    Object.assign(el("span", "row-status"), { textContent: statusText(t) }),
-  )
-  const card = row.closest(".threads-card")
-  if (card) {
-    const n = card.querySelectorAll(".rows > *").length
-    ;(card.querySelector(".count") as HTMLElement).textContent = `${n} thread${n > 1 ? "s" : ""}`
+/** The Threads pill above the composer: the count, the most urgent state, and a menu of this chat's threads. */
+const URGENCY = ["blocked", "error", "failed", "partial", "running", "done"]
+
+function renderThreadsPill() {
+  const list = [...state.threads.values()]
+  const pill = $<HTMLButtonElement>("threads-pill")
+  pill.hidden = list.length === 0
+  if (!list.length) {
+    closePopovers()
+    return
+  }
+  const statuses = list.map((t) => (t.error ? "error" : (t.summary?.status ?? "running")))
+  const top = URGENCY.find((s) => statuses.includes(s)) ?? "done"
+  $("threads-pill-dot").className = `mark s-${top}`
+  const running = statuses.filter((s) => s === "running").length
+  $("threads-pill-count").textContent = running ? `${running} of ${list.length} working` : String(list.length)
+  const menu = $("threads-menu")
+  menu.replaceChildren()
+  for (const t of list) {
+    const row = el("button", "menu-row") as HTMLButtonElement
+    row.type = "button"
+    row.setAttribute("role", "menuitem")
+    const text = el("span", "menu-text")
+    text.append(
+      Object.assign(el("span", "menu-title"), { textContent: taskTitle(t.task) }),
+      Object.assign(el("span", "menu-detail"), { textContent: statusText(t) }),
+    )
+    row.append(statusMark(t.error ? "error" : (t.summary?.status ?? "running")), glyph(t.provider), text)
+    row.addEventListener("click", () => {
+      closePopovers()
+      selectThread(t.id)
+    })
+    menu.append(row)
   }
 }
 
@@ -866,7 +963,7 @@ function renderDetail() {
   if (!t) return
   const g = $("detail-glyph")
   g.className = `glyph ${t.provider}`
-  g.textContent = PROVIDER_GLYPH[t.provider]
+  g.innerHTML = agentLogoSvg(t.provider)
   $("detail-title").textContent = taskTitle(t.task)
   const body = $("detail-body")
   body.replaceChildren()
@@ -874,14 +971,26 @@ function renderDetail() {
   const status = t.error ? "error" : (t.summary?.status ?? "running")
   const meta = el("div", "detail-meta")
   const pill = el("span", `pill ${status}`)
-  pill.textContent = status
-  const badge = el("span", `badge ${t.provider}`)
-  badge.textContent = `${PROVIDER_LABEL[t.provider]} · ${t.summary?.model ?? t.model ?? "default model"} · ${t.summary?.tier ?? t.tier}`
-  const facts = el("span", "muted")
-  const cost = t.summary?.costUsd ? ` · $${t.summary.costUsd.toFixed(4)}` : ""
-  facts.textContent = `${t.agent} · ${t.taskClass} · ${t.mode} · ${compact(t.tokens)} tokens${cost} · ${age(t.startedAt, t.finishedAt)}`
-  meta.append(pill, badge, facts)
+  pill.textContent = STATUS_WORDS[status] ?? status
+  const badge = el("span", `badge ${t.provider}`, agentLogoSvg(t.provider))
+  badge.append(
+    Object.assign(el("span"), {
+      textContent: `${PROVIDER_LABEL[t.provider]} ${t.summary?.model ?? t.model ?? "default model"}, ${t.summary?.tier ?? t.tier}`,
+    }),
+  )
+  meta.append(pill, badge)
   body.append(meta)
+  // Each fact its own item, spaced apart, rather than joined by middle dots.
+  const facts = el("div", "facts-row")
+  for (const fact of [
+    `${t.agent}, ${t.taskClass}, ${t.mode}`,
+    `${compact(t.tokens)} tokens`,
+    ...(t.summary?.costUsd ? [`$${t.summary.costUsd.toFixed(4)}`] : []),
+    age(t.startedAt, t.finishedAt),
+  ]) {
+    facts.append(Object.assign(el("span"), { textContent: fact }))
+  }
+  body.append(facts)
 
   const section = (title: string, node: HTMLElement) => {
     const s = el("section", "detail-section")
@@ -919,14 +1028,19 @@ function renderDetail() {
   }
   if (t.activity.length) {
     const list = el("ul", "activity mono")
-    for (const line of t.activity) list.append(Object.assign(el("li"), { textContent: line }))
+    for (const line of t.activity) {
+      const li = el("li")
+      li.append(Object.assign(el("span", "who"), { textContent: line.who }), document.createTextNode(line.text))
+      list.append(li)
+    }
     section("Activity", list)
     list.scrollTop = list.scrollHeight
   }
 }
 
 function refreshThread(t: Thread) {
-  renderChatRow(t)
+  renderAgentCard(t)
+  renderThreadsPill()
   renderSidebar()
   if (state.selected === t.id) renderDetail()
 }
@@ -947,11 +1061,10 @@ function delegationStarted(msg: Extract<ServerMessage, { type: "delegation.start
     activity: [],
     comments: [],
   }
-  const card = threadsCard()
-  const row = el("button", "thread-row") as HTMLButtonElement
+  const row = el("button", "agent-card") as HTMLButtonElement
   row.type = "button"
   row.addEventListener("click", () => selectThread(t.id))
-  ;(card.querySelector(".rows") as HTMLElement).append(row)
+  append(row)
   t.chatRow = row
   state.threads.set(t.id, t)
   refreshThread(t)
@@ -969,9 +1082,9 @@ function delegationEvent(msg: Extract<ServerMessage, { type: "delegation.event" 
     t.tokens += ev.inputTokens + ev.outputTokens
     t.provider = msg.provider
   } else if (ev.type === "tool_call") {
-    t.activity.push(`${PROVIDER_LABEL[msg.provider]} · ${ev.name} ${describeTool(ev.input)}`)
+    t.activity.push({ who: PROVIDER_LABEL[msg.provider], text: `${ev.name} ${describeTool(ev.input)}` })
   } else if (ev.type === "error") {
-    t.activity.push(`${PROVIDER_LABEL[msg.provider]} · ${ev.kind}: ${ev.message}`)
+    t.activity.push({ who: PROVIDER_LABEL[msg.provider], text: `${ev.kind}: ${ev.message}` })
   } else return
   if (msg.provider !== t.provider) t.provider = msg.provider
   if (state.selected === t.id) renderDetail()
@@ -998,6 +1111,7 @@ function delegationFailed(id: string, error: string) {
 
 function clearThreads() {
   state.threads.clear()
+  renderThreadsPill()
   state.chatTitle = ""
   selectThread(undefined)
   $("chat-title").textContent = "Conductor"
@@ -1079,7 +1193,7 @@ function onMessage(msg: ServerMessage) {
         el(
           "div",
           "status-line",
-          `<span class="spinner"></span><span>${msg.resumed ? "Continuing the conversation" : "Starting Conductor"}…${msg.mode ? ` · ${escapeHtml(msg.mode)}` : ""}</span>`,
+          `<span class="spinner"></span><span>${msg.resumed ? "Continuing the conversation" : "Starting Conductor"}…</span>${msg.mode ? `<span class="muted">${escapeHtml(msg.mode)}</span>` : ""}`,
         ),
       )
       append(state.turnEl, log)
@@ -1092,6 +1206,7 @@ function onMessage(msg: ServerMessage) {
       return
     case "turn.finished":
       state.turnEl?.querySelector(".status-line")?.remove()
+      closeFold()
       if (!msg.ok && msg.error) append(el("div", "error", escapeHtml(msg.error)))
       notifyIfAway("agent-router", msg.ok ? "Your request is done." : `Stopped: ${(msg.error ?? "error").slice(0, 160)}`)
       setRunning(false)
@@ -1194,6 +1309,7 @@ $("new-chat").addEventListener("click", () => {
   if (state.running) return
   send({ type: "reset" })
   clearThreads()
+  state.fold = undefined
   log.replaceChildren()
   state.costUsd = 0
   state.tokensIn = 0
@@ -1210,6 +1326,32 @@ planSelect.addEventListener("change", () => {
   prefs.set("plan", planSelect.value)
   planSelect.title = planSelect.selectedOptions[0]?.title ?? ""
 })
+/** The composer's one mode pill names the profile and permission in effect; the plan shows when one is chosen. */
+function renderModeSummary() {
+  const text = (s: HTMLSelectElement) => s.selectedOptions[0]?.textContent?.replace(/ \(default\)$/, "") ?? ""
+  const parts = [text(profileSelect), ...(planSelect.value ? [text(planSelect)] : []), text(permissionSelect)].filter(Boolean)
+  $("mode-summary").textContent = parts.join(", ")
+}
+for (const select of [profileSelect, planSelect, permissionSelect]) select.addEventListener("change", renderModeSummary)
+popover($<HTMLButtonElement>("mode-pill"), $("mode-menu"))
+popover($<HTMLButtonElement>("threads-pill"), $("threads-menu"))
+installTooltips($("tooltip"))
+
+// Ghostex's keys: Mod+B the sidebar, Mod+N a new chat, Escape closes the thread panel.
+document.addEventListener("keydown", (e) => {
+  const mod = e.metaKey || e.ctrlKey
+  if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
+    e.preventDefault()
+    document.querySelector(".app")?.classList.toggle("no-sidebar")
+  } else if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "n") {
+    e.preventDefault()
+    $("new-chat").click()
+  } else if (e.key === "Escape" && !e.defaultPrevented && state.selected && !document.querySelector("dialog[open]")) {
+    selectThread(undefined)
+  }
+})
+
 showWorkspacePath(state.workspace)
+renderModeSummary()
 
 connect().catch(reportStartupError)
