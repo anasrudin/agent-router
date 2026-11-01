@@ -114,6 +114,19 @@ Built-in servers, used when found on PATH or in the project's `node_modules/.bin
 |---|---|---|
 | `session_usd` | null | Spending cap for a session, from the CLIs' reported cost. Once it is spent, new delegations are refused and Conductor is told to ask you. |
 | `warn_at_fraction` | 0.8 | Accepted but not used yet. |
+| `delegate_tokens` | null | Tokens one delegation may use across all its attempts (input counts Claude's cache reads). Once a failed attempt leaves the total at or above it, the ladder stops instead of escalating, and Conductor gets the stop reason. CLIs report usage only when an attempt ends, so a running attempt is never cut off. |
+
+## `telemetry`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `events_file` | null | Append one JSON line per delegation event to this file (relative paths are under the workspace), for UIs that show agents as panes. |
+
+```yaml
+telemetry: { events_file: .harness/events.jsonl }
+```
+
+Each line is `{ ts, event, pane, budget, detail? }`. `event` is `dispatch` (delegation routed), `update` (an attempt reported usage, or failed and the ladder may try again), `merge` (finished with a usable report) or `halt` (finished without one, or refused). `pane` has `id`, `task_class`, `agent`, `mode`, `provider`, `tier`, `model`, `worktree`, `status` (`running`, `retrying`, `done`, `partial`, `blocked`, `error`), `task_summary` (at most 12 words) and `context_refs` (the brief's relevant files). `budget` has `input_tokens`, `cached_tokens` (the part of the input served from the provider's prompt cache), `output_tokens` (thinking included), `cost_usd` and `cap_tokens`. On `update` the totals are the CLIs' raw reports; on `merge` and `halt` they are the delegation's own share (a resumed Codex thread's earlier usage subtracted).
 
 ## `privacy`
 

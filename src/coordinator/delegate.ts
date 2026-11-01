@@ -29,14 +29,15 @@ export interface DelegateRequest {
   route?: Pick<RouteRequest, "override" | "author" | "sticky" | "media" | "inputTokens" | "filesTouched">
   isolation?: "none" | "worktree"
   /** Called once routing has decided, before any backend runs. */
-  onStart?: (decision: RouteDecision, agent: string) => void
+  onStart?: (decision: RouteDecision, agent: string, worktree?: Worktree) => void
   onEvent?: (provider: ProviderId, event: BackendEvent) => void
   signal?: AbortSignal
   /** Running total last reported for the session in `route.sticky`, when its backend reports totals (from the ledger). */
   priorSessionTokens?: Tokens
 }
 
-export type Tokens = { input: number; output: number }
+/** `cached` is the part of `input` served from the provider's prompt cache, where the CLI reports it. */
+export type Tokens = { input: number; output: number; cached?: number }
 
 export interface AttemptRecord extends Attempt {
   model?: string
@@ -66,6 +67,8 @@ export interface DelegateResult {
   findings: Finding[]
   /** Results of `checks.commands` run after an edit-mode delegation; empty when none ran. */
   checks: CheckResult[]
+  /** Edit mode: `git status --porcelain` lines that appeared during the task, with `+added -removed` where git knows them. */
+  changedFiles: string[]
 }
 
 export class DelegationError extends Error {
@@ -105,11 +108,36 @@ export function nudgeMessage(trip: WatchdogTrip, stallSeconds: number): string {
 }
 
 /** `git status --porcelain` lines, or none if this is not a repository (or git is slow or missing). */
-function gitChanges(cwd: string): Promise<Set<string>> {
+export function gitChanges(cwd: string): Promise<Set<string>> {
   return new Promise((resolve) => {
     execFile("git", ["status", "--porcelain"], { cwd, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) =>
       resolve(new Set(error ? [] : stdout.split("\n").filter((l) => l.trim() && !l.includes(".harness/")))),
     )
+  })
+}
+
+/** `path → +added -removed` for tracked files with unstaged or staged changes. */
+function lineCounts(cwd: string): Promise<Map<string, string>> {
+  return new Promise((resolve) => {
+    execFile("git", ["diff", "HEAD", "--numstat"], { cwd, timeout: 10_000, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+      const counts = new Map<string, string>()
+      if (!error) {
+        for (const line of stdout.split("\n")) {
+          const [added, removed, file] = line.split("\t")
+          if (file) counts.set(file, added === "-" ? "binary" : `+${added} -${removed}`)
+        }
+      }
+      resolve(counts)
+    })
+  })
+}
+
+/** What an edit delegate changed, compact enough that Conductor need not re-read files to know. */
+export async function describeChanges(cwd: string, before: Promise<Set<string>>): Promise<string[]> {
+  const [changed, counts] = await Promise.all([changedSince(cwd, before), lineCounts(cwd)])
+  return changed.slice(0, 100).map((line) => {
+    const count = counts.get(line.slice(3).replace(/^.* -> /, ""))
+    return count ? `${line} (${count})` : line
   })
 }
 
@@ -141,6 +169,7 @@ export function addAttemptTokens(
   const before = resumed ? totals?.get(resumed) : undefined
   tokens.input += Math.max(0, reported.input - (before?.input ?? 0))
   tokens.output += Math.max(0, reported.output - (before?.output ?? 0))
+  if (reported.cached) tokens.cached = (tokens.cached ?? 0) + Math.max(0, reported.cached - (before?.cached ?? 0))
   if (totals && sessionId && (reported.input || reported.output)) totals.set(sessionId, reported)
 }
 
@@ -170,7 +199,7 @@ export async function delegate(session: Session, req: DelegateRequest): Promise<
   }
   const cwd = worktree?.path ?? session.workspace
   if (writer && !worktree) session.activeWritersInWorkspace += 1
-  req.onStart?.(decision, agent)
+  req.onStart?.(decision, agent, worktree)
 
   try {
     return await session.slots.run(() => runLadder(session, req, decision, agent, cwd, worktree))
@@ -222,7 +251,7 @@ async function runLadder(
     const rawModel = session.config.backends[provider].tiers[tier]
     const model = isPlaceholderModel(rawModel) ? undefined : rawModel
     const backend = session.backends[provider]
-    const system = composeSystemPrompt(agentPromptPath(agent), promptVars(session, model))
+    const system = composeSystemPrompt(agentPromptPath(agent), promptVars(session, model), { delegate: true })
     const attempt: AttemptRecord = { provider, tier, model, outcome: "ok" }
     const resumed = backend.supportsResume ? resumeSessionId : undefined
     const reported: Tokens = { input: 0, output: 0 }
@@ -282,6 +311,7 @@ async function runLadder(
             costUsd += event.usage.costUsd ?? 0
             reported.input += event.usage.inputTokens
             reported.output += event.usage.outputTokens
+            if (event.usage.cachedInputTokens) reported.cached = (reported.cached ?? 0) + event.usage.cachedInputTokens
           } else if (event.type === "done") text = event.text
           else if (event.type === "error") {
             attempt.outcome = "backend_error"
@@ -322,6 +352,13 @@ async function runLadder(
     if (attempt.outcome === "backend_error") session.health.recordError(provider, attempt.errorKind ?? "failed", attempt.message ?? "")
     else session.health.recordSuccess(provider)
     attempts.push(attempt)
+
+    // Usage arrives only when an attempt ends, so the cap stops the next attempt, never a running one.
+    const tokenCap = session.config.budget.delegate_tokens
+    if (tokenCap !== null && attempt.outcome !== "ok" && tokens.input + tokens.output >= tokenCap) {
+      stopReason = `token budget spent (${tokens.input + tokens.output} of ${tokenCap} tokens, budget.delegate_tokens); not escalating further`
+      break
+    }
 
     // Before the ladder: two failures where the delegate's own work is worth keeping.
     // Never on the last attempt but one: like the ladder, keep a rung for another backend.
@@ -378,6 +415,7 @@ async function runLadder(
     checks = ran.results
     findings.push(...ran.findings)
   }
+  const changedFiles = req.brief.mode === "edit" ? await describeChanges(cwd, before) : []
   return {
     status: usable ? report?.status : "error",
     report: usable ? report : undefined,
@@ -395,5 +433,6 @@ async function runLadder(
     sessionTokens: last.sessionId ? sessionTotals.get(last.sessionId) : undefined,
     findings,
     checks,
+    changedFiles,
   }
 }

@@ -44,6 +44,7 @@ function resultEvents(msg: Record<string, unknown>): BackendEvent[] {
       usage: {
         inputTokens: num(usage.input_tokens) + num(usage.cache_creation_input_tokens) + num(usage.cache_read_input_tokens),
         outputTokens: num(usage.output_tokens),
+        cachedInputTokens: num(usage.cache_read_input_tokens),
         costUsd: typeof msg.total_cost_usd === "number" ? msg.total_cost_usd : undefined,
       },
     },

@@ -130,6 +130,16 @@ lsp:
 budget:
   session_usd: null                      # null = no cap
   warn_at_fraction: 0.8
+  delegate_tokens: null                  # tokens one delegation may spend across its attempts; null = no cap
+
+# ---------------------------------------------------------------------------
+# Telemetry — a JSON-lines stream of delegation events (dispatch, update, merge,
+# halt) with provider, model, worktree and token/cost, for other UIs to render
+# as panes, e.g. `tail -f .harness/events.jsonl`. null = off.
+#   telemetry: { events_file: .harness/events.jsonl }
+# ---------------------------------------------------------------------------
+telemetry:
+  events_file: null
 
 # ---------------------------------------------------------------------------
 # Privacy — paths that must not be sent to some providers.

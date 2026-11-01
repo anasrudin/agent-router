@@ -132,3 +132,15 @@ export function renderMarkdown(source: string): string {
   }
   return out.join("\n")
 }
+
+/** The first line of the report's Result section: what a thread found or did, in one line. */
+export function resultLine(report: string): string {
+  const match = /^##\s*Result\s*\n+([\s\S]*?)(?=\n##\s|$)/m.exec(report)
+  const body = (match?.[1] ?? report).trim()
+  const line = body.split("\n").find((l) => l.trim()) ?? ""
+  // Underscores stay: they are part of names like delegate_tokens or __tests__.
+  return line
+    .replace(/^[-*]\s+/, "")
+    .replace(/`|\*\*/g, "")
+    .trim()
+}

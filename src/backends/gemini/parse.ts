@@ -33,7 +33,12 @@ export function createGeminiParser(): OutputParser {
 function resultEvents(msg: Record<string, unknown>, text: string): BackendEvent[] {
   const stats = (msg.stats ?? {}) as Record<string, unknown>
   const events: BackendEvent[] = []
-  if (msg.stats) events.push({ type: "usage", usage: { inputTokens: num(stats.input_tokens), outputTokens: num(stats.output_tokens) } })
+  if (msg.stats) {
+    const input = num(stats.input_tokens)
+    // output_tokens leaves out thinking, which total_tokens includes and Gemini bills as output.
+    const output = Math.max(num(stats.output_tokens), num(stats.total_tokens) - input)
+    events.push({ type: "usage", usage: { inputTokens: input, outputTokens: output, cachedInputTokens: num(stats.cached) } })
+  }
   if (msg.status === "success") {
     events.push({ type: "done", text })
     return events

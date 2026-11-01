@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process"
 import { writeFileSync } from "node:fs"
 import path from "node:path"
 import { fakeRegistry, report, testSession } from "../../test-support"
-import { addAttemptTokens, DelegationError, delegate, type Tokens } from "../delegate"
+import { addAttemptTokens, DelegationError, delegate, describeChanges, gitChanges, type Tokens } from "../delegate"
 import { lastSessionTokens } from "../ledger"
 import { Brief } from "../protocol"
 
@@ -21,6 +21,9 @@ describe("delegate()", () => {
     expect(call?.prompt).toContain("## Acceptance criteria\n- [ ] paths with line numbers")
     expect(call?.systemPrompt).toContain("You are **Scout**")
     expect(call?.systemPrompt).toContain("Delegation Protocol")
+    // Delegates get the report half of the protocol, not the brief-writing rules meant for Conductor.
+    expect(call?.systemPrompt).toContain("## 2. The report")
+    expect(call?.systemPrompt).not.toContain("### Brief rules")
     expect(call?.systemPrompt).not.toMatch(/\{\{[A-Z_]+\}\}/)
   })
 
@@ -63,6 +66,17 @@ describe("delegate()", () => {
     ])
     expect(r.stopReason).toContain("max attempts")
     expect(backends.claude.calls[2]?.model).toBe("opus")
+  })
+
+  test("delegate token budget stops the ladder once spent", async () => {
+    // Each fake attempt reports 15 tokens.
+    const failed = { text: report("failed") }
+    const backends = fakeRegistry({ claude: [failed, failed, failed], openai: [failed] })
+    const session = testSession(backends, { budget: { delegate_tokens: 20 } })
+    const r = await delegate(session, { taskClass: "code.edit", brief: brief("edit") })
+    expect(r.status).toBe("error")
+    expect(r.attempts).toHaveLength(2)
+    expect(r.stopReason).toContain("token budget spent (30 of 20 tokens")
   })
 
   test("blocked report stops immediately and is returned", async () => {
@@ -230,6 +244,23 @@ describe("delegate()", () => {
       const r = await delegate(testSession(backends), { taskClass: "plan", brief: brief() })
       expect(r.attempts.map((a) => `${a.provider}:${a.errorKind ?? a.outcome}`)).toEqual(["claude:context_overflow", "openai:ok"])
     })
+  })
+})
+
+describe("describeChanges()", () => {
+  test("lists only files changed after the snapshot, with line counts", async () => {
+    const session = testSession(fakeRegistry({}))
+    const git = (...args: string[]) => spawnSync("git", args, { cwd: session.workspace })
+    git("init", "-q")
+    writeFileSync(path.join(session.workspace, "a.ts"), "one\n")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+    writeFileSync(path.join(session.workspace, "mine.txt"), "user's work")
+    const before = gitChanges(session.workspace)
+    await before
+    writeFileSync(path.join(session.workspace, "a.ts"), "one\ntwo\nthree\n")
+    writeFileSync(path.join(session.workspace, "new.ts"), "x\n")
+    expect(await describeChanges(session.workspace, before)).toEqual([" M a.ts (+2 -0)", "?? new.ts"])
   })
 })
 

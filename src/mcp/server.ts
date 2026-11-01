@@ -8,6 +8,7 @@ import { appendLedger, closeInterrupted, lastSessionTokens, readLedger } from ".
 import { capOutput } from "../coordinator/output"
 import { Brief } from "../coordinator/protocol"
 import type { Session } from "../coordinator/session"
+import { eventsFile, PaneTelemetry, taskSummary } from "../coordinator/telemetry"
 import { scanDiff, workingTreeDiff } from "../coordinator/verify"
 import { decide, RoutingError } from "../router/policy"
 import { type Bridge, toWire } from "../server/bridge"
@@ -122,12 +123,15 @@ export function formatResult(r: DelegateResult, workspace?: string): string {
     `- Ran on: ${r.provider} / ${r.model ?? "CLI default model"} (${r.tier})${r.sessionId ? ` — session ${r.sessionId}` : ""}`,
     `- Attempts: ${r.attempts.map((a, i) => `${i + 1}. ${a.provider}/${a.tier} → ${a.outcome}${a.errorKind ? ` (${a.errorKind})` : ""}${a.message && a.outcome !== "ok" ? `: ${a.message.slice(0, 200)}` : ""}`).join("; ")}`,
     `- Stop reason: ${r.stopReason}`,
-    `- Cost: ${r.costUsd ? `$${r.costUsd.toFixed(4)}` : "not reported by this CLI"} (${r.tokens.input} input / ${r.tokens.output} output tokens)`,
+    `- Cost: ${r.costUsd ? `$${r.costUsd.toFixed(4)}` : "not reported by this CLI"} (${r.tokens.input} input${r.tokens.cached ? `, ${r.tokens.cached} of them cached` : ""} / ${r.tokens.output} output tokens)`,
   ]
   if (r.worktree) lines.push(`- Worktree: ${r.worktree.path} (branch ${r.worktree.branch}) — merge it yourself after verifying`)
   if (r.decision.notes.length) lines.push(`- Routing notes: ${r.decision.notes.join("; ")}`)
   if (r.decision.secondOpinion) lines.push(`- Second opinion should come from: ${r.decision.secondOpinion}`)
   if (r.decision.reviewRequired) lines.push(`- This class requires an independent review on a provider other than ${r.provider}`)
+  if (r.changedFiles.length) {
+    lines.push("", "## Files changed during the task (git status)", ...r.changedFiles.map((f) => `- \`${f}\``))
+  }
   if (r.checks.length) {
     lines.push(
       "",
@@ -156,6 +160,7 @@ export function summarize(r: DelegateResult): DelegationSummary {
     findings: r.findings,
     notes: r.decision.notes,
     worktree: r.worktree?.path,
+    changedFiles: r.changedFiles,
     report: r.text,
   }
 }
@@ -198,6 +203,7 @@ export function createMcpServer(session: Session, pins: Pins, options: McpServer
     cancel?: AbortSignal,
   ): Promise<DelegateResult> {
     const base = { id, taskClass: args.task_class, task: args.brief.task, background: args.background }
+    let pane: PaneTelemetry | undefined
     try {
       const result = await delegate(session, {
         taskClass: args.task_class,
@@ -207,7 +213,24 @@ export function createMcpServer(session: Session, pins: Pins, options: McpServer
         route: routeFields(args, pins),
         priorSessionTokens: args.resume && ledger ? lastSessionTokens(readLedger(ledger), args.resume.session_id) : undefined,
         signal: cancel,
-        onStart: (decision, agent) => {
+        onStart: (decision, agent, worktree) => {
+          pane = new PaneTelemetry(
+            eventsFile(session.config.telemetry.events_file, session.workspace),
+            {
+              id,
+              task_class: decision.taskClass,
+              agent,
+              mode: args.brief.mode,
+              provider: decision.provider,
+              tier: decision.tier,
+              model: decision.model,
+              worktree: worktree?.path,
+              status: "running",
+              task_summary: taskSummary(args.brief.task),
+              context_refs: args.brief.relevant_files,
+            },
+            session.config.budget.delegate_tokens,
+          )
           appendLedger(ledger, { ...base, event: "started", provider: decision.provider, tier: decision.tier })
           bridge?.emit({
             type: "delegation.started",
@@ -221,7 +244,10 @@ export function createMcpServer(session: Session, pins: Pins, options: McpServer
             model: decision.model,
           })
         },
-        onEvent: (provider, event) => bridge?.emit({ type: "delegation.event", id, provider, event: toWire(event) }),
+        onEvent: (provider, event) => {
+          pane?.observe(provider, event)
+          bridge?.emit({ type: "delegation.event", id, provider, event: toWire(event) })
+        },
       })
       appendLedger(ledger, {
         ...base,
@@ -233,10 +259,12 @@ export function createMcpServer(session: Session, pins: Pins, options: McpServer
         sessionTokens: result.sessionTokens,
         worktree: result.worktree?.path,
       })
+      pane?.finish({ ...result, status: result.status ?? "unknown", worktree: result.worktree?.path })
       bridge?.emit({ type: "delegation.finished", id, summary: summarize(result) })
       return result
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      pane?.fail(message)
       appendLedger(ledger, { ...base, event: "failed", error: message })
       bridge?.emit({ type: "delegation.failed", id, error: message })
       throw error
