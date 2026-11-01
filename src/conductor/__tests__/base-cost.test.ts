@@ -25,8 +25,10 @@ describe("Conductor's per-request context", () => {
 
   test("the whole appended prompt stays within budget", () => {
     const text = conductorSystemPrompt(testSession(fakeRegistry({})), "sonnet").text
-    // About 4.8k tokens on 2026-11-01; a jump means something large slipped in.
-    expect(text.length).toBeLessThan(19_000)
+    // About 4.8k tokens on 2026-11-01; a jump means something large slipped in. Windows adds its
+    // shell notes on top.
+    const windowsNotes = process.platform === "win32" ? readFileSync(path.join(PROMPTS_DIR, "shared", "windows.md"), "utf8").length : 0
+    expect(text.length).toBeLessThan(19_000 + windowsNotes)
     expect(text).not.toContain("\r")
   })
 
