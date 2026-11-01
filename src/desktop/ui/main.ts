@@ -13,7 +13,7 @@ import type {
   WireEvent,
   WorktreePreview,
 } from "../../server/protocol"
-import { closePopovers, installTooltips, popover } from "./chrome"
+import { closePopovers, flash, installTooltips, type MenuItem, openMenu, popover } from "./chrome"
 import { type DiffFile, formatReview, parseUnifiedDiff, type ReviewComment } from "./diff"
 import { agentLogoSvg } from "./icons"
 import { escapeHtml, renderMarkdown, resultLine } from "./markdown"
@@ -522,38 +522,151 @@ function statusMark(status: string): HTMLElement {
   return mark
 }
 
+const MORE_ICON = `<svg class="row-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.25" /><circle cx="8" cy="8" r="1.25" /><circle cx="12.5" cy="8" r="1.25" /></svg>`
+const STOP_ICON = `<svg class="row-icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1.5" /></svg>`
+
+/** A small icon button for a row's hover actions. */
+function rowAction(icon: string, label: string, run: (button: HTMLButtonElement) => void): HTMLButtonElement {
+  const b = el("button", "row-action", icon) as HTMLButtonElement
+  b.type = "button"
+  b.title = label
+  b.setAttribute("aria-label", label)
+  b.addEventListener("click", (e) => {
+    e.stopPropagation()
+    run(b)
+  })
+  return b
+}
+
+/**
+ * A sidebar row as Ghostex draws one: the row itself is the button that opens it; on hover or
+ * keyboard focus its actions replace the trailing details, and right-click (or the menu key)
+ * opens the same actions as a menu.
+ */
+function sidebarItem(
+  row: HTMLButtonElement,
+  actions: HTMLButtonElement[],
+  menu: () => MenuItem[],
+  label: string,
+  key: string,
+): HTMLElement {
+  const item = el("div", "tree-item")
+  row.dataset.focusKey = `${key}:row`
+  for (const a of actions) a.dataset.focusKey = `${key}:${a.getAttribute("aria-label")}`
+  const bar = el("span", "row-actions")
+  bar.append(...actions)
+  item.append(row, bar)
+  item.addEventListener("contextmenu", (e) => {
+    e.preventDefault()
+    // The menu key and Shift+F10 send a contextmenu event with no pointer position.
+    const fromKeyboard = e.clientX === 0 && e.clientY === 0
+    openMenu(menu(), fromKeyboard ? row : { x: e.clientX, y: e.clientY }, row, label)
+  })
+  return item
+}
+
+function copyText(text: string, near: HTMLElement) {
+  navigator.clipboard.writeText(text).then(
+    () => flash(near, "Copied"),
+    () => flash(near, "Could not copy"),
+  )
+}
+
+/** Put a question about a thread in the composer, for Conductor to answer with the thread in view. */
+function askAbout(t: Thread) {
+  const task = t.task.length > 160 ? taskTitle(t.task) : t.task.trim().replace(/\.$/, "")
+  promptBox.value = `About the thread "${task}" (${t.agent} on ${PROVIDER_LABEL[t.provider]}): `
+  promptBox.focus()
+  promptBox.setSelectionRange(promptBox.value.length, promptBox.value.length)
+  updateSendButton()
+}
+
+function threadMenu(t: Thread, row: HTMLElement): MenuItem[] {
+  const sum = t.summary
+  const items: MenuItem[] = [
+    { label: "Open thread", run: () => selectThread(t.id) },
+    { label: "Ask Conductor about it", run: () => askAbout(t) },
+    "separator",
+    { label: "Copy task", run: () => copyText(t.task, row) },
+  ]
+  if (sum?.report) items.push({ label: "Copy report", run: () => copyText(sum.report, row) })
+  const worktree = sum?.worktree
+  if (worktree && !t.wt?.gone)
+    items.push("separator", {
+      label: "Preview worktree merge",
+      run: () => {
+        selectThread(t.id)
+        worktreeAction(t, worktree, "preview")
+      },
+    })
+  const revertible = sum?.checkpoint?.after && !t.wt?.gone && !(typeof t.revert === "object" && t.revert.ok)
+  if (revertible)
+    items.push("separator", {
+      label: "Revert thread…",
+      danger: true,
+      // The panel still asks for a second press before anything changes.
+      run: () => {
+        t.revert = "confirm"
+        selectThread(t.id)
+        detail.querySelector(".changes-bar")?.scrollIntoView({ block: "nearest" })
+      },
+    })
+  return items
+}
+
+function conductorMenu(row: HTMLElement): MenuItem[] {
+  const items: MenuItem[] = [{ label: "Show conversation", run: () => selectThread(undefined) }]
+  if (state.running) items.push({ label: "Stop the turn", danger: true, run: () => send({ type: "cancel" }) })
+  items.push("separator", { label: "Copy chat title", run: () => copyText(state.chatTitle ?? "", row) }, "separator", {
+    label: "New chat",
+    run: () => $("new-chat").click(),
+  })
+  return items
+}
+
 function renderSidebar() {
   const list = [...state.threads.values()]
+  // The tree is rebuilt every second while threads run; keep keyboard focus where it was.
+  const focusKey = (document.activeElement as HTMLElement | null)?.closest?.<HTMLElement>("#threads [data-focus-key]")?.dataset.focusKey
   threadsNav.replaceChildren()
+  renderSidebarRows(list)
+  if (focusKey) threadsNav.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus()
+  const running = list.filter((t) => !t.summary && !t.error).length
+  $("status-threads").textContent = list.length
+    ? `${list.length} thread${list.length > 1 ? "s" : ""}${running ? `, ${running} running` : ""}`
+    : ""
+}
+
+function renderSidebarRows(list: Thread[]) {
   if (!state.chatTitle) return
-  const head = el("div", `tree-row conductor${state.selected ? "" : " selected"}`)
+  const head = el("button", `tree-row conductor${state.selected ? "" : " selected"}`) as HTMLButtonElement
+  head.type = "button"
   head.innerHTML = `<svg class="crown" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12.5h12M2.5 11 1.8 5l3.6 2.6L8 3l2.6 4.6L14.2 5l-.7 6z" /></svg><span class="row-title"></span>`
   ;(head.querySelector(".row-title") as HTMLElement).textContent = state.chatTitle
   if (list.length) {
     // The crew badge: people and a count, as Ghostex marks a coordinator's threads.
-    const count = el("span", "row-count", `${PEOPLE_ICON}<span>${list.length}</span>`)
+    const count = el("span", "row-count row-tail", `${PEOPLE_ICON}<span>${list.length}</span>`)
     count.title = `${list.length} thread${list.length > 1 ? "s" : ""}`
     head.append(count)
   }
   if (state.running) head.append(statusMark("running"))
   head.addEventListener("click", () => selectThread(undefined))
-  threadsNav.append(head)
+  const headActions = [rowAction(MORE_ICON, "More actions", (b) => openMenu(conductorMenu(head), b, b, "Chat actions"))]
+  if (state.running) headActions.unshift(rowAction(STOP_ICON, "Stop the turn", () => send({ type: "cancel" })))
+  threadsNav.append(sidebarItem(head, headActions, () => conductorMenu(head), "Chat actions", "conductor"))
   for (const t of list) {
     const row = el("button", `tree-row thread${state.selected === t.id ? " selected" : ""}`) as HTMLButtonElement
     row.type = "button"
     row.title = `${t.agent}, ${t.taskClass}\n${t.task}`
     const title = el("span", "row-title")
     title.textContent = taskTitle(t.task)
-    const tail = el("span", "row-age")
+    const tail = el("span", "row-age row-tail")
     tail.textContent = age(t.startedAt, t.finishedAt)
     row.append(glyph(t.provider), title, statusMark(t.error ? "error" : (t.summary?.status ?? "running")), tail)
     row.addEventListener("click", () => selectThread(t.id))
-    threadsNav.append(row)
+    const more = rowAction(MORE_ICON, "More actions", (b) => openMenu(threadMenu(t, row), b, b, "Thread actions"))
+    threadsNav.append(sidebarItem(row, [more], () => threadMenu(t, row), "Thread actions", t.id))
   }
-  const running = list.filter((t) => !t.summary && !t.error).length
-  $("status-threads").textContent = list.length
-    ? `${list.length} thread${list.length > 1 ? "s" : ""}${running ? `, ${running} running` : ""}`
-    : ""
 }
 
 /** A thread's name: its task in a few words, like a Ghostex thread title. */
