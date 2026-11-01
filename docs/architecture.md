@@ -8,7 +8,7 @@ agent-router wraps three coding CLIs (Claude Code, Gemini CLI, Codex CLI) behind
 |---|---|---|
 | CLI | `src/cli.ts` | Entry point: Conductor (headless or interactive), `doctor`, `route`, `delegate`, `serve`, and the hidden `mcp` and `hook` commands. |
 | Conductor | `src/conductor/run.ts` | Starts Claude Code with the Conductor system prompt, the router MCP server and the hook settings. |
-| Router MCP server | `src/mcp/server.ts` | Tools Conductor calls: `delegate`, `route`, `backends`, `check_diff`, `delegation_status`, `delegation_result`, `cancel_delegation`, plus the internal `approve` permission-prompt tool. |
+| Router MCP server | `src/mcp/server.ts` | Tools Conductor calls: `delegate`, `check_diff`, `delegation_status`, `delegation_result`, `cancel_delegation`, `remember`, `forget`, `worktree_preview`, `worktree_apply`, `worktree_remove`, plus the internal `approve` permission-prompt tool. (A routing preview is the CLI's `route` command; backend status is in Conductor's prompt.) |
 | Routing policy | `src/router/` | `classify.ts` (task-class guess, `@` keywords), `policy.ts` (`decide()`: provider, tier, model), `escalation.ts` (the ladder), `health.ts` (which backends are usable). |
 | Coordinator | `src/coordinator/` | Runs one delegation: brief rendering, attempts, watchdog, report parsing and verification, worktrees, project checks, ledger. |
 | Backends | `src/backends/` | One adapter per CLI: argument building, permission mapping and a stream parser into common `BackendEvent`s. `process.ts` spawns the CLIs and kills whole process trees. |

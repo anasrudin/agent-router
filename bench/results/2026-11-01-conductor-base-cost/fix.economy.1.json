@@ -1,0 +1,36 @@
+{
+  "task": "fix",
+  "profile": "economy",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 17947,
+  "conductor": {
+    "usd": 0.0544818,
+    "input": 64484,
+    "output": 692
+  },
+  "delegates": [],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    }
+  ],
+  "answer": "All 9 tests now pass with `node --test`. I changed only the source files, not the tests.\n\nThere were two bugs:\n\n1. **`src/bill.js`, `splitBill`:** the leftover-cents check used `i <= leftover`, which gave one payer too many an extra cent. For example, 900 split three ways gave `[301, 300, 300]`. It now uses `i < leftover`. That fixed the even split, the leftover-cents test and the total-preserved test.\n2. **`src/duration.js`, `parseDuration`:** the regex matched pieces anywhere in the string, so `\"10m and change\"` was accepted as 10 minutes. The function now also throws a `SyntaxError` unless the whole string is made of `<digits><h|m|s>` groups.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

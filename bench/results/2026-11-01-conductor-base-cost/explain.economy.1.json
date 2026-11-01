@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "economy",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 17268,
+  "conductor": {
+    "usd": 0.10138470000000001,
+    "input": 75744,
+    "output": 1030
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "The ladder is `nextStep()` in `src/router/escalation.ts:45`. It is a pure function, and `src/coordinator/delegate.ts:409` calls it after each failed attempt.\n\n**Rungs:**\n1. **Terminal checks (`:48-51`).** It stops on success, on `blocked`, on `cancelled`, or when attempts reach `maxAttempts`, which defaults to 4 (`config/schema.ts:124`).\n2. **Dead providers (`:53`, `:79-81`).** A provider that hit `rate_limited`, `not_authenticated`, `missing_executable`, `untrusted_workspace` or `context_overflow` (`:21-27`) is excluded. The ladder switches to a live provider at the same tier.\n3. **Retry (`:82-87`).** A soft failure gets one retry with a sharper brief. Timeout, stalled and tool_loop skip this (`:30`). The retry is also skipped when only one attempt is left and a later rung exists.\n4. **Fallback (`:89-92`).** It switches to another provider at the same tier, unless the user pinned a provider (`:62`).\n5. **Tier-up (`:93`).** It raises the tier on a live provider.\n6. **Leftover (`:95-96`).** Any live provider not yet tried at the top tier gets a turn. Otherwise it stops and asks the user (`:97`).\n\n**Untested edge case:** a dead provider with a pinned user choice. When `pinned` is true and the last attempt was `rate_limited`, `fallbackAt` returns `undefined` at `:80`. Control falls through to `:93` and can tier-up on a different, live provider. That quietly overrides the pin, even though `policy.ts:37` says escalation must not switch away from a pinned provider. The pinned test at `escalation.test.ts:48` uses a single candidate, so it doesn't reach this path. I haven't run it to confirm.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

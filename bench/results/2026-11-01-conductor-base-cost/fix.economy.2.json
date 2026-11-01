@@ -1,0 +1,36 @@
+{
+  "task": "fix",
+  "profile": "economy",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 17700,
+  "conductor": {
+    "usd": 0.05498599999999999,
+    "input": 64372,
+    "output": 749
+  },
+  "delegates": [],
+  "approvals": [
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    },
+    {
+      "tool": "Bash",
+      "allowed": true
+    }
+  ],
+  "answer": "All 9 tests now pass (`node --test`). I changed only the source files, not the tests.\n\nThere were two bugs:\n\n1. **`src/bill.js`, `splitBill`:** The leftover-cent check was `i <= leftover`, which is off by one. It gave one extra cent to `leftover + 1` people, so the total no longer matched the bill. For example, `splitBill(900, 3)` returned `[301, 300, 300]`. I changed it to `i < leftover`.\n2. **`src/duration.js`, `parseDuration`:** The code only looked for `<digits><unit>` pieces anywhere in the string and ignored the rest. `\"10m and change\"` was therefore accepted as 10 minutes. It now also requires the whole string to match `^(\\d+[hms])+$`, and throws a `SyntaxError` otherwise.\n\nEach fix is a single line.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "tests_pass": true,
+      "tests_untouched": true
+    }
+  }
+}

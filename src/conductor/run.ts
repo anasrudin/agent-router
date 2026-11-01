@@ -38,11 +38,10 @@ const HARNESS_ADDENDUM = `
 # This harness: how to delegate
 
 - Delegate with the \`${mcpToolName("delegate")}\` tool. Pass \`task_class\` from §4 and a complete \`brief\` (delegation-protocol §1 as fields). The harness picks the backend, tier and model, applies fallback and escalation, and returns the delegate's report with routing metadata.
-- Preview a routing decision without spawning anything with \`${mcpToolName("route")}\`; check backend health with \`${mcpToolName("backends")}\`.
 - Before accepting edit-mode work, run the project's build and tests yourself and call \`${mcpToolName("check_diff")}\` (pass the worktree path for isolated delegates).
 - For \`code.review\`, always pass \`author\`: the provider that wrote the code. Code you wrote yourself has author \`{{SELF_PROVIDER}}\`.
 - For a follow-up step of a multi-step edit, pass \`resume\` with the provider and session id from the previous result (stickiness).
-- For parallel edit-mode delegates, pass \`isolation: "worktree"\` and merge the branches yourself.
+- For parallel edit-mode delegates, pass \`isolation: "worktree"\`, then bring each one in with \`${mcpToolName("worktree_preview")}\`, \`${mcpToolName("worktree_apply")}\` and \`${mcpToolName("worktree_remove")}\`.
 - To run independent subtasks at the same time, pass \`background: true\`: you get a job id at once. Check progress with \`${mcpToolName("delegation_status")}\`, collect each result with \`${mcpToolName("delegation_result")}\`, and stop one with \`${mcpToolName("cancel_delegation")}\`. Collect every background job before your final answer: unfinished jobs are cancelled when your turn ends.
 - If the project configures checks (\`checks.commands\`), the harness runs them after each edit-mode delegation and reports failures as findings. That does not replace your own verification.
 - Your built-in subagent tool is disabled on purpose: all delegation goes through the router so routing policy applies.
@@ -152,6 +151,8 @@ export async function prepareConductor(opts: Omit<ConductorOptions, "prompt">): 
     sys.file,
     "--mcp-config",
     mcp.file,
+    // Only the router: the user's own MCP servers and claude.ai connectors cost ~3.5k tokens a request.
+    "--strict-mcp-config",
     ...(settings ? ["--settings", settings.file] : []),
     ...(model ? ["--model", model] : []),
     ...(reasoning ? ["--effort", reasoning] : []),

@@ -24,7 +24,8 @@ function profileRules(session: Session): string {
 export function promptVars(session: Session, selfModel: string | undefined): Record<string, string> {
   const ws = session.workspace
   const agentsMd = readIfExists(path.join(ws, "AGENTS.md"), PROJECT_DOC_LIMIT)
-  const readme = readIfExists(path.join(ws, "README.md"), 2_000)
+  // A pointer to what the project is; Conductor reads the rest when it needs it.
+  const readme = readIfExists(path.join(ws, "README.md"), 800)
   return {
     HARNESS_NAME,
     WINDOWS_VERSION: session.platformLine(),

@@ -12,7 +12,7 @@ import { Brief } from "../coordinator/protocol"
 import type { Session } from "../coordinator/session"
 import { eventsFile, PaneTelemetry, taskSummary } from "../coordinator/telemetry"
 import { scanDiff, workingTreeDiff } from "../coordinator/verify"
-import { decide, RoutingError } from "../router/policy"
+import { RoutingError } from "../router/policy"
 import { type Bridge, toWire } from "../server/bridge"
 import type { DelegationSummary } from "../server/protocol"
 
@@ -24,8 +24,6 @@ export const MCP_SERVER_NAME = "router"
  */
 export const TOOL_PERMISSIONS = {
   delegate: "ask",
-  route: "auto",
-  backends: "auto",
   check_diff: "auto",
   delegation_status: "auto",
   delegation_result: "auto",
@@ -415,36 +413,6 @@ export function createMcpServer(session: Session, pins: Pins, options: McpServer
       await job.done
       return text(`Cancelled ${job.id}.`)
     },
-  )
-
-  server.registerTool(
-    "route",
-    {
-      title: "Preview routing",
-      description: "Dry run: which agent, backend, tier and model a subtask would get, and why. Spawns nothing.",
-      inputSchema: { ...routingShape, files: z.array(z.string()).optional() },
-      annotations: { readOnlyHint: true },
-    },
-    async (args) => {
-      try {
-        const decision = decide(session, { ...routeFields(args, pins), taskClass: args.task_class, files: args.files })
-        return text(JSON.stringify(decision, null, 2))
-      } catch (error) {
-        if (error instanceof RoutingError) return text(`RoutingError (${error.kind}): ${error.message}`, true)
-        throw error
-      }
-    },
-  )
-
-  server.registerTool(
-    "backends",
-    {
-      title: "Backend health",
-      description: "Installed version, health and session spend for each backend.",
-      inputSchema: {},
-      annotations: { readOnlyHint: true },
-    },
-    async () => text(JSON.stringify({ health: session.health.snapshot(), budget: session.budgetLine() }, null, 2)),
   )
 
   server.registerTool(

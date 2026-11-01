@@ -75,6 +75,26 @@ Means per task. Claude tokens include Conductor; Codex tokens are delegates on t
 - **Offload's two `review` failures are the checker, not the answer.** `escalation.ts` has been fixed since the task was written, and the Codex reviewer reported no defect, so there was no line to cite. Balanced and Economy reviewers flagged minor points with lines.
 - **Gemini was rate-limited** (free tier) in both Offload `explain` runs, so Codex did the lookups. Offload's `explain` and `review` ran before Conductor's Edit and Write tools were removed; `fix` was re-run after, since it delegated nothing until then.
 
+## After trimming Conductor's base context
+
+Run on 2026-11-01 ([`results/2026-11-01-conductor-base-cost`](results/2026-11-01-conductor-base-cost/RESULTS.md)), Economy only, same tasks, 2 runs each, after shrinking what Conductor sends on every request: `--strict-mcp-config` (the user's own MCP servers and claude.ai connectors are no longer loaded), a Conductor-only delegation protocol without the brief template the `delegate` tool's schema already carries, a task-class table instead of the full routing table, an 800-character README excerpt, and no `route`/`backends` tools. One trivial turn's context went from 22.2k to 16.6k tokens (−25%). Details: [docs/token-efficiency.md](../docs/token-efficiency.md#where-conductors-base-cost-comes-from).
+
+| Economy, mean per task | Passed | Claude (Conductor) tokens | Claude cost | Codex tokens |
+|---|---|---|---|---|
+| 2026-10-29, after the lean tool set | 6/6 | 78k | $0.052 | 40k |
+| **2026-11-01, lean Conductor context** | 6/6 | **65k** | $0.052 | 63k |
+
+| Task | Conductor input tokens, before → after |
+|---|---|
+| explain | 90.9k → 76.5k (−16%) |
+| fix | 70.4k → 64.4k (−8%) |
+| review | 70.2k → 51.1k (−27%) |
+
+- **Conductor's tokens fell 17%, every run passed.**
+- **The dollar cost did not move in this benchmark.** The runs follow each other within the prompt cache's lifetime, so the shared prefix is mostly read from cache (cheap) rather than written. The saving shows on a cold start: a chat's first request writes the prefix to the cache, about $0.083 on Sonnet before and $0.062 after. The first `explain` run ($0.101) paid exactly that write for the new prefix.
+- **Codex tokens rose** because the Codex reviewer read more files in these runs; delegates were not changed.
+- **Not done:** replacing Claude Code's own system prompt with Conductor's (`--system-prompt-file`) would save about 3.1k tokens more (16.6k → 13.5k) but drops Claude Code's guidance on tool use, safety and git; not worth the risk to quality without its own benchmark.
+
 ## Bug found by the benchmark (fixed)
 
 The first `review` runs failed in 3 of 6 cases. Codex's reports were rejected as malformed, and the router fell back to Gemini, which was out of quota. The reports were in fact well-formed. The reviewer format puts `### Verdict` / `### Findings` under `## Result`, and `parseReport` treated every heading as a new section, so Result came out empty. Only the protocol section names end a section now (`src/coordinator/protocol.ts`, with a regression test). All 10 Codex reports recorded during the run parse correctly with the fix, and the re-run passed 6/6 with each delegation succeeding on its first attempt.

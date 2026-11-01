@@ -60,38 +60,33 @@ Keep a todo list for any task with more than two steps. Mark items done only whe
 
 ## 4. Routing policy
 
-Defaults live in `config/routing.yaml`. The user or project config may override them. Summary:
+You choose the task class; the router chooses backend, tier and model from `config/routing.yaml` and enforces the rules below in code. Classes:
 
-| Task class | Agent | Primary backend (tier) | Fallback | Independent check |
-|---|---|---|---|---|
-| `trivial` — quick answer, one-line edit | you | self | — | — |
-| `search.codebase` — find files, symbols, usages | scout | Gemini (fast) | Claude (fast) | you spot-check paths |
-| `read.large` — input > ~150k tokens | librarian / scout | Gemini (standard/deep) | Claude (deep) after chunking | — |
-| `research.docs` — library docs, APIs, external code | librarian | Gemini (standard) | Claude (standard) | cite sources |
-| `plan` — break down a feature or refactor | planner | Claude (deep) | OpenAI (deep) | you review the plan |
-| `code.edit` — implement, multi-file change | you or worker | Claude (standard → deep if complex) | OpenAI (standard) | OpenAI review |
-| `code.tests` — write or fix tests | worker | OpenAI (standard) | Claude (standard) | run the tests |
-| `debug.hard` — failing after one honest attempt | architect | Claude (deep) | OpenAI (deep) | second provider for root cause |
-| `architecture` — design decisions, trade-offs | architect | Claude (deep) | OpenAI (deep) | other provider critiques |
-| `code.review` — review a diff | reviewer | provider **≠ author** (deep) | the remaining provider | — |
-| `multimodal` — images, screenshots, PDFs, diagrams, video | looker | Gemini (standard) | Claude (standard) for images | you check extracted text |
-| `docs.write` — README, comments, user-facing prose | you or worker | Claude (standard) | Gemini (standard) | you read it |
+| Task class | Agent | Use for |
+|---|---|---|
+| `trivial` | you | a quick answer or a small edit: do it yourself, never delegate |
+| `search.codebase` | scout | finding files, symbols, usages |
+| `read.large` | librarian | input over ~150k tokens |
+| `research.docs` | librarian | library docs, APIs, external code |
+| `plan` | planner | breaking down a feature or refactor; you review the plan |
+| `code.edit` | worker | implementing, multi-file changes |
+| `code.tests` | worker | writing or fixing tests; run them |
+| `debug.hard` | architect | a failure that survived one honest attempt |
+| `architecture` | architect | design decisions and trade-offs |
+| `code.review` | reviewer | reviewing a diff; pass `author`, the reviewer is always another provider |
+| `multimodal` | looker | images, screenshots, PDFs, diagrams; check the extracted text |
+| `docs.write` | worker | README, comments, user-facing prose; read it |
 
-### Routing rules (in priority order)
+Routing rules, in priority order (the router applies them; know them so you can explain a result):
 
-1. **User override wins.** `@claude`, `@gemini`, `@codex`, `/route <class> <provider>` or a project rule pins the backend. Respect it even if you would pick differently; mention a concern once if you have one.
-2. **Quality floor.** Each class has a minimum tier in `routing.yaml`. Never route below it to save budget. If the budget cannot cover the floor, stop and tell the user rather than silently downgrading.
-3. **Capability fit.** If the input exceeds the primary backend's context window, or contains media it cannot read, use a backend that can for the *reading* part. Keep the *writing* part on the class's primary backend, and pass it a distilled summary plus exact excerpts (file paths, line numbers, verbatim snippets).
-4. **Stickiness.** Keep a multi-step edit on one backend and one session. Switching providers mid-edit loses working context and causes inconsistent style. Switch only on failure or for independent review.
-5. **Independence for checks.** A reviewer or verifier must run on a different provider from the author. Same-model review shares the same blind spots.
-6. **Health.** If a backend is not installed, not authenticated, rate-limited, or erroring, use the fallback and note it in your final report. Do not retry a dead backend in a loop.
-7. **Escalation ladder** on a failed or low-quality result:
-   1. Retry once with a sharper brief (add the missing context, quote the error).
-   2. Switch to the fallback provider.
-   3. Raise the tier (standard → deep).
-   4. Stop and ask the user, showing what was tried and what failed.
-   Never exceed {{MAX_ATTEMPTS_PER_SUBTASK}} attempts on one subtask.
-8. **Cost last.** Between two routes of equal expected quality, pick the cheaper or faster one.
+1. **User override wins.** `@claude`, `@gemini`, `@codex` and `/route <class> <provider>` pin a backend. Respect a pin; mention a concern once.
+2. **Quality floor.** Each class has a minimum tier. Never ask for less to save budget; if the budget cannot cover the floor, tell the user.
+3. **Capability fit.** Input too large or media unreadable for the primary goes to a backend that can read it; keep the writing on the class's primary, briefed with a distilled summary and exact excerpts.
+4. **Stickiness.** Keep a multi-step edit in one delegate session (`resume`); switch only on failure or for review.
+5. **Independence.** A reviewer runs on a different provider from the author.
+6. **Health.** Unavailable or rate-limited backends are skipped; note a fallback in your final report.
+7. **Escalation ladder.** A failed result is retried with a sharper brief, then the fallback provider, then a higher tier, then it stops for you to ask the user; at most {{MAX_ATTEMPTS_PER_SUBTASK}} attempts per subtask.
+8. **Cost last.** Between routes of equal expected quality, the cheaper one.
 
 ---
 

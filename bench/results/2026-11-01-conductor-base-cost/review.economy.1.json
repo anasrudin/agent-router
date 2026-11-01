@@ -1,0 +1,41 @@
+{
+  "task": "review",
+  "profile": "economy",
+  "rep": 1,
+  "ok": true,
+  "error": "",
+  "ms": 42987,
+  "conductor": {
+    "usd": 0.0331976,
+    "input": 52021,
+    "output": 880
+  },
+  "delegates": [
+    {
+      "taskClass": "code.review",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "tier": "standard",
+      "usd": 0,
+      "tokens": {
+        "input": 116838,
+        "output": 960,
+        "cached": 99968
+      },
+      "status": "done",
+      "attempts": [
+        "openai/standard: ok"
+      ]
+    }
+  ],
+  "approvals": [],
+  "answer": "**Most important finding (`src/router/escalation.ts:58`):** `retried` is true for any two adjacent attempts with the same provider and tier. That includes repeats from `delegate.ts`'s stall-nudge and context-overflow restarts (around lines 396–410), which happen before `nextStep()` runs. If one of those recovery attempts fails, the ladder thinks it has already used its sharper-brief retry and skips that rung.\n\n**Do I agree?** Mostly. The code does what the reviewer describes. The nudge and restart paths in `delegate.ts` append a same-provider, same-tier attempt without going through the ladder. I traced the code but didn't run a reproduction.\n\nThe effect is narrower than \"violates the documented order\". It only affects runs where a recovery attempt happened first and then failed. The ladder moves on to fallback or tier-up earlier than documented, but it doesn't stop or loop.\n\nThe reviewer ran on openai (gpt-6-luna).",
+  "score": {
+    "pass": true,
+    "checks": {
+      "delegated_to_other_model": true,
+      "cites_line": true,
+      "states_agreement": true
+    }
+  }
+}
