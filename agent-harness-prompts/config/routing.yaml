@@ -85,7 +85,8 @@ limits:
   delegate_timeout_seconds: 900
   delegate_stall_seconds: 300           # stop a delegate that emits nothing for this long
   max_identical_tool_calls: 12          # stop a delegate repeating the same tool call this many times in a row
-  backend_unhealthy_after_errors: 2     # mark unhealthy, use fallback for the rest of the session
+  backend_unhealthy_after_errors: 2     # mark unhealthy, use fallback for the rest of the session (a rate limit with a known reset: until then)
+  quota_avoid_at: 0.9                   # prefer other backends once a subscription window is this full; 1 = off
 
 # ---------------------------------------------------------------------------
 # Checks — the project's own verification, run after every edit-mode delegation
@@ -96,6 +97,15 @@ limits:
 # ---------------------------------------------------------------------------
 checks:
   commands: []
+  timeout_seconds: 600
+
+# ---------------------------------------------------------------------------
+# Worktrees — commands that prepare each new delegate worktree before the
+# delegate starts. AGENT_ROUTER_WORKSPACE is the main checkout, e.g.
+#   worktrees: { setup: ["npm ci", "cp \"$AGENT_ROUTER_WORKSPACE/.env\" ."] }
+# ---------------------------------------------------------------------------
+worktrees:
+  setup: []
   timeout_seconds: 600
 
 # ---------------------------------------------------------------------------

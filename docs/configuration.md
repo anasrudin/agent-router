@@ -62,7 +62,8 @@ Shipped classes: `trivial`, `search.codebase`, `read.large`, `research.docs`, `p
 | `delegate_timeout_seconds` | 900 | Hard limit per attempt. |
 | `delegate_stall_seconds` | 300 | Watchdog: stop an attempt that emits nothing for this long. |
 | `max_identical_tool_calls` | 12 | Watchdog: stop an attempt that repeats the same tool call this many times in a row. |
-| `backend_unhealthy_after_errors` | 2 | Consecutive errors before a backend is marked unhealthy. |
+| `backend_unhealthy_after_errors` | 2 | Consecutive errors before a backend is marked unhealthy. A rate limit with a known reset time ends at that time. |
+| `quota_avoid_at` | 0.9 | Once a backend's subscription window is this full (0–1, from the CLI's own usage reports), other backends are preferred unless you pinned it. `1` turns this off. A full window always skips the backend until it resets. |
 
 ## `checks`
 
@@ -98,6 +99,24 @@ Tiers by monthly price: `1` = $20, `2` = $40, `3` = $200, `3.5` ≈ $255 (Claude
 - `limits.parallel_per_provider`: $20–40 → 1, $200+ → 2, $400+ → 3; Gemini at 1000+ requests/day → 2.
 
 `--plan <name>` and the app's **Plan** menu override the configured plan for a session; `none` turns it off.
+
+## `worktrees`
+
+```yaml
+worktrees:
+  setup: ["npm ci", "cp \"$AGENT_ROUTER_WORKSPACE/.env\" ."]
+  timeout_seconds: 600
+```
+
+Shell commands run, in order, in each new delegate worktree before the delegate starts. `AGENT_ROUTER_WORKSPACE` is the main checkout. The first failing command stops the rest and becomes a `check` finding in the result; the delegate still runs. Changes the setup makes are not counted as the delegate's changed files.
+
+## Project memory (`.harness/memory.md`)
+
+Not a `routing.yaml` key: a Markdown file in the workspace, one note per line starting with `- `. Conductor's system prompt lists the notes, numbered, and every brief carries them under Context. Conductor adds notes with the `remember` tool and removes them with `forget`; you can edit the file directly. Limits: 60 notes, 600 characters each. Commit it if your team should share the notes.
+
+## Model catalog (`config/models.json`)
+
+Shipped next to `routing.yaml`. Per backend: `efforts` (every reasoning level the CLI knows) and `models`, each with `id`, optional `label`, `description`, `efforts` (when narrower than the backend's) and `tier` (the tier it suits, used for suggestions). Detection wins where it exists: Codex (`codex debug models`) lists exactly what the account offers, so catalog-only Codex models are not offered; Gemini's API list (with `GEMINI_API_KEY` or `GOOGLE_API_KEY` set) is merged with the catalog; Claude uses the catalog only. `agent-router models` shows the result and checks your tiers.
 
 ## `lsp`
 

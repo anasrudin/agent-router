@@ -1,6 +1,9 @@
+import { mergeDetected } from "../../config/catalog"
 import type { BackendConfig } from "../../config/schema"
+import { readCodexQuota } from "../../router/quota"
 import type { AgentMode, Backend, BackendOptions, ModelOption, PermissionMode, RunOptions } from "../Backend"
 import { captureCli, detectCli, runCli, withRolePreamble } from "../cli-runner"
+import type { BackendEvent } from "../events"
 import { createCodexParser } from "./parse"
 
 /** Version the fixtures in backends/__tests__/fixtures/codex-*.jsonl were recorded with. */
@@ -27,12 +30,6 @@ export function parseCodexModels(json: string): BackendOptions {
     models.push({ id: m.slug, description: typeof m.description === "string" ? m.description : undefined, reasoning })
   }
   return { models, reasoningLevels: [...levels], supportsTrustOverride: false }
-}
-
-const CODEX_FALLBACK_OPTIONS: BackendOptions = {
-  models: [{ id: "gpt-6-luna" }],
-  reasoningLevels: ["low", "medium", "high", "xhigh"],
-  supportsTrustOverride: false,
 }
 
 /** A TOML literal string: no escapes, so no `"` that cmd.exe would refuse when codex is a .cmd shim. */
@@ -88,28 +85,63 @@ export function createCodexBackend(config: BackendConfig): Backend {
     cumulativeUsage: true,
     detect: () => detectCli(config.executable, CODEX_TESTED_VERSION),
     async options() {
+      // `codex debug models` lists what this account may use; the catalog only fills in when it fails.
       const out = await captureCli(config.executable, ["debug", "models"], 30_000)
+      let detected: BackendOptions | undefined
       try {
-        return out === undefined ? CODEX_FALLBACK_OPTIONS : parseCodexModels(out)
+        detected = out === undefined ? undefined : parseCodexModels(out)
       } catch {
-        return CODEX_FALLBACK_OPTIONS
+        detected = undefined
       }
+      const merged = mergeDetected("openai", detected, { authoritative: true })
+      return { ...merged, authoritative: Boolean(detected?.models.length) }
     },
     run: (options) =>
-      runCli(
-        "openai",
-        {
-          command: config.executable,
-          args: codexArgs(options, config.extra_args),
-          cwd: options.cwd,
-          stdin: withRolePreamble({
-            ...options,
-            systemPrompt: [options.systemPrompt, ...(options.mcpServers ?? []).map((s) => s.note)].filter(Boolean).join("\n\n"),
-          }),
-          timeoutMs: options.timeoutMs,
-          signal: options.signal,
-        },
-        createCodexParser(),
+      withRolloutQuota(
+        runCli(
+          "openai",
+          {
+            command: config.executable,
+            args: codexArgs(options, config.extra_args),
+            cwd: options.cwd,
+            stdin: withRolePreamble({
+              ...options,
+              systemPrompt: [options.systemPrompt, ...(options.mcpServers ?? []).map((s) => s.note)].filter(Boolean).join("\n\n"),
+            }),
+            timeoutMs: options.timeoutMs,
+            signal: options.signal,
+          },
+          createCodexParser(),
+        ),
       ),
   }
+}
+
+/**
+ * `codex exec --json` does not stream rate limits, but the thread's rollout file records them.
+ * Read them once the run ends and report them just before the final done/error event.
+ */
+export async function* withRolloutQuota(
+  events: AsyncIterable<BackendEvent>,
+  read: (threadId: string) => ReturnType<typeof readCodexQuota> = readCodexQuota,
+): AsyncGenerator<BackendEvent> {
+  let threadId: string | undefined
+  let last: BackendEvent | undefined
+  for await (const event of events) {
+    if (event.type === "session") threadId = event.sessionId
+    if (event.type === "done" || event.type === "error") {
+      last = event
+      continue
+    }
+    yield event
+  }
+  if (threadId) {
+    try {
+      const windows = read(threadId)
+      if (windows?.length) yield { type: "quota", windows }
+    } catch {
+      // Quota is advisory.
+    }
+  }
+  if (last) yield last
 }

@@ -3,7 +3,9 @@ import path from "node:path"
 import { Command, InvalidArgumentError, Option } from "commander"
 import type { PermissionMode } from "./backends/Backend"
 import { KILL_GRACE_MS } from "./backends/process"
+import { createBackends } from "./backends/registry"
 import { conductorSystemPrompt, conductorTier, createSession, runConductor, SELF_ENTRY } from "./conductor/run"
+import { checkTiers, loadCatalog } from "./config/catalog"
 import { loadConfig } from "./config/load"
 import { isPlaceholderModel, PROVIDERS, type ProviderId, ProviderId as ProviderSchema, TIERS } from "./config/schema"
 import { delegate } from "./coordinator/delegate"
@@ -138,8 +140,15 @@ program
       }
       if (s.installed && !detection.testedVersion)
         process.stdout.write("     warn: no recorded fixtures for this CLI yet; adapter flags are unverified\n")
-      if (placeholders.length)
+      if (s.installed) {
+        const options = await session.backends[p].options()
+        const cfg = session.config.backends[p]
+        for (const c of checkTiers(cfg.tiers, cfg.reasoning, options, options.authoritative ?? false)) {
+          process.stdout.write(`     warn: tiers.${c.tier} ${c.model}: ${c.problem}${c.suggestion ? ` (try ${c.suggestion})` : ""}\n`)
+        }
+      } else if (placeholders.length) {
         process.stdout.write(`     warn: placeholder model for tiers ${placeholders.join(", ")} — CLI default model runs\n`)
+      }
       if (p === "claude" && !s.installed) ok = false
     }
     const prompt = conductorSystemPrompt(session, conductorModel(session))
@@ -155,6 +164,36 @@ program
     if (!ok) {
       process.stdout.write("Conductor needs the claude backend.\n")
       process.exitCode = 1
+    }
+  })
+
+program
+  .command("models")
+  .description(
+    "list the models each backend offers (detected where the CLI or API can list them, else the catalog) and check the configured tiers",
+  )
+  .addOption(workspaceOption())
+  .action(async (opts: { workspace: string }) => {
+    const workspace = path.resolve(opts.workspace)
+    const { config } = loadConfig(workspace, undefined)
+    const backends = createBackends(config)
+    for (const p of PROVIDERS) {
+      const options = await backends[p].options()
+      const detected = options.models.some((m) => m.source === "detected")
+      process.stdout.write(
+        `${p} (${detected ? (options.authoritative ? "detected from the CLI" : "detected, plus catalog") : `catalog ${loadCatalog().updatedAt}`})\n`,
+      )
+      for (const m of options.models) {
+        const tier = TIERS.filter((t) => config.backends[p].tiers[t] === m.id).join("+")
+        const efforts = m.reasoning?.length ? ` [${m.reasoning.join(", ")}]` : ""
+        process.stdout.write(
+          `  ${tier ? `${tier.padEnd(14)}→` : "               "} ${m.id}${efforts}${m.source === "catalog" && detected ? " (catalog only)" : ""}${m.description ? ` — ${m.description}` : ""}\n`,
+        )
+      }
+      const cfg = config.backends[p]
+      for (const c of checkTiers(cfg.tiers, cfg.reasoning, options, options.authoritative ?? false)) {
+        process.stdout.write(`  warn: tiers.${c.tier} ${c.model}: ${c.problem}${c.suggestion ? ` (try ${c.suggestion})` : ""}\n`)
+      }
     }
   })
 

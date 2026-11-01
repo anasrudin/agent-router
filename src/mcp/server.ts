@@ -5,6 +5,7 @@ import type { PermissionMode } from "../backends/Backend"
 import { MediaKind, ProviderId } from "../config/schema"
 import { type DelegateResult, DelegationError, delegate } from "../coordinator/delegate"
 import { appendLedger, closeInterrupted, lastSessionTokens, readLedger } from "../coordinator/ledger"
+import { forget, MEMORY_FILE, NOTE_CHAR_LIMIT, remember } from "../coordinator/memory"
 import { capOutput } from "../coordinator/output"
 import { Brief } from "../coordinator/protocol"
 import type { Session } from "../coordinator/session"
@@ -28,6 +29,8 @@ export const TOOL_PERMISSIONS = {
   delegation_status: "auto",
   delegation_result: "auto",
   cancel_delegation: "auto",
+  remember: "auto",
+  forget: "auto",
   approve: "internal",
 } as const satisfies Record<string, "auto" | "ask" | "internal">
 
@@ -126,6 +129,7 @@ export function formatResult(r: DelegateResult, workspace?: string): string {
     `- Cost: ${r.costUsd ? `$${r.costUsd.toFixed(4)}` : "not reported by this CLI"} (${r.tokens.input} input${r.tokens.cached ? `, ${r.tokens.cached} of them cached` : ""} / ${r.tokens.output} output tokens)`,
   ]
   if (r.worktree) lines.push(`- Worktree: ${r.worktree.path} (branch ${r.worktree.branch}) — merge it yourself after verifying`)
+  if (r.setup?.length) lines.push(`- Worktree setup: ${r.setup.map((c) => `${c.ok ? "ok" : "FAILED"} \`${c.command}\``).join(", ")}`)
   if (r.decision.notes.length) lines.push(`- Routing notes: ${r.decision.notes.join("; ")}`)
   if (r.decision.secondOpinion) lines.push(`- Second opinion should come from: ${r.decision.secondOpinion}`)
   if (r.decision.reviewRequired) lines.push(`- This class requires an independent review on a provider other than ${r.provider}`)
@@ -430,6 +434,34 @@ export function createMcpServer(session: Session, pins: Pins, options: McpServer
         ? findings.map((f) => `- [${f.severity}] ${f.message}`).join("\n")
         : "No red flags in the added lines."
       return text(`${summary}\n\n(${diff.split("\n").length} diff lines scanned)`)
+    },
+  )
+
+  server.registerTool(
+    "remember",
+    {
+      title: "Save a project note",
+      description: `Save one lasting fact or standing instruction for this project to ${MEMORY_FILE}. Every future Conductor turn and every brief will carry it. Only for things that stay true: a user's standing rule ("never edit billing/"), a verified project fact that is costly to rediscover ("tests need \`make test-local\`"). Never secrets, task status or one-off details. Tell the user what you saved.`,
+      inputSchema: { note: z.string().describe(`One line, at most ${NOTE_CHAR_LIMIT} characters.`) },
+      annotations: { readOnlyHint: false, destructiveHint: false },
+    },
+    async (args) => {
+      const r = remember(session.workspace, args.note)
+      return text(r.message, !r.ok)
+    },
+  )
+
+  server.registerTool(
+    "forget",
+    {
+      title: "Remove a project note",
+      description: `Remove a note from ${MEMORY_FILE} by its number in the project memory list, when it is wrong or no longer true.`,
+      inputSchema: { number: z.number().int().describe("The note's number, 1-based.") },
+      annotations: { readOnlyHint: false, destructiveHint: false },
+    },
+    async (args) => {
+      const r = forget(session.workspace, args.number)
+      return text(r.message, !r.ok)
     },
   )
 

@@ -4,6 +4,7 @@ import type { BackendRegistry } from "../backends/registry"
 import { PROVIDERS, type ProviderId, type RoutingConfig } from "../config/schema"
 import { HealthTracker } from "../router/health"
 import type { PolicyContext } from "../router/policy"
+import { QuotaTracker } from "../router/quota"
 
 /** Caps concurrent delegates at limits.max_parallel_agents. */
 export class Semaphore {
@@ -31,6 +32,8 @@ export interface SessionOptions {
   backends: BackendRegistry
   selfProvider: ProviderId
   permission: PermissionMode
+  /** Where live quota is shared between processes; null keeps it in memory (tests). Defaults to the user cache. */
+  quotaFile?: string | null
 }
 
 /** State shared by every delegation in one Conductor session. */
@@ -41,6 +44,7 @@ export class Session implements PolicyContext {
   readonly selfProvider: ProviderId
   readonly permission: PermissionMode
   readonly health: HealthTracker
+  readonly quota: QuotaTracker
   /** Name of the routing profile in effect, if any. */
   readonly profile?: string
   readonly slots: Semaphore
@@ -58,6 +62,7 @@ export class Session implements PolicyContext {
     this.permission = options.permission
     this.profile = options.config.active_profile
     this.health = new HealthTracker(options.config.limits.backend_unhealthy_after_errors)
+    this.quota = new QuotaTracker(options.quotaFile)
     this.slots = new Semaphore(options.config.limits.max_parallel_agents)
   }
 

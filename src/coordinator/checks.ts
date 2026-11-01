@@ -15,12 +15,18 @@ export interface CheckResult {
 const OUTPUT_TAIL = 2_000
 
 /** Run one shell command in `cwd` and keep the tail of its output. */
-export async function runCheck(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<CheckResult> {
+export async function runCheck(
+  command: string,
+  cwd: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  env: Record<string, string> = {},
+): Promise<CheckResult> {
   return await new Promise<CheckResult>((resolve) => {
     const child = spawn(command, {
       cwd,
       shell: true,
-      env: { ...process.env, ...NONINTERACTIVE_ENV },
+      env: { ...process.env, ...NONINTERACTIVE_ENV, ...env },
       detached: process.platform !== "win32",
       windowsHide: true,
     })
@@ -86,4 +92,37 @@ export async function runConfiguredChecks(
       message: `Check \`${r.command}\` failed${r.code !== undefined ? ` (exit ${r.code})` : ""}:\n${r.output || "(no output)"}`,
     }))
   return { results, findings }
+}
+
+/**
+ * `worktrees.setup`: prepare a fresh delegate worktree (install dependencies, copy `.env`) before
+ * the delegate starts, so it does not spend turns on that or fail the project checks. The commands
+ * run in the worktree with AGENT_ROUTER_WORKSPACE set to the main checkout. Stops at the first
+ * failure; a failure is a finding, and the delegate still runs.
+ */
+export async function runWorktreeSetup(
+  commands: string[],
+  worktree: string,
+  workspace: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<{ results: CheckResult[]; findings: Finding[] }> {
+  const results: CheckResult[] = []
+  for (const command of commands) {
+    if (signal?.aborted) break
+    const result = await runCheck(command, worktree, timeoutMs, signal, { AGENT_ROUTER_WORKSPACE: workspace })
+    results.push(result)
+    if (!result.ok) {
+      return {
+        results,
+        findings: [
+          {
+            severity: "check",
+            message: `Worktree setup \`${command}\` failed${result.code !== undefined ? ` (exit ${result.code})` : ""}, so the delegate ran in an unprepared worktree:\n${result.output || "(no output)"}`,
+          },
+        ],
+      }
+    }
+  }
+  return { results, findings: [] }
 }

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
+import { memoryForConductor } from "../coordinator/memory"
 import type { Session } from "../coordinator/session"
 import { listAgents } from "./render"
 
@@ -40,6 +41,7 @@ export function promptVars(session: Session, selfModel: string | undefined): Rec
     AGENTS_MD: agentsMd ? `\n\n<project-agents-md>\n${agentsMd}\n</project-agents-md>\n` : "(no AGENTS.md in workspace)",
     README_SUMMARY: readme ? `\n\n<project-readme-excerpt>\n${readme}\n</project-readme-excerpt>\n` : "(no README.md in workspace)",
     CONDITIONAL_RULES: profileRules(session),
+    PROJECT_MEMORY: memoryForConductor(ws),
     AGENT_LIST: listAgents()
       .map((a) => `${a.name} (${a.mode}) — ${a.description}`)
       .join("; "),

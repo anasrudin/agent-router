@@ -13,8 +13,9 @@ import { estimateTokens } from "../router/classify"
 import { type Attempt, nextStep } from "../router/escalation"
 import { decide, type RouteDecision, type RouteRequest } from "../router/policy"
 import { SELF_ENTRY } from "../self"
-import { type CheckResult, runConfiguredChecks } from "./checks"
+import { type CheckResult, runConfiguredChecks, runWorktreeSetup } from "./checks"
 import { checkEvidence, keepsEvidence, prepareEvidenceDir } from "./evidence"
+import { readNotes } from "./memory"
 import { type Brief, parseReport, type Report, type RetryNote, renderBrief } from "./protocol"
 import type { Session } from "./session"
 import { checkReport, type Finding } from "./verify"
@@ -67,6 +68,8 @@ export interface DelegateResult {
   findings: Finding[]
   /** Results of `checks.commands` run after an edit-mode delegation; empty when none ran. */
   checks: CheckResult[]
+  /** `worktrees.setup` commands run before the delegate started, when it had a worktree. */
+  setup?: CheckResult[]
   /** Edit mode: `git status --porcelain` lines that appeared during the task, with `+added -removed` where git knows them. */
   changedFiles: string[]
 }
@@ -202,7 +205,21 @@ export async function delegate(session: Session, req: DelegateRequest): Promise<
   req.onStart?.(decision, agent, worktree)
 
   try {
-    return await session.slots.run(() => runLadder(session, req, decision, agent, cwd, worktree))
+    return await session.slots.run(async () => {
+      const setup = worktree
+        ? await runWorktreeSetup(
+            session.config.worktrees.setup,
+            worktree.path,
+            session.workspace,
+            session.config.worktrees.timeout_seconds * 1000,
+            req.signal,
+          )
+        : undefined
+      const result = await runLadder(session, req, decision, agent, cwd, worktree)
+      if (setup?.results.length) result.setup = setup.results
+      if (setup?.findings.length) result.findings.unshift(...setup.findings)
+      return result
+    })
   } finally {
     if (writer && !worktree) session.activeWritersInWorkspace -= 1
   }
@@ -264,6 +281,7 @@ async function runLadder(
         retryNotes,
         scopedRules(session.workspace, req.brief.relevant_files, provider),
         keepsEvidence(req.brief.mode, provider),
+        readNotes(session.workspace),
       )
     followUp = undefined
     text = ""
@@ -307,6 +325,7 @@ async function runLadder(
           req.onEvent?.(provider, event)
           if (event.type === "session") attempt.sessionId = event.sessionId
           else if (event.type === "tool_call") toolCalls += 1
+          else if (event.type === "quota") session.quota.record(provider, event.windows)
           else if (event.type === "usage") {
             costUsd += event.usage.costUsd ?? 0
             reported.input += event.usage.inputTokens
@@ -349,7 +368,8 @@ async function runLadder(
         attempt.outcome = "blocked"
       }
     }
-    if (attempt.outcome === "backend_error") session.health.recordError(provider, attempt.errorKind ?? "failed", attempt.message ?? "")
+    if (attempt.outcome === "backend_error")
+      session.health.recordError(provider, attempt.errorKind ?? "failed", attempt.message ?? "", session.quota.blocking(provider)?.resetsAt)
     else session.health.recordSuccess(provider)
     attempts.push(attempt)
 

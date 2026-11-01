@@ -9,8 +9,9 @@ import { PROVIDERS, type ProviderId, type RoutingConfig } from "../config/schema
 import { newLedgerPath } from "../coordinator/ledger"
 import { Session } from "../coordinator/session"
 import { type Overrides, parseOverrides, ULTRAWORK_NOTE } from "../router/classify"
+import { QuotaTracker } from "../router/quota"
 import { toWire } from "./bridge"
-import type { BackendStatus, BridgeMessage, BridgeReply, ClientMessage, ServerMessage } from "./protocol"
+import type { BackendStatus, BridgeMessage, BridgeReply, ClientMessage, QueuedPrompt, ServerMessage } from "./protocol"
 import { backendOptions, readSettings, saveSettings, testModel } from "./settings"
 
 type Role = "ui" | "bridge"
@@ -50,6 +51,7 @@ export async function backendStatus(workspace: string): Promise<BackendStatus> {
   await session.detectBackends()
   return {
     health: session.health.snapshot(),
+    quota: session.quota.snapshot(),
     executables: Object.fromEntries(PROVIDERS.map((p) => [p, config.backends[p].executable])) as Record<ProviderId, string>,
     profiles: Object.entries(config.profiles).map(([name, p]) => ({ name, label: p.label, description: p.description })),
     defaultProfile: config.default_profile,
@@ -73,6 +75,52 @@ interface Turn {
   abort: AbortController
 }
 
+type StartMessage = Extract<ClientMessage, { type: "start" }>
+
+/**
+ * Requests sent while a turn runs wait here and start in order when it ends. A cancelled turn
+ * pauses the queue: Stop means stop, so nothing starts again until the user sends or resumes.
+ * The queue lives in memory only, so a crash can never re-send a request on its own.
+ */
+export class PromptQueue {
+  private items: (QueuedPrompt & { msg: StartMessage })[] = []
+  paused = false
+  private counter = 0
+
+  add(msg: StartMessage): string {
+    const id = `q-${++this.counter}`
+    this.items.push({ id, prompt: msg.prompt, msg })
+    return id
+  }
+
+  remove(id: string): void {
+    this.items = this.items.filter((i) => i.id !== id)
+  }
+
+  /** Move to the front. */
+  promote(id: string): boolean {
+    const item = this.items.find((i) => i.id === id)
+    if (!item) return false
+    this.items = [item, ...this.items.filter((i) => i !== item)]
+    return true
+  }
+
+  /** The next request to run, unless paused. */
+  next(): StartMessage | undefined {
+    if (this.paused) return undefined
+    return this.items.shift()?.msg
+  }
+
+  clear(): void {
+    this.items = []
+    this.paused = false
+  }
+
+  view(): { items: QueuedPrompt[]; paused: boolean } {
+    return { items: this.items.map(({ id, prompt }) => ({ id, prompt })), paused: this.paused && this.items.length > 0 }
+  }
+}
+
 /**
  * Local server for the desktop app (AGENTS.md "server mode"). Binds 127.0.0.1 only. The UI and
  * the router MCP child both connect over WebSocket with the token; the server runs one Conductor
@@ -86,6 +134,23 @@ export function startServer(opts: ServeOptions) {
   /** The current chat's delegation ledger; a new chat (or workspace) starts a new one. */
   let chatLedger: string | undefined
   let turnCounter = 0
+  /** Conductor runs on Claude, so its own stream reports Claude's quota too. */
+  const quota = new QuotaTracker()
+  const queue = new PromptQueue()
+  const bridgeUrl = () => `ws://127.0.0.1:${server.port}/bridge?token=${encodeURIComponent(opts.token)}`
+  const broadcastQueue = () => broadcast({ type: "queue", ...queue.view() })
+  /** Start the next queued request if nothing is running. */
+  const drain = () => {
+    if (turn) return
+    const next = queue.next()
+    broadcastQueue()
+    if (!next) return
+    runTurn(next, bridgeUrl()).catch((e: unknown) => {
+      // It failed before starting (a folder that no longer exists): report it and go on with the rest.
+      broadcast({ type: "error", message: errorText(e) })
+      drain()
+    })
+  }
 
   const broadcast = (message: ServerMessage) => {
     const data = JSON.stringify(message)
@@ -104,7 +169,7 @@ export function startServer(opts: ServeOptions) {
     }
   }
 
-  async function runTurn(msg: Extract<ClientMessage, { type: "start" }>, bridgeUrl: string) {
+  async function runTurn(msg: StartMessage, bridgeUrl: string) {
     const workspace = assertDirectory(msg.workspace)
     const overrides = parseOverrides(msg.prompt, profileNames(workspace))
     // A keyword in the message beats the profile menu, for this request only.
@@ -121,6 +186,7 @@ export function startServer(opts: ServeOptions) {
       broadcast({
         type: "turn.started",
         turnId: id,
+        prompt: msg.prompt,
         resumed: resume !== undefined,
         mode: modeLine(overrides),
       })
@@ -141,11 +207,14 @@ export function startServer(opts: ServeOptions) {
         onEvent: (event) => {
           if (event.type === "session") conductor = { workspace, sessionId: event.sessionId }
           if (event.type === "error") error = event.error.message
+          if (event.type === "quota") quota.record("claude", event.windows)
           broadcast({ type: "conductor", turnId: id, event: toWire(event) })
         },
       })
-      if (exit.cancelled) error = "Cancelled."
-      else if (!error && exit.code !== 0) error = exit.stderr.trim().slice(-2000) || `Conductor exited with code ${exit.code}`
+      if (exit.cancelled) {
+        error = "Cancelled."
+        queue.paused = true
+      } else if (!error && exit.code !== 0) error = exit.stderr.trim().slice(-2000) || `Conductor exited with code ${exit.code}`
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
     } finally {
@@ -157,6 +226,7 @@ export function startServer(opts: ServeOptions) {
         ok: error === undefined,
         error,
       })
+      drain()
     }
   }
 
@@ -237,14 +307,20 @@ export function startServer(opts: ServeOptions) {
           )
         return
       case "start":
-        if (turn) {
-          reply(socket, {
-            type: "error",
-            message: "Conductor is still working on the previous request.",
-          })
-          return
-        }
-        void runTurn(msg, `ws://127.0.0.1:${server.port}/bridge?token=${encodeURIComponent(opts.token)}`)
+        // A new request is the user saying "go": it resumes a paused queue, behind what is already waiting.
+        queue.add(msg)
+        queue.paused = false
+        drain()
+        if (turn) broadcastQueue()
+        return
+      case "queue.remove":
+        queue.remove(msg.id)
+        broadcastQueue()
+        return
+      case "queue.send":
+        if (queue.promote(msg.id)) queue.paused = false
+        drain()
+        if (turn) broadcastQueue()
         return
       case "cancel":
         turn?.abort.abort()
@@ -252,6 +328,8 @@ export function startServer(opts: ServeOptions) {
       case "reset":
         conductor = undefined
         chatLedger = undefined
+        queue.clear()
+        broadcastQueue()
         return
       case "settings.get":
         Promise.resolve(assertDirectory(msg.workspace))

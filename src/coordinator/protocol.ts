@@ -42,6 +42,8 @@ export function renderBrief(
   directoryRules: { file: string; text: string }[] = [],
   /** Ask for saved command output (see keepsEvidence); defaults to edit mode, where every backend can. */
   evidence = brief.mode === "edit",
+  /** The project memory (.harness/memory.md). */
+  notes: string[] = [],
 ): string {
   const sections = [
     `## Task\n${brief.task}`,
@@ -52,6 +54,11 @@ export function renderBrief(
       `- Relevant files:\n${brief.relevant_files.length ? brief.relevant_files.map((f) => `  - ${f}`).join("\n") : "  - none named"}`,
       `- Key facts already established:\n${brief.facts.length ? brief.facts.map((f) => `  - ${f}`).join("\n") : "  - none"}`,
       brief.excerpts.length ? `- Exact excerpts:\n\n${brief.excerpts.map(fenced).join("\n\n")}` : "- Exact excerpts: none",
+      ...(notes.length
+        ? [
+            `- Project memory (standing facts and rules the user and Conductor keep for this project; follow them):\n${notes.map((n) => `  - ${n}`).join("\n")}`,
+          ]
+        : []),
     ].join("\n"),
     [
       "## Constraints",

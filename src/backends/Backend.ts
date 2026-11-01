@@ -1,4 +1,4 @@
-import type { ProviderId } from "../config/schema"
+import type { ProviderId, Tier } from "../config/schema"
 import type { BackendEvent } from "./events"
 
 /** How much a delegate may change. Adapters map this onto each CLI's own sandbox/approval flags. */
@@ -51,6 +51,10 @@ export interface ModelOption {
   description?: string
   /** Reasoning efforts this model accepts, when the CLI says; otherwise the backend-wide list applies. */
   reasoning?: string[]
+  /** "detected": the CLI or API listed it for this account; "catalog": from config/models.json. */
+  source?: "detected" | "catalog"
+  /** The tier the catalog suggests it for. */
+  tier?: Tier
 }
 
 /** What the settings UI may offer for this backend. Only adapters know these. */
@@ -61,6 +65,8 @@ export interface BackendOptions {
   reasoningLevels: string[]
   /** True when the CLI gates headless runs on workspace trust and can be told to skip it. */
   supportsTrustOverride: boolean
+  /** The models come from a detection that lists everything this account may use. */
+  authoritative?: boolean
 }
 
 export interface Backend {

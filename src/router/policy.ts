@@ -1,6 +1,7 @@
 import { excludedByPlan } from "../config/plans"
 import { isPlaceholderModel, type MediaKind, maxTier, PROVIDERS, type ProviderId, type RoutingConfig, type Tier } from "../config/schema"
 import type { HealthTracker } from "./health"
+import { describeWindow, type QuotaTracker } from "./quota"
 
 export interface RouteRequest {
   taskClass: string
@@ -56,6 +57,8 @@ export class RoutingError extends Error {
 export interface PolicyContext {
   config: RoutingConfig
   health: HealthTracker
+  /** Live subscription usage, when known. */
+  quota?: QuotaTracker
   selfProvider: ProviderId
   spentUsd: number
 }
@@ -78,6 +81,8 @@ function unfitReason(ctx: PolicyContext, provider: ProviderId, req: RouteRequest
   if (!ctx.health.isHealthy(provider)) {
     return `unhealthy (${ctx.health.snapshot()[provider].reason ?? "errors"})`
   }
+  const blocked = ctx.quota?.blocking(provider)
+  if (blocked) return `quota: ${describeWindow(blocked)}`
   if (req.exclude?.includes(provider)) return "already tried for this subtask"
   if (excludedByPlan(ctx.config.active_plan, provider)) return "not in your plan (no subscription)"
   const denied = ctx.config.privacy.provider_restrictions[provider]?.deny_paths ?? []
@@ -161,6 +166,16 @@ export function decide(ctx: PolicyContext, req: RouteRequest): RouteDecision {
         candidates.push(p)
         notes.push(`capability fit: using ${p}, outside this class's listed backends`)
       }
+    }
+  }
+  // Live quota: a nearly full subscription goes to the back of the line, unless the user pinned it.
+  const avoidAt = ctx.config.limits.quota_avoid_at
+  if (!pinned && ctx.quota && avoidAt < 1 && candidates.length > 1) {
+    const full = candidates.filter((p) => (ctx.quota?.fullest(p)?.usedFraction ?? 0) >= avoidAt)
+    if (full.length && full.length < candidates.length) {
+      for (const p of full)
+        notes.push(`prefer others: ${p} ${describeWindow(ctx.quota.fullest(p) as NonNullable<ReturnType<QuotaTracker["fullest"]>>)}`)
+      candidates.sort((a, b) => Number(full.includes(a)) - Number(full.includes(b)))
     }
   }
   const provider = candidates[0]
