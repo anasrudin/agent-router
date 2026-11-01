@@ -13,6 +13,8 @@ function repo() {
   const dir = mkdtempSync(path.join(tmpdir(), "ar-cp-"))
   const git = (...args: string[]) => spawnSync("git", args, { cwd: dir, encoding: "utf8" }).stdout.trim()
   git("init", "-q")
+  // The tests write LF files; Windows runners default to autocrlf, which would rewrite them as CRLF.
+  git("config", "core.autocrlf", "false")
   writeFileSync(path.join(dir, "a.ts"), "one\ntwo\n")
   writeFileSync(path.join(dir, "gone.ts"), "bye\n")
   writeFileSync(path.join(dir, ".gitignore"), "ignored.log\n")
