@@ -1,0 +1,25 @@
+{
+  "task": "explain",
+  "profile": "economy",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 19654,
+  "conductor": {
+    "usd": 0.0499642,
+    "input": 77292,
+    "output": 1109
+  },
+  "delegates": [],
+  "approvals": [],
+  "answer": "The ladder lives in `src/router/escalation.ts` (`nextStep`, a pure function). The loop that drives it is in `src/coordinator/delegate.ts`.\n\n**Order of checks in `nextStep` (`escalation.ts:45-97`)**\n1. **Stops:** success, `blocked` (`:48-49`), `cancelled` (`:50`), or max attempts reached (`:51`).\n2. **Dead providers (`:53`, `:79-81`):** a provider with a switch-immediately error is dropped. The ladder moves to another live provider at the same tier.\n3. **Retry once (`:82-87`):** the retry uses a sharper brief. It is skipped for timeout, stalled and tool_loop errors (`:30`). It is also skipped when only one attempt is left and a later rung is available.\n4. **Fallback provider (`:89-92`):** switches provider at the same tier. It is not available when the user pinned a provider (`:62`).\n5. **Tier up (`:93`):** raises the tier.\n6. **Last chance (`:95-96`):** any untried live provider at the top tier.\n7. **Exhausted (`:97`):** stops and asks the user.\n\n**Driver (`delegate.ts`)**\n- The token cap (`:384-388`) halts escalation.\n- Before `nextStep` runs, there is a nudge for stalled or tool_loop errors and a fresh restart for context overflow (`:393-407`).\n- `nextStep` is called at `:409`. The failure note is saved at `:422`.\n\n**Uncovered edge case:** `escalation.test.ts` only has table cases for `nextStep`. It never tests the nudge or context-restart paths at `delegate.ts:393-407` interacting with `maxAttempts`. Those paths use `continue`, so they skip `nextStep` and its max-attempts check at `:51`. The guard is only `attempts.length + 1 < maxAttempts`. I read the code but did not run any tests, and I did not check `delegate.test.ts` for this case.",
+  "score": {
+    "pass": true,
+    "checks": {
+      "names_nextStep": true,
+      "cites_escalation_ts": true,
+      "no_invented_runAttempts": true,
+      "names_edge_case": true
+    }
+  }
+}

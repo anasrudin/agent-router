@@ -41,6 +41,7 @@ The levers that follow fall into four groups: fewer turns, a smaller context per
 
 | Mechanism | Where | Effect |
 |---|---|---|
+| Lean Conductor context | `src/conductor/run.ts`, `protocolForConductor()` | Conductor's context per request went from 22.2k to 16.6k tokens (measured 2026-11-01 on this repository): `--strict-mcp-config` drops the user's own MCP servers and claude.ai connectors (−3.5k); the delegation protocol loses the brief template that the `delegate` tool's schema already carries, the report template and the delegate-only §3; §4 lists task classes rather than the routing table the router enforces in code; the README excerpt is 800 characters; the `route` and `backends` tools are gone (the CLI keeps `route`, and backend status is in the prompt). |
 | Lean Claude tool set | `backends.claude.lean_tools` (on) | Conductor loads only Read, Edit, Write, Bash and the router's tools. Claude Code's other tool definitions cost about 14k prompt tokens on every request. This cut Conductor's Claude tokens by 32% on Economy. |
 | Lean delegate prompt | `src/prompts/render.ts` | Delegates get the report half of the delegation protocol, not the brief-writing rules meant for Conductor: about 1.6k characters (~400 tokens) less on every turn of every delegate (scout 5,891 → 4,292 characters). |
 | References over dumps | conductor.md §8, delegation protocol | Briefs carry `path:start-end` and verbatim excerpts of only what matters, never whole files or chat history. |
@@ -57,6 +58,20 @@ The levers that follow fall into four groups: fewer turns, a smaller context per
 | Session budget | `budget.session_usd` | New delegations are refused once the session's reported spend reaches the cap. |
 | Escalation ladder | `escalation.max_attempts_per_subtask` | Retry, fallback, tier-up, ask, each used once. A dead backend (signed out, rate-limited, untrusted folder) is skipped without a retry. |
 | Watchdog | `limits.delegate_stall_seconds`, `limits.max_identical_tool_calls` | A silent or looping delegate is stopped long before the 15-minute timeout. |
+
+## Where Conductor's base cost comes from
+
+Measured on 2026-11-01 with one trivial turn ("Reply with just: ok") under Conductor's exact flags (`bench`-style, Haiku, so the dollar figures below are for Sonnet at list price):
+
+| Part | Tokens |
+|---|---|
+| Claude Code's own system prompt, its four built-in tools, environment | ~9.4k |
+| Conductor's appended prompt (before → after) | ~6.3k → ~5.2k |
+| The router's tool definitions (before → after) | ~3.0k → ~2.5k |
+| The user's MCP servers and claude.ai connectors (before → after) | ~3.5k → 0 |
+| **Total per request** | **22.2k → 16.6k** |
+
+The whole prefix is written to the prompt cache on a chat's first request (about $0.083 on Sonnet before, $0.062 after) and read from it afterwards (about $0.007). On a Claude subscription, Claude Code already uses a 1-hour cache for `-p` runs, so chats started within the hour reuse it; `--exclude-dynamic-system-prompt-sections` was tried and does not help, because Claude Code already puts the parts that change (git status) at the end. `--disable-slash-commands` and `--setting-sources` made no difference here. Replacing Claude Code's own system prompt with Conductor's would save about 3.1k tokens more, but it drops Claude Code's guidance on tool use, safety and git, so it is not done. In the Economy benchmark Conductor's tokens fell 17% with every task passing; the dollar cost stayed the same there because those runs mostly read the cache ([bench/RESULTS.md](../bench/RESULTS.md#after-trimming-conductors-base-context)).
 
 ## Measuring it
 

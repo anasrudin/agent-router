@@ -21,7 +21,8 @@ export function splitFrontmatter(source: string): PromptFile {
 }
 
 export function readPrompt(relative: string, dir = PROMPTS_DIR): PromptFile {
-  return splitFrontmatter(readFileSync(path.join(dir, relative), "utf8"))
+  // A Windows checkout may turn every newline into CRLF; the model would pay for each \r.
+  return splitFrontmatter(readFileSync(path.join(dir, relative), "utf8").replace(/\r\n/g, "\n"))
 }
 
 export interface AgentInfo {
@@ -73,10 +74,27 @@ export function protocolForDelegates(protocol: string): string {
   return protocol.replace(/^## 1\. [\s\S]*?(?=^## 2\. )/m, "")
 }
 
+/**
+ * Conductor writes briefs through the delegate tool, whose schema already lists every brief field,
+ * so it gets the brief rules without the template, the report sections as a list rather than a
+ * template, and no §3 (advice for delegates handing back code). Its system prompt is written to
+ * the prompt cache at the start of every chat, so each section it does not need costs every time.
+ */
+export function protocolForConductor(protocol: string): string {
+  return protocol
+    .replace(/(^## 1\. [^\n]*\n)[\s\S]*?(?=^### Brief rules)/m, "$1\nThe delegate tool's `brief` fields are the brief.\n\n")
+    .replace(
+      /(^## 2\. [^\n]*\n)[\s\S]*?(?=^### Report rules)/m,
+      "$1\nEvery delegate replies with `## Status` (done | partial | blocked | failed), `## Result`, `## Changes`, `## Evidence`, `## Confidence` and `## Open questions / risks`.\n\n",
+    )
+    .replace(/^---\s*\n+## 3\. [\s\S]*$/m, "")
+    .trimEnd()
+}
+
 /** The shared files every prompt says to "always also follow". Windows rules only apply on Windows. */
 function sharedSections(dir: string, platform: NodeJS.Platform, delegate: boolean): string {
   const protocol = readPrompt(path.join("shared", "delegation-protocol.md"), dir).body
-  const parts = [delegate ? protocolForDelegates(protocol) : protocol]
+  const parts = [delegate ? protocolForDelegates(protocol) : protocolForConductor(protocol)]
   if (platform === "win32") parts.push(readPrompt(path.join("shared", "windows.md"), dir).body)
   return parts.map((p) => p.trim()).join("\n\n---\n\n")
 }

@@ -10,7 +10,7 @@ const PROJECT_DOC_LIMIT = 12_000
 
 function readIfExists(file: string, limit: number): string | undefined {
   if (!existsSync(file)) return undefined
-  const text = readFileSync(file, "utf8")
+  const text = readFileSync(file, "utf8").replace(/\r\n/g, "\n")
   return text.length > limit ? `${text.slice(0, limit)}\n\n[truncated at ${limit} characters; read ${file} for the rest]` : text
 }
 
@@ -24,7 +24,8 @@ function profileRules(session: Session): string {
 export function promptVars(session: Session, selfModel: string | undefined): Record<string, string> {
   const ws = session.workspace
   const agentsMd = readIfExists(path.join(ws, "AGENTS.md"), PROJECT_DOC_LIMIT)
-  const readme = readIfExists(path.join(ws, "README.md"), 2_000)
+  // A pointer to what the project is; Conductor reads the rest when it needs it.
+  const readme = readIfExists(path.join(ws, "README.md"), 800)
   return {
     HARNESS_NAME,
     WINDOWS_VERSION: session.platformLine(),

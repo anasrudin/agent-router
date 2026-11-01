@@ -1,0 +1,41 @@
+{
+  "task": "review",
+  "profile": "economy",
+  "rep": 2,
+  "ok": true,
+  "error": "",
+  "ms": 57294,
+  "conductor": {
+    "usd": 0.0202547,
+    "input": 50196,
+    "output": 710
+  },
+  "delegates": [
+    {
+      "taskClass": "code.review",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "tier": "standard",
+      "usd": 0,
+      "tokens": {
+        "input": 259329,
+        "output": 1234,
+        "cached": 221952
+      },
+      "status": "done",
+      "attempts": [
+        "openai/standard: ok"
+      ]
+    }
+  ],
+  "approvals": [],
+  "answer": "**Top finding (`src/router/escalation.ts:58`, used at `:82`):** `retried` checks the whole history for any adjacent identical attempt. After one early retry, the ladder never retries again. That includes a newly chosen provider or tier. The reviewer's example is `[claude std, claude std, openai std]`, then Claude at deep tier fails softly. `retried` is still true, so the ladder skips that retry and moves on.\n\n**Do I agree?** Yes, it's real. I read the code and the predicate is history-wide, as described. Whether it counts as a bug depends on the intended policy. Conductor's \"retry once\" may mean once per ladder, not once per rung. The `maxAttempts` cap of 3 also makes the scenario rare in practice. I'd call it a minor-to-moderate policy gap, not a major bug.\n\nThe reviewer couldn't run its tests because `/tmp` was read-only. I haven't run them either.\n\nThe review was done by OpenAI (gpt-6-luna).",
+  "score": {
+    "pass": true,
+    "checks": {
+      "delegated_to_other_model": true,
+      "cites_line": true,
+      "states_agreement": true
+    }
+  }
+}
