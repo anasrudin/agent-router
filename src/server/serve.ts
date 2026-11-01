@@ -6,12 +6,13 @@ import { prepareConductor, SELF_ENTRY, streamConductor } from "../conductor/run"
 import { loadConfig, resolvePlan } from "../config/load"
 import { describePlan, PLAN_PRESETS } from "../config/plans"
 import { PROVIDERS, type ProviderId, type RoutingConfig } from "../config/schema"
+import { checkpointDiff, revertCheckpoint } from "../coordinator/checkpoints"
 import { newLedgerPath } from "../coordinator/ledger"
 import { Session } from "../coordinator/session"
 import { type Overrides, parseOverrides, ULTRAWORK_NOTE } from "../router/classify"
 import { QuotaTracker } from "../router/quota"
 import { toWire } from "./bridge"
-import type { BackendStatus, BridgeMessage, BridgeReply, ClientMessage, QueuedPrompt, ServerMessage } from "./protocol"
+import type { BackendStatus, BridgeMessage, BridgeReply, ClientMessage, QueuedPrompt, ServerMessage, ThreadCheckpoint } from "./protocol"
 import { backendOptions, readSettings, saveSettings, testModel } from "./settings"
 
 type Role = "ui" | "bridge"
@@ -68,6 +69,21 @@ function describeConfiguredPlan(plan: RoutingConfig["plan"]): string | undefined
   } catch {
     return undefined
   }
+}
+
+/**
+ * A checkpoint from the UI, checked before git sees it: the checkout must be the workspace or one
+ * of its delegate worktrees, and the snapshots full commit ids.
+ */
+export function trustedCheckpoint(workspace: string, c: ThreadCheckpoint): ThreadCheckpoint {
+  const ws = assertDirectory(workspace)
+  const cwd = path.resolve(c.cwd)
+  const worktrees = path.join(ws, ".harness", "worktrees")
+  const inside = cwd === ws || (path.dirname(cwd) === worktrees && statSync(cwd, { throwIfNoEntry: false })?.isDirectory())
+  if (!inside) throw new Error("That checkout is not this workspace or one of its delegate worktrees.")
+  const sha = /^[0-9a-f]{40}$/
+  if (!sha.test(c.before) || (c.after !== undefined && !sha.test(c.after))) throw new Error("Not a checkpoint.")
+  return { before: c.before, after: c.after, cwd }
 }
 
 interface Turn {
@@ -137,6 +153,8 @@ export function startServer(opts: ServeOptions) {
   /** Conductor runs on Claude, so its own stream reports Claude's quota too. */
   const quota = new QuotaTracker()
   const queue = new PromptQueue()
+  /** Things Conductor should hear at the start of its next turn, such as a thread the user reverted. */
+  const pendingNotes: string[] = []
   const bridgeUrl = () => `ws://127.0.0.1:${server.port}/bridge?token=${encodeURIComponent(opts.token)}`
   const broadcastQueue = () => broadcast({ type: "queue", ...queue.view() })
   /** Start the next queued request if nothing is running. */
@@ -174,7 +192,9 @@ export function startServer(opts: ServeOptions) {
     const overrides = parseOverrides(msg.prompt, profileNames(workspace))
     // A keyword in the message beats the profile menu, for this request only.
     const profile = overrides.profile ?? msg.profile
-    const prompt = overrides.ultrawork ? `${msg.prompt}\n\n${ULTRAWORK_NOTE}` : msg.prompt
+    const base = overrides.ultrawork ? `${msg.prompt}\n\n${ULTRAWORK_NOTE}` : msg.prompt
+    const notes = pendingNotes.splice(0)
+    const prompt = notes.length ? `${base}\n\n[Since your last turn, in the desktop app:]\n${notes.map((n) => `- ${n}`).join("\n")}` : base
     const id = `turn-${++turnCounter}`
     const abort = new AbortController()
     turn = { id, abort }
@@ -313,6 +333,28 @@ export function startServer(opts: ServeOptions) {
         drain()
         if (turn) broadcastQueue()
         return
+      case "thread.diff":
+        Promise.resolve()
+          .then(() => checkpointDiff(trustedCheckpoint(msg.workspace, msg.checkpoint)))
+          .then((d) => reply(socket, { type: "thread.diff", requestId: msg.requestId, ...d }))
+          .catch((e: unknown) =>
+            reply(socket, { type: "thread.diff", requestId: msg.requestId, patch: "", truncated: false, error: errorText(e) }),
+          )
+        return
+      case "thread.revert":
+        Promise.resolve()
+          .then(() => revertCheckpoint(trustedCheckpoint(msg.workspace, msg.checkpoint)))
+          .then((r) => {
+            if (r.ok && r.files.length)
+              pendingNotes.push(
+                `The user reverted the changes of thread "${msg.title}" (${r.files.join(", ")}). Those files are back to how they were before it ran.`,
+              )
+            reply(socket, { type: "thread.reverted", requestId: msg.requestId, ...r })
+          })
+          .catch((e: unknown) =>
+            reply(socket, { type: "thread.reverted", requestId: msg.requestId, ok: false, message: errorText(e), files: [] }),
+          )
+        return
       case "queue.remove":
         queue.remove(msg.id)
         broadcastQueue()
@@ -328,6 +370,7 @@ export function startServer(opts: ServeOptions) {
       case "reset":
         conductor = undefined
         chatLedger = undefined
+        pendingNotes.length = 0
         queue.clear()
         broadcastQueue()
         return

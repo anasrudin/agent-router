@@ -13,6 +13,7 @@ import { estimateTokens } from "../router/classify"
 import { type Attempt, nextStep } from "../router/escalation"
 import { decide, type RouteDecision, type RouteRequest } from "../router/policy"
 import { SELF_ENTRY } from "../self"
+import { type Checkpoint, snapshot } from "./checkpoints"
 import { type CheckResult, runConfiguredChecks, runWorktreeSetup } from "./checks"
 import { checkEvidence, keepsEvidence, prepareEvidenceDir } from "./evidence"
 import { readNotes } from "./memory"
@@ -33,6 +34,8 @@ export interface DelegateRequest {
   onStart?: (decision: RouteDecision, agent: string, worktree?: Worktree) => void
   onEvent?: (provider: ProviderId, event: BackendEvent) => void
   signal?: AbortSignal
+  /** Names this delegation's checkpoints (edit mode); defaults to a fresh id. */
+  checkpointId?: string
   /** Running total last reported for the session in `route.sticky`, when its backend reports totals (from the ledger). */
   priorSessionTokens?: Tokens
 }
@@ -70,6 +73,8 @@ export interface DelegateResult {
   checks: CheckResult[]
   /** `worktrees.setup` commands run before the delegate started, when it had a worktree. */
   setup?: CheckResult[]
+  /** Edit mode in a git checkout: snapshots before and after, for the thread's exact diff and Revert. */
+  checkpoint?: Checkpoint
   /** Edit mode: `git status --porcelain` lines that appeared during the task, with `+added -removed` where git knows them. */
   changedFiles: string[]
 }
@@ -255,6 +260,8 @@ async function runLadder(
   const startedAt = Date.now()
   // What was already uncommitted, so a restarted delegate is not told the user's own edits are its work.
   const before = gitChanges(cwd)
+  const checkpointId = req.checkpointId ?? `d-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+  const beforeCommit = req.brief.mode === "edit" ? snapshot(cwd, `${checkpointId}-before`) : undefined
   const lsp = lspServerSpec(session, cwd)
   if (req.brief.mode !== "read-only") {
     try {
@@ -436,6 +443,8 @@ async function runLadder(
     findings.push(...ran.findings)
   }
   const changedFiles = req.brief.mode === "edit" ? await describeChanges(cwd, before) : []
+  const afterCommit = beforeCommit ? snapshot(cwd, `${checkpointId}-after`) : undefined
+  const checkpoint = beforeCommit ? { before: beforeCommit, after: afterCommit, cwd } : undefined
   return {
     status: usable ? report?.status : "error",
     report: usable ? report : undefined,
@@ -453,6 +462,7 @@ async function runLadder(
     sessionTokens: last.sessionId ? sessionTotals.get(last.sessionId) : undefined,
     findings,
     checks,
+    checkpoint,
     changedFiles,
   }
 }

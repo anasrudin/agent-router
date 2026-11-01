@@ -12,6 +12,7 @@ import type {
   ServerMessage,
   WireEvent,
 } from "../../server/protocol"
+import { type DiffFile, formatReview, parseUnifiedDiff, type ReviewComment } from "./diff"
 import { escapeHtml, renderMarkdown, resultLine } from "./markdown"
 import { notifyIfAway } from "./notify"
 import { createSettings } from "./settings"
@@ -316,6 +317,16 @@ interface Thread {
   error?: string
   /** The row in this turn's Threads card. */
   chatRow?: HTMLElement
+  /** The thread's diff between its checkpoints, once loaded. */
+  diff?: { files: DiffFile[]; truncated: boolean; error?: string }
+  diffRequested?: boolean
+  /** Review comments not yet sent to Conductor. */
+  comments: ReviewComment[]
+  /** Lines picked for the next comment. */
+  selection?: { file: string; side: "new" | "old"; start: number; end: number }
+  draft?: string
+  /** "confirm" while the Revert button asks to be pressed again; the outcome once done. */
+  revert?: "confirm" | { ok: boolean; message: string }
 }
 
 const PROVIDER_GLYPH: Record<ProviderId, string> = { claude: "C", gemini: "G", openai: "X" }
@@ -430,6 +441,236 @@ function selectThread(id: string | undefined) {
   if (id) renderDetail()
 }
 
+// ── A thread's diff: review comments and revert ────────────────────────
+
+/** Backends whose delegate sessions take a follow-up (resume). */
+const RESUMABLE: ReadonlySet<ProviderId> = new Set(["claude", "openai"])
+const pendingRequests = new Map<string, (msg: ServerMessage) => void>()
+let requestCounter = 0
+
+function request(message: ClientMessage & { requestId: string }): Promise<ServerMessage> {
+  return new Promise((resolve) => {
+    pendingRequests.set(message.requestId, resolve)
+    send(message)
+  })
+}
+const nextRequestId = () => `r-${++requestCounter}`
+
+function loadDiff(t: Thread) {
+  const checkpoint = t.summary?.checkpoint
+  if (!checkpoint || t.diffRequested) return
+  t.diffRequested = true
+  void request({ type: "thread.diff", requestId: nextRequestId(), workspace: state.workspace, checkpoint }).then((msg) => {
+    if (msg.type !== "thread.diff") return
+    t.diff = msg.error
+      ? { files: [], truncated: false, error: msg.error }
+      : { files: parseUnifiedDiff(msg.patch), truncated: msg.truncated }
+    if (state.selected === t.id) renderDetail()
+  })
+}
+
+function pickLine(t: Thread, file: string, side: "new" | "old", line: number, extend: boolean) {
+  const s = t.selection
+  t.selection =
+    extend && s && s.file === file && s.side === side
+      ? { file, side, start: Math.min(s.start, line), end: Math.max(s.end, line) }
+      : { file, side, start: line, end: line }
+  renderDetail()
+  ;(document.querySelector(".comment-form textarea") as HTMLTextAreaElement | null)?.focus()
+}
+
+function commentForm(t: Thread): HTMLElement {
+  const s = t.selection as NonNullable<Thread["selection"]>
+  const form = el("div", "comment-form")
+  const where = s.start === s.end ? `line ${s.start}` : `lines ${s.start}-${s.end}`
+  form.append(
+    Object.assign(el("div", "muted"), {
+      textContent: `Comment on ${where}${s.side === "old" ? " (deleted)" : ""}. Shift-click another line for a range.`,
+    }),
+  )
+  const box = document.createElement("textarea")
+  box.rows = 2
+  box.placeholder = "What should change here?"
+  box.value = t.draft ?? ""
+  box.addEventListener("input", () => {
+    t.draft = box.value
+  })
+  const add = el("button", "primary small") as HTMLButtonElement
+  add.type = "button"
+  add.textContent = "Add comment"
+  const cancel = el("button", "ghost small") as HTMLButtonElement
+  cancel.type = "button"
+  cancel.textContent = "Cancel"
+  const commit = () => {
+    const text = box.value.trim()
+    if (!text) return
+    t.comments.push({ ...s, text })
+    t.selection = undefined
+    t.draft = undefined
+    renderDetail()
+  }
+  add.addEventListener("click", commit)
+  box.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) commit()
+    if (e.key === "Escape") cancel.click()
+  })
+  cancel.addEventListener("click", () => {
+    t.selection = undefined
+    t.draft = undefined
+    renderDetail()
+  })
+  const buttons = el("div", "buttons")
+  buttons.append(add, cancel)
+  form.append(box, buttons)
+  return form
+}
+
+function renderFileDiff(t: Thread, f: DiffFile, open: boolean): HTMLElement {
+  const box = document.createElement("details")
+  box.className = "diff-file"
+  box.open = open
+  const added = f.hunks.reduce((n, h) => n + h.lines.filter((l) => l.kind === "add").length, 0)
+  const removed = f.hunks.reduce((n, h) => n + h.lines.filter((l) => l.kind === "del").length, 0)
+  const summary = el("summary", "mono")
+  const name = f.status === "renamed" ? `${f.oldPath} → ${f.path}` : f.path
+  summary.append(
+    Object.assign(el("span", "diff-name"), { textContent: name }),
+    Object.assign(el("span", "diff-count"), { textContent: f.binary ? "binary" : `+${added} −${removed}` }),
+  )
+  box.append(summary)
+  const table = el("div", "diff-lines mono")
+  const sel = t.selection?.file === f.path ? t.selection : undefined
+  for (const h of f.hunks) {
+    table.append(Object.assign(el("div", "diff-hunk"), { textContent: h.header }))
+    for (const line of h.lines) {
+      const side = line.kind === "del" ? "old" : "new"
+      const no = (side === "old" ? line.old : line.new) as number
+      const row = el("div", `diff-row ${line.kind}`)
+      if (sel && sel.side === side && no >= sel.start && no <= sel.end) row.classList.add("selected")
+      const num = el("button", "diff-num") as HTMLButtonElement
+      num.type = "button"
+      num.textContent = `${line.old ?? ""}`
+      num.title = "Comment on this line (shift-click for a range)"
+      const num2 = Object.assign(el("span", "diff-num2"), { textContent: `${line.new ?? ""}` })
+      const code = Object.assign(el("span", "diff-code"), {
+        textContent: `${line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}${line.text}`,
+      })
+      row.append(num, num2, code)
+      row.addEventListener("click", (e) => pickLine(t, f.path, side, no, (e as MouseEvent).shiftKey))
+      table.append(row)
+      for (const c of t.comments.filter((c) => c.file === f.path && c.side === side && c.end === no)) {
+        const note = el("div", "diff-comment")
+        note.append(Object.assign(el("span"), { textContent: c.text }))
+        const drop = el("button", "icon-btn") as HTMLButtonElement
+        drop.type = "button"
+        drop.title = "Remove comment"
+        drop.setAttribute("aria-label", drop.title)
+        drop.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>`
+        drop.addEventListener("click", (e) => {
+          e.stopPropagation()
+          t.comments = t.comments.filter((x) => x !== c)
+          renderDetail()
+        })
+        note.append(drop)
+        table.append(note)
+      }
+      if (sel && sel.side === side && sel.end === no) table.append(commentForm(t))
+    }
+  }
+  box.append(table)
+  return box
+}
+
+function renderChanges(t: Thread): HTMLElement {
+  loadDiff(t)
+  const box = el("div", "changes")
+  const bar = el("div", "changes-bar")
+  const sum = t.summary as DelegationSummary
+  if (t.comments.length) {
+    const sendBtn = el("button", "primary small") as HTMLButtonElement
+    sendBtn.type = "button"
+    sendBtn.textContent = `Send ${t.comments.length} comment${t.comments.length > 1 ? "s" : ""} to Conductor`
+    sendBtn.title = state.running ? "Queued behind the current turn" : "Conductor hands them to this delegate and checks the fix"
+    sendBtn.addEventListener("click", () => {
+      const prompt = formatReview(
+        {
+          title: taskTitle(t.task),
+          agent: t.agent,
+          taskClass: t.taskClass,
+          provider: sum.provider,
+          sessionId: sum.sessionId,
+          resumable: RESUMABLE.has(sum.provider),
+        },
+        t.comments,
+      )
+      if (startRequest(prompt)) {
+        t.comments = []
+        renderDetail()
+      }
+    })
+    bar.append(sendBtn)
+  }
+  const revert = el("button", "ghost small danger") as HTMLButtonElement
+  revert.type = "button"
+  revert.textContent = t.revert === "confirm" ? "Confirm revert" : "Revert thread"
+  revert.title = "Undo this thread's changes in its checkout. Refused if the files changed since."
+  revert.disabled = typeof t.revert === "object" && t.revert.ok
+  revert.addEventListener("click", () => {
+    if (t.revert !== "confirm") {
+      t.revert = "confirm"
+      renderDetail()
+      return
+    }
+    const checkpoint = sum.checkpoint as NonNullable<DelegationSummary["checkpoint"]>
+    void request({
+      type: "thread.revert",
+      requestId: nextRequestId(),
+      workspace: state.workspace,
+      checkpoint,
+      title: taskTitle(t.task),
+    }).then((msg) => {
+      if (msg.type !== "thread.reverted") return
+      t.revert = { ok: msg.ok, message: msg.message }
+      renderDetail()
+    })
+  })
+  bar.append(revert)
+  if (t.revert === "confirm") {
+    const cancel = el("button", "ghost small") as HTMLButtonElement
+    cancel.type = "button"
+    cancel.textContent = "Cancel"
+    cancel.addEventListener("click", () => {
+      t.revert = undefined
+      renderDetail()
+    })
+    bar.append(cancel)
+  }
+  box.append(bar)
+  if (typeof t.revert === "object")
+    box.append(Object.assign(el("div", t.revert.ok ? "notice ok" : "error"), { textContent: t.revert.message }))
+  if (!t.diff) {
+    box.append(Object.assign(el("div", "muted"), { textContent: "Loading the diff…" }))
+    return box
+  }
+  if (t.diff.error) {
+    box.append(Object.assign(el("div", "error"), { textContent: t.diff.error }))
+    return box
+  }
+  if (!t.diff.files.length) box.append(Object.assign(el("div", "muted"), { textContent: "This thread changed no files." }))
+  else
+    box.append(
+      Object.assign(el("div", "muted hint-line"), {
+        textContent: "Click a line to comment on it. Comments go to Conductor, which hands them to this delegate.",
+      }),
+    )
+  t.diff.files.forEach((f, i) => {
+    box.append(renderFileDiff(t, f, i < 6))
+  })
+  if (t.diff.truncated)
+    box.append(Object.assign(el("div", "muted"), { textContent: "The diff is cut off here: it is too large to show in full." }))
+  return box
+}
+
 function renderDetail() {
   const t = state.selected ? state.threads.get(state.selected) : undefined
   if (!t) return
@@ -460,7 +701,8 @@ function renderDetail() {
   section("Task", Object.assign(el("p", "task"), { textContent: t.task }))
   if (t.error) section("Error", Object.assign(el("div", "error"), { textContent: t.error }))
   const sum = t.summary
-  if (sum?.changedFiles.length) {
+  if (sum?.checkpoint?.after) section("Changes", renderChanges(t))
+  else if (sum?.changedFiles.length) {
     const list = el("ul", "files mono")
     for (const f of sum.changedFiles) list.append(Object.assign(el("li"), { textContent: f }))
     section("Files changed", list)
@@ -512,6 +754,7 @@ function delegationStarted(msg: Extract<ServerMessage, { type: "delegation.start
     startedAt: Date.now(),
     tokens: 0,
     activity: [],
+    comments: [],
   }
   const card = threadsCard()
   const row = el("button", "thread-row") as HTMLButtonElement
@@ -614,6 +857,11 @@ function approvalRequest(msg: Extract<ServerMessage, { type: "approval.request" 
 
 function onMessage(msg: ServerMessage) {
   if (settings.onMessage(msg)) return
+  if ((msg.type === "thread.diff" || msg.type === "thread.reverted") && pendingRequests.has(msg.requestId)) {
+    pendingRequests.get(msg.requestId)?.(msg)
+    pendingRequests.delete(msg.requestId)
+    return
+  }
   switch (msg.type) {
     case "hello":
       showBanner(undefined)
@@ -699,21 +947,13 @@ function reportStartupError(error: unknown) {
 
 const settings = createSettings(send, () => state.workspace, showBanner)
 
-function submit() {
-  const prompt = promptBox.value.trim()
-  if (state.running && !prompt) {
-    send({ type: "cancel" })
-    return
-  }
-  if (!prompt) return
+/** Send a request to Conductor (queued by the server if a turn is running). False if it cannot be sent. */
+function startRequest(prompt: string): boolean {
   if (!state.workspace) {
     showBanner("Choose a workspace folder first.")
-    return
+    return false
   }
   showBanner(undefined)
-  // The bubble appears when the server starts the turn: now, or later if it queues it.
-  promptBox.value = ""
-  updateSendButton()
   send({
     type: "start",
     prompt,
@@ -722,6 +962,20 @@ function submit() {
     profile: profileSelect.value || undefined,
     plan: planSelect.value || undefined,
   })
+  return true
+}
+
+function submit() {
+  const prompt = promptBox.value.trim()
+  if (state.running && !prompt) {
+    send({ type: "cancel" })
+    return
+  }
+  if (!prompt) return
+  // The bubble appears when the server starts the turn: now, or later if it queues it.
+  if (!startRequest(prompt)) return
+  promptBox.value = ""
+  updateSendButton()
 }
 
 $("form").addEventListener("submit", (e) => {

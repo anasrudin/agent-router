@@ -33,6 +33,7 @@ The levers that follow fall into four groups: fewer turns, a smaller context per
 | Resume, don't restart | `resume` on `delegate`; ladder retries | A follow-up continues the delegate's session (Claude, Codex), which already holds what it read. A malformed report is fixed in the same session instead of a fresh attempt. |
 | Project memory | `.harness/memory.md`, `remember` | Facts that would otherwise be re-scouted every chat (the real test command, where config lives) ride in Conductor's prompt and every brief. |
 | Worktree setup | `worktrees.setup` | A delegate in a fresh worktree does not spend turns installing dependencies or fail the project checks for lack of them. |
+| Review comments to the same delegate | thread diff in the desktop app | A fix requested on a diff resumes the delegate that wrote it, which still holds what it read, instead of briefing a new one from scratch. |
 | Nudge before giving up | watchdog | A stalled or looping Claude/Codex delegate is resumed with a note instead of starting over. |
 | Report gate | Stop hook (Claude delegates) | A formatting slip costs one more turn, not a whole new attempt. |
 

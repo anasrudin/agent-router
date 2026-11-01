@@ -164,6 +164,9 @@ export function summarize(r: DelegateResult): DelegationSummary {
     findings: r.findings,
     notes: r.decision.notes,
     worktree: r.worktree?.path,
+    sessionId: r.sessionId,
+    taskClass: r.decision.taskClass,
+    checkpoint: r.checkpoint,
     changedFiles: r.changedFiles,
     report: r.text,
   }
@@ -210,6 +213,7 @@ export function createMcpServer(session: Session, pins: Pins, options: McpServer
     let pane: PaneTelemetry | undefined
     try {
       const result = await delegate(session, {
+        checkpointId: id,
         taskClass: args.task_class,
         agent: args.agent,
         brief: args.brief,
