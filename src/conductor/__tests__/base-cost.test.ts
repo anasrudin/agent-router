@@ -27,6 +27,7 @@ describe("Conductor's per-request context", () => {
     const text = conductorSystemPrompt(testSession(fakeRegistry({})), "sonnet").text
     // About 4.8k tokens on 2026-11-01; a jump means something large slipped in.
     expect(text.length).toBeLessThan(19_000)
+    expect(text).not.toContain("\r")
   })
 
   test("no tools that repeat what the prompt already says (route preview, backend status)", async () => {

@@ -10,7 +10,7 @@ const PROJECT_DOC_LIMIT = 12_000
 
 function readIfExists(file: string, limit: number): string | undefined {
   if (!existsSync(file)) return undefined
-  const text = readFileSync(file, "utf8")
+  const text = readFileSync(file, "utf8").replace(/\r\n/g, "\n")
   return text.length > limit ? `${text.slice(0, limit)}\n\n[truncated at ${limit} characters; read ${file} for the rest]` : text
 }
 

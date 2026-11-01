@@ -21,7 +21,8 @@ export function splitFrontmatter(source: string): PromptFile {
 }
 
 export function readPrompt(relative: string, dir = PROMPTS_DIR): PromptFile {
-  return splitFrontmatter(readFileSync(path.join(dir, relative), "utf8"))
+  // A Windows checkout may turn every newline into CRLF; the model would pay for each \r.
+  return splitFrontmatter(readFileSync(path.join(dir, relative), "utf8").replace(/\r\n/g, "\n"))
 }
 
 export interface AgentInfo {
