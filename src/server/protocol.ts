@@ -53,6 +53,8 @@ export interface DelegationSummary {
   findings: { severity: string; message: string }[]
   notes: string[]
   worktree?: string
+  /** Edit mode: git status lines that appeared during the task, with line counts. */
+  changedFiles: string[]
   /** The delegate's report, verbatim. */
   report: string
 }

@@ -7,35 +7,87 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <header class="topbar">
-      <div class="brand">
-        <span class="logo" aria-hidden="true"></span>
-        <span>agent-router</span>
-      </div>
-      <button id="workspace" type="button" class="workspace" title="Choose the project folder Conductor works in">
-        <span class="label">Workspace</span>
-        <span id="workspace-path" class="path">Choose a folder…</span>
-      </button>
-      <label class="permission" title="What Conductor and its delegates may do without asking">
-        <span class="label">Permission</span>
-        <select id="permission">
-          <option value="default">Ask before changes</option>
-          <option value="acceptEdits">Accept edits</option>
-          <option value="bypass">Bypass (no prompts)</option>
-        </select>
-      </label>
-      <label class="permission" title="How much depth to buy above each task's quality floor">
-        <span class="label">Profile</span>
-        <select id="profile"><option value="">Default</option></select>
-      </label>
-      <label class="permission" title="Your subscriptions: the backend you pay most for does the frontier work">
-        <span class="label">Plan</span>
-        <select id="plan"><option value="">As configured</option></select>
-      </label>
-      <fieldset id="backends" class="backends" aria-label="Backend status"></fieldset>
-      <button id="open-settings" type="button" class="ghost" title="Choose the model and reasoning effort for each backend and tier">Models</button>
-      <button id="new-chat" type="button" class="ghost" title="Start a new Conductor conversation">New chat</button>
-    </header>
+    <div class="app">
+      <aside class="sidebar" aria-label="Workspace and threads">
+        <div class="side-top">
+          <span class="brand"><span class="logo" aria-hidden="true"></span>agent-router</span>
+          <button id="new-chat" type="button" class="icon-btn" title="New chat" aria-label="New chat">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg>
+          </button>
+          <button id="open-settings" type="button" class="icon-btn" title="Models: the model and reasoning effort for each backend and tier" aria-label="Models">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.2" /><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" /></svg>
+          </button>
+        </div>
+        <button id="workspace" type="button" class="project" title="Choose the project folder Conductor works in">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.2l1.5 1.5h6.3a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" /></svg>
+          <span id="workspace-path" class="path">Choose a folder…</span>
+        </button>
+        <nav id="threads" class="tree" aria-label="This chat"></nav>
+        <fieldset id="backends" class="backends" aria-label="Backend status"></fieldset>
+      </aside>
+
+      <section class="main">
+        <header class="main-head">
+          <svg class="crown" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12.5h12M2.5 11 1.8 5l3.6 2.6L8 3l2.6 4.6L14.2 5l-.7 6z" /></svg>
+          <span id="chat-title" class="chat-title">Conductor</span>
+        </header>
+
+        <main id="log" class="log" aria-live="polite">
+          <section class="empty" id="empty">
+            <h1>What should Conductor do?</h1>
+            <p>Conductor plans the work, routes each part to Claude, Gemini or Codex by the rules in <code>routing.yaml</code>, and checks what comes back before answering. Each delegation shows up as a thread in the sidebar.</p>
+            <ul class="tips">
+              <li><code>@gemini</code>, <code>@claude</code> or <code>@codex</code> pins a backend for this request.</li>
+              <li><code>/route code.review gemini</code> pins one kind of task.</li>
+            </ul>
+          </section>
+        </main>
+
+        <footer class="composer">
+          <div id="banner" class="banner" hidden></div>
+          <form id="form" class="composer-box">
+            <textarea id="prompt" rows="2" placeholder="Describe the task. Enter to send, Shift+Enter for a new line." autocomplete="off"></textarea>
+            <div class="composer-bar">
+              <label class="pick" title="How much depth to buy above each task's quality floor">
+                <span class="sr-only">Profile</span>
+                <select id="profile"><option value="">Default</option></select>
+              </label>
+              <label class="pick" title="Your subscriptions: the backend you pay most for does the frontier work">
+                <span class="sr-only">Plan</span>
+                <select id="plan"><option value="">As configured</option></select>
+              </label>
+              <label class="pick" title="What Conductor and its delegates may do without asking">
+                <span class="sr-only">Permission</span>
+                <select id="permission">
+                  <option value="default">Ask before changes</option>
+                  <option value="acceptEdits">Accept edits</option>
+                  <option value="bypass">Bypass (no prompts)</option>
+                </select>
+              </label>
+              <span class="spacer"></span>
+              <button id="send" type="submit" class="send" aria-label="Send" title="Send">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" /></svg>
+              </button>
+            </div>
+          </form>
+          <div class="statusbar">
+            <span id="cost" class="cost" title="Reported spend and tokens this chat (Conductor + delegates)">$0.0000 · 0 tokens</span>
+            <span id="status-threads"></span>
+          </div>
+        </footer>
+      </section>
+
+      <aside id="detail" class="detail" aria-label="Thread detail" hidden>
+        <header class="detail-head">
+          <span id="detail-glyph" class="glyph"></span>
+          <span id="detail-title" class="detail-title"></span>
+          <button id="detail-close" type="button" class="icon-btn" title="Close" aria-label="Close thread">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+          </button>
+        </header>
+        <div id="detail-body" class="detail-body"></div>
+      </aside>
+    </div>
 
     <dialog id="settings" class="settings" aria-labelledby="settings-title">
       <form id="settings-form" method="dialog">
@@ -58,27 +110,6 @@
       </form>
     </dialog>
 
-    <main id="log" class="log" aria-live="polite">
-      <section class="empty" id="empty">
-        <h1>What should Conductor do?</h1>
-        <p>Conductor plans the work, routes each part to Claude, Gemini or Codex by the rules in <code>routing.yaml</code>, and checks what comes back before answering.</p>
-        <ul class="tips">
-          <li><code>@gemini</code>, <code>@claude</code> or <code>@codex</code> pins a backend for this request.</li>
-          <li><code>/route code.review gemini</code> pins one kind of task.</li>
-        </ul>
-      </section>
-    </main>
-
-    <footer class="composer">
-      <div id="banner" class="banner" hidden></div>
-      <form id="form">
-        <textarea id="prompt" rows="3" placeholder="Describe the task. Enter to send, Shift+Enter for a new line." autocomplete="off"></textarea>
-        <div class="actions">
-          <span id="cost" class="cost" title="Reported spend and tokens this session (Conductor + delegates)">$0.0000 · 0 tokens</span>
-          <button id="send" type="submit" class="primary">Send</button>
-        </div>
-      </form>
-    </footer>
     <script type="module" src="main.js"></script>
   </body>
 </html>

@@ -65,9 +65,18 @@ export function render(template: string, vars: Record<string, string>): Rendered
   return { text, missing: [...missing] }
 }
 
+/**
+ * Delegates never write briefs, so they get the protocol without its §1 (the brief template and
+ * rules for senders). Every turn of a delegate re-sends its system prompt, so this adds up.
+ */
+export function protocolForDelegates(protocol: string): string {
+  return protocol.replace(/^## 1\. [\s\S]*?(?=^## 2\. )/m, "")
+}
+
 /** The shared files every prompt says to "always also follow". Windows rules only apply on Windows. */
-function sharedSections(dir: string, platform: NodeJS.Platform): string {
-  const parts = [readPrompt(path.join("shared", "delegation-protocol.md"), dir).body]
+function sharedSections(dir: string, platform: NodeJS.Platform, delegate: boolean): string {
+  const protocol = readPrompt(path.join("shared", "delegation-protocol.md"), dir).body
+  const parts = [delegate ? protocolForDelegates(protocol) : protocol]
   if (platform === "win32") parts.push(readPrompt(path.join("shared", "windows.md"), dir).body)
   return parts.map((p) => p.trim()).join("\n\n---\n\n")
 }
@@ -75,11 +84,11 @@ function sharedSections(dir: string, platform: NodeJS.Platform): string {
 export function composeSystemPrompt(
   main: string,
   vars: Record<string, string>,
-  options: { dir?: string; platform?: NodeJS.Platform } = {},
+  options: { dir?: string; platform?: NodeJS.Platform; delegate?: boolean } = {},
 ): Rendered {
   const dir = options.dir ?? PROMPTS_DIR
   const { body } = readPrompt(main, dir)
-  return render(`${body.trim()}\n\n---\n\n${sharedSections(dir, options.platform ?? process.platform)}\n`, vars)
+  return render(`${body.trim()}\n\n---\n\n${sharedSections(dir, options.platform ?? process.platform, options.delegate ?? false)}\n`, vars)
 }
 
 export function agentPromptPath(agent: string): string {

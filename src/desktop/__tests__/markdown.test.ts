@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { renderMarkdown } from "../ui/markdown"
+import { renderMarkdown, resultLine } from "../ui/markdown"
 
 describe("renderMarkdown()", () => {
   test("escapes HTML from model output", () => {
@@ -25,5 +25,20 @@ describe("renderMarkdown()", () => {
   })
   test("tables", () => {
     expect(renderMarkdown("| a | b |\n|---|---|\n| 1 | `x` |")).toContain("<td><code>x</code></td>")
+  })
+})
+
+describe("resultLine()", () => {
+  test("first line of the Result section, without list or code marks", () => {
+    const report = "## Status\ndone\n\n## Result\n\n- `src/a.ts:12` — **createSession()**\n- more\n\n## Evidence\nran grep"
+    expect(resultLine(report)).toBe("src/a.ts:12 — createSession()")
+  })
+  test("underscores in names survive", () => {
+    expect(resultLine("## Result\nReads of `budget.delegate_tokens` in `src/__tests__/`")).toBe(
+      "Reads of budget.delegate_tokens in src/__tests__/",
+    )
+  })
+  test("a report without sections falls back to its first line", () => {
+    expect(resultLine("\nAll good.\nDetails")).toBe("All good.")
   })
 })

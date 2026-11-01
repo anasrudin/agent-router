@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog"
 import type { PermissionMode } from "../../backends/Backend"
 import type { ProviderId } from "../../config/schema"
 import type { BackendStatus, ClientMessage, DelegationSummary, ProfileInfo, ServerMessage, WireEvent } from "../../server/protocol"
-import { escapeHtml, renderMarkdown } from "./markdown"
+import { escapeHtml, renderMarkdown, resultLine } from "./markdown"
 import { notifyIfAway } from "./notify"
 import { createSettings } from "./settings"
 
@@ -44,7 +44,11 @@ const state = {
   workspace: prefs.get("workspace") ?? "",
   running: false,
   turnEl: undefined as HTMLElement | undefined,
-  cards: new Map<string, HTMLElement>(),
+  threads: new Map<string, Thread>(),
+  /** The thread open in the detail panel; undefined shows Conductor's chat alone. */
+  selected: undefined as string | undefined,
+  /** The chat's first request, which names it in the sidebar. */
+  chatTitle: "",
   costUsd: 0,
   tokensIn: 0,
   tokensOut: 0,
@@ -88,8 +92,10 @@ function addUsage(usd: number | undefined, input = 0, output = 0) {
 
 function setRunning(running: boolean) {
   state.running = running
-  sendButton.textContent = running ? "Stop" : "Send"
   sendButton.classList.toggle("stop", running)
+  sendButton.title = running ? "Stop" : "Send"
+  sendButton.setAttribute("aria-label", sendButton.title)
+  renderSidebar()
 }
 
 // ── Workspace and backends ──────────────────────────────────────────────
@@ -107,9 +113,7 @@ function showWorkspacePath(dir: string) {
   label.replaceChildren()
   label.classList.toggle("is-path", Boolean(dir))
   if (dir) {
-    const bdi = document.createElement("bdi")
-    bdi.textContent = dir
-    label.append(bdi)
+    label.textContent = dir.split(/[\\/]/).filter(Boolean).pop() ?? dir
   } else {
     label.textContent = "Choose a folder…"
   }
@@ -184,8 +188,8 @@ function conductorEvent(event: WireEvent) {
       // Delegations get their own card from the router; showing the raw call too would duplicate it.
       if (event.name.startsWith("mcp__router__")) return
       const label = TOOL_LABELS[event.name] ?? event.name.replace(/^mcp__[^_]+__/, "")
-      const line = el("div", "tool mono", `<span class="name">${escapeHtml(label)}</span><span class="detail"></span>`)
-      ;(line.querySelector(".detail") as HTMLElement).textContent = describeTool(event.input)
+      const line = el("div", "tool mono", `<span class="name">${escapeHtml(label)}</span><span class="tool-detail"></span>`)
+      ;(line.querySelector(".tool-detail") as HTMLElement).textContent = describeTool(event.input)
       append(line)
       return
     }
@@ -200,92 +204,280 @@ function conductorEvent(event: WireEvent) {
   }
 }
 
-// ── Delegation cards ────────────────────────────────────────────────────
+// ── Threads: one per delegation, in the sidebar, the chat and the detail panel ──
+
+interface Thread {
+  id: string
+  agent: string
+  taskClass: string
+  mode: string
+  task: string
+  provider: ProviderId
+  model?: string
+  tier: string
+  status: string
+  startedAt: number
+  finishedAt?: number
+  tokens: number
+  activity: string[]
+  summary?: DelegationSummary
+  error?: string
+  /** The row in this turn's Threads card. */
+  chatRow?: HTMLElement
+}
+
+const PROVIDER_GLYPH: Record<ProviderId, string> = { claude: "C", gemini: "G", openai: "X" }
+const threadsNav = $<HTMLElement>("threads")
+const detail = $<HTMLElement>("detail")
+
+function age(from: number, to = Date.now()): string {
+  const s = Math.max(0, Math.round((to - from) / 1000))
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`
+}
+
+function statusText(t: Thread): string {
+  if (t.error) return `Error: ${t.error}`
+  if (!t.summary) return `Running on ${PROVIDER_LABEL[t.provider]} (${t.tier})`
+  const line = resultLine(t.summary.report)
+  switch (t.summary.status) {
+    case "done":
+      return `Done: ${line}`
+    case "blocked":
+      return `Needs you: ${line}`
+    case "partial":
+      return `Partly done: ${line}`
+    default:
+      return `Failed: ${t.summary.stopReason || line}`
+  }
+}
+
+function glyph(provider: ProviderId): HTMLElement {
+  const g = el("span", `glyph ${provider}`)
+  g.textContent = PROVIDER_GLYPH[provider]
+  g.title = PROVIDER_LABEL[provider]
+  return g
+}
+
+function statusMark(status: string): HTMLElement {
+  const mark = el("span", `mark s-${status}`)
+  mark.setAttribute("aria-label", status)
+  return mark
+}
+
+function renderSidebar() {
+  const list = [...state.threads.values()]
+  threadsNav.replaceChildren()
+  if (!state.chatTitle) return
+  const head = el("div", `tree-row conductor${state.selected ? "" : " selected"}`)
+  head.innerHTML = `<svg class="crown" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12.5h12M2.5 11 1.8 5l3.6 2.6L8 3l2.6 4.6L14.2 5l-.7 6z" /></svg><span class="row-title"></span>`
+  ;(head.querySelector(".row-title") as HTMLElement).textContent = state.chatTitle
+  if (state.running) head.append(el("span", "spinner"))
+  if (list.length) head.append(el("span", "row-count", `${list.length}`))
+  head.addEventListener("click", () => selectThread(undefined))
+  threadsNav.append(head)
+  for (const t of list) {
+    const row = el("button", `tree-row thread${state.selected === t.id ? " selected" : ""}`) as HTMLButtonElement
+    row.type = "button"
+    row.title = `${t.agent} · ${t.taskClass}\n${t.task}`
+    const title = el("span", "row-title")
+    title.textContent = taskTitle(t.task)
+    const tail = el("span", "row-age")
+    tail.textContent = age(t.startedAt, t.finishedAt)
+    row.append(
+      glyph(t.provider),
+      title,
+      t.summary || t.error ? statusMark(t.error ? "error" : (t.summary?.status ?? "")) : el("span", "spinner"),
+      tail,
+    )
+    row.addEventListener("click", () => selectThread(t.id))
+    threadsNav.append(row)
+  }
+  const running = list.filter((t) => !t.summary && !t.error).length
+  $("status-threads").textContent = list.length
+    ? `${list.length} thread${list.length > 1 ? "s" : ""}${running ? `, ${running} running` : ""}`
+    : ""
+}
+
+/** A thread's name: its task in a few words, like a Ghostex thread title. */
+function taskTitle(task: string): string {
+  const first = task.split(/(?<=[.!?])\s/)[0] ?? task
+  return first.length > 60 ? `${first.slice(0, 57)}…` : first.replace(/\.$/, "")
+}
+
+/** This turn's Threads card, created with the turn's first delegation. */
+function threadsCard(): HTMLElement {
+  const turn = state.turnEl ?? log
+  let card = turn.querySelector<HTMLElement>(":scope > .threads-card")
+  if (!card) {
+    card = el("article", "threads-card")
+    card.innerHTML = `<header><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="5" r="2" /><circle cx="11" cy="5" r="2" /><path d="M1.5 13a3.5 3.5 0 0 1 7 0M7.5 13a3.5 3.5 0 0 1 7 0" /></svg><span>Threads</span><span class="count muted"></span></header><div class="rows"></div>`
+    append(card)
+  }
+  return card
+}
+
+function renderChatRow(t: Thread) {
+  if (!t.chatRow) return
+  const row = t.chatRow
+  row.replaceChildren(
+    t.summary || t.error ? statusMark(t.error ? "error" : (t.summary?.status ?? "")) : el("span", "spinner"),
+    Object.assign(el("span", "row-name"), { textContent: taskTitle(t.task) }),
+    Object.assign(el("span", "row-status"), { textContent: statusText(t) }),
+  )
+  const card = row.closest(".threads-card")
+  if (card) {
+    const n = card.querySelectorAll(".rows > *").length
+    ;(card.querySelector(".count") as HTMLElement).textContent = `${n} thread${n > 1 ? "s" : ""}`
+  }
+}
+
+function selectThread(id: string | undefined) {
+  state.selected = id
+  detail.hidden = !id
+  renderSidebar()
+  if (id) renderDetail()
+}
+
+function renderDetail() {
+  const t = state.selected ? state.threads.get(state.selected) : undefined
+  if (!t) return
+  const g = $("detail-glyph")
+  g.className = `glyph ${t.provider}`
+  g.textContent = PROVIDER_GLYPH[t.provider]
+  $("detail-title").textContent = taskTitle(t.task)
+  const body = $("detail-body")
+  body.replaceChildren()
+
+  const status = t.error ? "error" : (t.summary?.status ?? "running")
+  const meta = el("div", "detail-meta")
+  const pill = el("span", `pill ${status}`)
+  pill.textContent = status
+  const badge = el("span", `badge ${t.provider}`)
+  badge.textContent = `${PROVIDER_LABEL[t.provider]} · ${t.summary?.model ?? t.model ?? "default model"} · ${t.summary?.tier ?? t.tier}`
+  const facts = el("span", "muted")
+  const cost = t.summary?.costUsd ? ` · $${t.summary.costUsd.toFixed(4)}` : ""
+  facts.textContent = `${t.agent} · ${t.taskClass} · ${t.mode} · ${compact(t.tokens)} tokens${cost} · ${age(t.startedAt, t.finishedAt)}`
+  meta.append(pill, badge, facts)
+  body.append(meta)
+
+  const section = (title: string, node: HTMLElement) => {
+    const s = el("section", "detail-section")
+    s.append(Object.assign(el("h3"), { textContent: title }), node)
+    body.append(s)
+  }
+  section("Task", Object.assign(el("p", "task"), { textContent: t.task }))
+  if (t.error) section("Error", Object.assign(el("div", "error"), { textContent: t.error }))
+  const sum = t.summary
+  if (sum?.changedFiles.length) {
+    const list = el("ul", "files mono")
+    for (const f of sum.changedFiles) list.append(Object.assign(el("li"), { textContent: f }))
+    section("Files changed", list)
+  }
+  if (sum?.findings.length) {
+    const list = el("ul", "findings")
+    for (const f of sum.findings) list.append(Object.assign(el("li", f.severity), { textContent: f.message }))
+    section("Harness findings", list)
+  }
+  if (sum) {
+    const attempts = sum.attempts.map(
+      (a) => `${PROVIDER_LABEL[a.provider]}/${a.tier} ${a.outcome}${a.errorKind ? ` (${a.errorKind})` : ""}`,
+    )
+    const lines = [
+      `Attempts: ${attempts.join(" → ")}`,
+      `Stop reason: ${sum.stopReason}`,
+      ...(sum.worktree ? [`Worktree: ${sum.worktree}`] : []),
+    ]
+    const box = el("div", "facts")
+    for (const line of lines) box.append(Object.assign(el("div"), { textContent: line }))
+    section("Route", box)
+    section("Report (Conductor verifies before using it)", el("div", "md", renderMarkdown(sum.report || "(no output)")))
+  }
+  if (t.activity.length) {
+    const list = el("ul", "activity mono")
+    for (const line of t.activity) list.append(Object.assign(el("li"), { textContent: line }))
+    section("Activity", list)
+    list.scrollTop = list.scrollHeight
+  }
+}
+
+function refreshThread(t: Thread) {
+  renderChatRow(t)
+  renderSidebar()
+  if (state.selected === t.id) renderDetail()
+}
 
 function delegationStarted(msg: Extract<ServerMessage, { type: "delegation.started" }>) {
-  const card = el("article", "card")
-  card.innerHTML = `
-    <div class="card-head">
-      <span class="agent">${escapeHtml(msg.agent)}</span>
-      <span class="class mono">${escapeHtml(msg.taskClass)} · ${escapeHtml(msg.mode)}</span>
-      <span class="badge ${msg.provider}">${PROVIDER_LABEL[msg.provider]} · ${escapeHtml(msg.model ?? "default model")} · ${msg.tier}</span>
-      <span class="pill"><span class="spinner"></span></span>
-    </div>
-    <p class="task"></p>
-    <ul class="activity mono"></ul>`
-  ;(card.querySelector(".task") as HTMLElement).textContent = msg.task
-  state.cards.set(msg.id, card)
-  append(card)
+  const t: Thread = {
+    id: msg.id,
+    agent: msg.agent,
+    taskClass: msg.taskClass,
+    mode: msg.mode,
+    task: msg.task,
+    provider: msg.provider,
+    model: msg.model,
+    tier: msg.tier,
+    status: "running",
+    startedAt: Date.now(),
+    tokens: 0,
+    activity: [],
+  }
+  const card = threadsCard()
+  const row = el("button", "thread-row") as HTMLButtonElement
+  row.type = "button"
+  row.addEventListener("click", () => selectThread(t.id))
+  ;(card.querySelector(".rows") as HTMLElement).append(row)
+  t.chatRow = row
+  state.threads.set(t.id, t)
+  refreshThread(t)
 }
 
 function delegationEvent(msg: Extract<ServerMessage, { type: "delegation.event" }>) {
-  const card = state.cards.get(msg.id)
-  if (!card) return
+  const t = state.threads.get(msg.id)
+  if (!t) return
   const ev = msg.event
-  if (ev.type === "tool_call") {
-    const li = el("li")
-    li.textContent = `${PROVIDER_LABEL[msg.provider]} · ${ev.name} ${describeTool(ev.input)}`
-    const list = card.querySelector(".activity") as HTMLElement
-    list.append(li)
-    list.scrollTop = list.scrollHeight
+  if (ev.type === "usage") {
+    t.tokens += ev.inputTokens + ev.outputTokens
+    t.provider = msg.provider
+  } else if (ev.type === "tool_call") {
+    t.activity.push(`${PROVIDER_LABEL[msg.provider]} · ${ev.name} ${describeTool(ev.input)}`)
   } else if (ev.type === "error") {
-    const li = el("li")
-    li.textContent = `${PROVIDER_LABEL[msg.provider]} · ${ev.kind}: ${ev.message}`
-    ;(card.querySelector(".activity") as HTMLElement).append(li)
-  }
+    t.activity.push(`${PROVIDER_LABEL[msg.provider]} · ${ev.kind}: ${ev.message}`)
+  } else return
+  if (msg.provider !== t.provider) t.provider = msg.provider
+  if (state.selected === t.id) renderDetail()
+  if (ev.type !== "tool_call") renderSidebar()
 }
 
 function delegationFinished(id: string, summary: DelegationSummary) {
-  const card = state.cards.get(id)
-  if (!card) return
+  const t = state.threads.get(id)
+  if (!t) return
   addUsage(summary.costUsd, summary.tokens.input, summary.tokens.output)
-  const pill = card.querySelector(".pill") as HTMLElement
-  pill.className = `pill ${summary.status}`
-  pill.textContent = summary.status
-  const badge = card.querySelector(".badge") as HTMLElement
-  badge.className = `badge ${summary.provider}`
-  badge.textContent = `${PROVIDER_LABEL[summary.provider]} · ${summary.model ?? "default model"} · ${summary.tier}`
-
-  const meta = el("div", "meta")
-  const attempts = summary.attempts.map(
-    (a) => `${PROVIDER_LABEL[a.provider]}/${a.tier} ${a.outcome}${a.errorKind ? ` (${a.errorKind})` : ""}`,
-  )
-  for (const text of [
-    `Attempts: ${attempts.join(" → ")}`,
-    `${summary.costUsd ? `Cost $${summary.costUsd.toFixed(4)}` : "Cost not reported"} · ${compact(summary.tokens.input + summary.tokens.output)} tokens`,
-    ...summary.notes.filter((n) => n.startsWith("fallback") || n.startsWith("skip") || n.startsWith("tier")),
-    ...(summary.worktree ? [`Worktree ${summary.worktree}`] : []),
-  ]) {
-    const span = el("span")
-    span.textContent = text
-    meta.append(span)
-  }
-  card.append(meta)
-  if (summary.findings.length) {
-    const list = el("ul", "findings")
-    for (const f of summary.findings) {
-      const li = el("li", f.severity)
-      li.textContent = f.message
-      list.append(li)
-    }
-    card.append(list)
-  }
-  const details = el("details", "report")
-  details.innerHTML = `<summary>Delegate report (Conductor verifies before using it)</summary><div class="md">${renderMarkdown(summary.report || "(no output)")}</div>`
-  card.append(details)
+  Object.assign(t, { summary, provider: summary.provider, tokens: summary.tokens.input + summary.tokens.output, finishedAt: Date.now() })
+  refreshThread(t)
 }
 
 function delegationFailed(id: string, error: string) {
-  const card = state.cards.get(id)
-  if (!card) {
+  const t = state.threads.get(id)
+  if (!t) {
     append(el("div", "error", escapeHtml(`Delegation refused: ${error}`)))
     return
   }
-  const pill = card.querySelector(".pill") as HTMLElement
-  pill.className = "pill error"
-  pill.textContent = "error"
-  card.append(el("div", "error", escapeHtml(error)))
+  Object.assign(t, { error, finishedAt: Date.now() })
+  refreshThread(t)
 }
+
+function clearThreads() {
+  state.threads.clear()
+  state.chatTitle = ""
+  selectThread(undefined)
+  $("chat-title").textContent = "Conductor"
+}
+
+$("detail-close").addEventListener("click", () => selectThread(undefined))
+// Ages in the sidebar tick while threads run.
+setInterval(() => {
+  if ([...state.threads.values()].some((t) => !t.finishedAt)) renderSidebar()
+}, 15_000)
 
 // ── Approvals ───────────────────────────────────────────────────────────
 
@@ -416,6 +608,10 @@ function submit() {
   }
   showBanner(undefined)
   append(el("div", "user", escapeHtml(prompt)), log)
+  if (!state.chatTitle) {
+    state.chatTitle = taskTitle(prompt)
+    $("chat-title").textContent = state.chatTitle
+  }
   promptBox.value = ""
   send({
     type: "start",
@@ -447,7 +643,7 @@ $("workspace").addEventListener("click", async () => {
 $("new-chat").addEventListener("click", () => {
   if (state.running) return
   send({ type: "reset" })
-  state.cards.clear()
+  clearThreads()
   log.replaceChildren()
   state.costUsd = 0
   state.tokensIn = 0

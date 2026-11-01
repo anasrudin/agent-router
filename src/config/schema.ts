@@ -153,8 +153,17 @@ export const RoutingConfig = z.object({
     .object({
       session_usd: z.number().positive().nullable().default(null),
       warn_at_fraction: z.number().min(0).max(1).default(0.8),
+      /** Tokens one delegation may use across all its attempts (input includes cache reads); null = no cap. */
+      delegate_tokens: z.number().int().positive().nullable().default(null),
     })
-    .default({ session_usd: null, warn_at_fraction: 0.8 }),
+    .default({ session_usd: null, warn_at_fraction: 0.8, delegate_tokens: null }),
+  /** A JSON-lines stream of delegation events for other UIs (Ghostex and the like); null = off. */
+  telemetry: z
+    .object({
+      /** Relative paths are under the workspace. */
+      events_file: z.string().min(1).nullable().default(null),
+    })
+    .default({ events_file: null }),
   privacy: z
     .object({
       never_send: z.array(z.string()).default([]),

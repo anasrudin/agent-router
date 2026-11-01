@@ -39,12 +39,15 @@ Config is layered, later files winning key by key: the shipped `routing.yaml`, t
 
 ## Desktop app (Tauri)
 
-![Conductor delegating a code review to Codex under the Balanced profile, with the result](docs/screenshots/review-result.png)
+![The desktop app after a real run: Conductor delegated a lookup, Gemini was rate-limited so it fell back to Claude Haiku, and the thread is open on the right](docs/screenshots/threads-detail.png)
+
+The layout follows [Ghostex](https://github.com/maddada/Ghostex) (MIT): the workspace and this chat's threads on the left, Conductor's conversation in the middle, the selected thread beside it. Every delegation is a **thread**: a row in the sidebar (backend, task, status, age), a line in the turn's **Threads** card (what it found or why it stopped), and on click a detail panel with its route, attempts, files changed, findings, report and live activity. Profile, plan and permission sit in the composer; spend, tokens and running threads in the line under it. Light and dark follow the system.
 
 | | |
 |---|---|
-| ![Empty chat](docs/screenshots/home.png) | ![Delegation in progress](docs/screenshots/delegating.png) |
-| ![Profile menu](docs/screenshots/profile-menu.png) | ![Models dialog](docs/screenshots/models-dialog.png) |
+| ![Light theme](docs/screenshots/threads-light.png) | ![Models dialog](docs/screenshots/models-dialog.png) |
+
+The light-theme screenshot uses scripted sample data; the one above is a real run.
 
 ```sh
 npm install                     # once
@@ -88,9 +91,6 @@ Tell the router what you pay for, and the backend with more paid capacity does t
 
 Tiers by monthly price: 1 = $20, 2 = $40, 3 = $200, 3.5 ≈ $255–266, 4 ≈ $466–477, and 0 = no subscription (that backend is never used). Custom: `plan: { claude: 2, openai: 3, gemini_requests_per_day: 1000 }`. A side leads when it pays at least 1.5× the other. The plan also sets how many delegates run at once on each backend ($20–40: 1, $200: 2, $400+: 3). Lookups stay on Gemini either way, and routes you set yourself win over the plan. Conductor itself always runs on Claude.
 
-![Plan menu](docs/screenshots/plan-menu.png)
-
-![Under ChatGPT-heavy, the planner runs on Codex](docs/screenshots/plan-chatgpt-heavy.png)
 
 ## Profiles
 
@@ -134,9 +134,13 @@ Measured on 2026-10-28 (3 small tasks × 2 runs each): every profile passed ever
 - **Desktop notifications** when a turn finishes or an approval is waiting while the app is in the background.
 - **Lean Claude tool set:** Conductor loads only Read, Edit, Write and Bash (plus the router's MCP tools), and Claude delegates only what their mode uses. Claude Code's other built-in tool definitions cost about 14k prompt tokens on every request. Set `lean_tools: false` under `backends.claude` to load them all.
 - **Codex sessions resume:** a follow-up passed with `resume` continues the Codex thread, so it keeps what it already read. Codex reports a resumed thread's running total, so the harness subtracts the earlier total (kept in the chat ledger) and counts only the new tokens.
+- **Token budget per delegation:** `budget.delegate_tokens` stops the escalation ladder once a subtask has spent that many tokens, instead of paying for a higher tier.
+- **Changed files in every edit result:** the result Conductor gets lists the files the delegate changed with `+added -removed` counts (from git, not from the delegate's report), so it verifies the diff without re-reading whole files. The thread's detail panel in the desktop app shows them too.
+- **Pane telemetry:** `telemetry.events_file` writes a JSON-lines stream (`dispatch`, `update`, `merge`, `halt`) with each delegation's provider, model, worktree, files and token/cost, for UIs that show agents as panes (Ghostex and the like). The desktop app shows the same as threads in its sidebar. See [Configuration](docs/configuration.md#telemetry).
+- **Honest token counts:** output includes thinking tokens (Gemini reports them apart from `output_tokens`, but bills them as output), and delegation results and telemetry say how much of the input was a prompt-cache read. A delegate re-sends its whole conversation on every tool call, so a long lookup's input total is mostly cache reads.
+- **Leaner delegate prompts:** delegates get the report half of the delegation protocol, not the brief-writing rules meant for Conductor (about 400 tokens less on every turn of every delegate). Scout has a tool-call budget: 2–6 calls for a typical lookup, report as soon as every acceptance item has a location.
+- **Token economy rules:** Conductor's prompt (§8) tells it to handle small tasks itself, scout before briefing an expensive agent, pass `path:start-end` references instead of whole files, keep handoffs short, resume sessions and verify from the changed-file list. Scout's report is capped at about 20 locations.
 - **Read-only Claude delegates can search:** Claude Code 2.1.312 has no Grep/Glob tools, so read-only delegates may run `grep`, `ls`, `cat`, `head`, `tail` and `wc`, and nothing else (no `rg --pre`, `git`, `find`, or redirection). No delegate may start subagents.
-
-![Two background delegations running at once](docs/screenshots/background-delegations.png)
 
 The watchdog, output cap, directory rules, report gate, background delegations, keyword modes, compaction recovery, project checks, non-interactive environment, nudges, context restarts, evidence files, rule files, code navigation, comment checks and notifications follow ideas from oh-my-openagent. They were reimplemented here, not copied: most of that project is under a non-open-source license, and its MIT LSP package depends on parts that are not MIT. One idea did not carry over: hints after a failed edit. Claude Code 2.1.312 rejects a bad Edit before any hook runs, so no hook can see it.
 
@@ -145,6 +149,7 @@ The watchdog, output cap, directory rules, report gate, background delegations, 
 - [Architecture](docs/architecture.md): components, the life of a request, the escalation ladder, permissions, hooks, the desktop protocol.
 - [Configuration](docs/configuration.md): every `routing.yaml` key, profiles and request keywords.
 - [Development](docs/development.md): layout, tests, extending the harness, behaviour of the wrapped CLIs.
+- [Token and cost efficiency](docs/token-efficiency.md): where tokens go, every saving mechanism, how to measure and tune it, and a case study.
 - [Benchmark results](bench/RESULTS.md).
 
 ## Status

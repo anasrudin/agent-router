@@ -3,7 +3,10 @@ import type { ProviderId } from "../config/schema"
 export interface Usage {
   /** All prompt-side tokens, cached or not, so providers compare like for like. */
   inputTokens: number
+  /** Includes thinking/reasoning tokens, which every provider bills as output. */
   outputTokens: number
+  /** The part of inputTokens served from the provider's prompt cache, when the CLI reports it. */
+  cachedInputTokens?: number
   /** Only set when the CLI reports it; never estimated. */
   costUsd?: number
 }

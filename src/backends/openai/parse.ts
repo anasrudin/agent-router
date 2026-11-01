@@ -23,7 +23,11 @@ export function createCodexParser(): OutputParser {
           return [
             {
               type: "usage",
-              usage: { inputTokens: num(usage.input_tokens), outputTokens: num(usage.output_tokens) },
+              usage: {
+                inputTokens: num(usage.input_tokens),
+                outputTokens: num(usage.output_tokens),
+                cachedInputTokens: num(usage.cached_input_tokens),
+              },
             },
           ]
         }

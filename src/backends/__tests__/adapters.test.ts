@@ -30,7 +30,7 @@ describe("claude stream-json (recorded 2.1.312)", () => {
   test("text, usage with cost, single done", () => {
     expect(events).toContainEqual({ type: "text", text: "pong" })
     const usage = events.find((e) => e.type === "usage")
-    expect(usage).toMatchObject({ usage: { outputTokens: 4, costUsd: 0.00180992 } })
+    expect(usage).toMatchObject({ usage: { outputTokens: 4, cachedInputTokens: 11852, costUsd: 0.00180992 } })
     expect(usage?.type === "usage" && usage.usage.inputTokens).toBe(2 + 8446 + 11852)
     expect(terminal(events)).toEqual([{ type: "done", text: "pong" }])
   })
@@ -65,7 +65,7 @@ describe("gemini stream-json (recorded 0.66.0)", () => {
     expect(events[0]).toEqual({ type: "session", sessionId: "404bfafa-a7fa-48ed-8ba4-bbeb936a74c8" })
     expect(events).toContainEqual({ type: "tool_call", name: "read_file", input: { file_path: "note.txt" } })
     expect(events).toContainEqual({ type: "tool_result", ok: true })
-    expect(events).toContainEqual({ type: "usage", usage: { inputTokens: 17755, outputTokens: 21 } })
+    expect(events).toContainEqual({ type: "usage", usage: { inputTokens: 17755, outputTokens: 18172 - 17755, cachedInputTokens: 4065 } })
     expect(terminal(events)).toEqual([{ type: "done", text: "hello" }])
   })
   test("free-tier quota on the pro model is a rate limit", () => {
@@ -96,7 +96,7 @@ describe("codex exec --json (recorded 0.165.0)", () => {
     expect(events[0]).toEqual({ type: "session", sessionId: "01a181f7-5cc6-7051-829c-1f333e8a65be" })
     expect(events).toContainEqual({ type: "tool_call", name: "shell", input: "/bin/bash -lc 'cat note.txt'" })
     expect(events).toContainEqual({ type: "tool_result", ok: true })
-    expect(events).toContainEqual({ type: "usage", usage: { inputTokens: 25818, outputTokens: 40 } })
+    expect(events).toContainEqual({ type: "usage", usage: { inputTokens: 25818, outputTokens: 40, cachedInputTokens: 23552 } })
     expect(terminal(events)).toEqual([{ type: "done", text: "hello" }])
   })
 
