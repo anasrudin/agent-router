@@ -214,3 +214,105 @@ export function flash(node: HTMLElement, text: string) {
     if (tip.textContent === text) tip.hidden = true
   }, 1200)
 }
+
+/** Ghostex's overlay scrollbar timing: shown while scrolling or hovered, hidden 1.5s after. */
+const SCROLLBAR_HIDE_MS = 1500
+const SCROLLBAR_INSET = 4
+const SCROLLBAR_MIN_THUMB = 48
+
+/**
+ * A floating scrollbar drawn over a scroll container, as Ghostex draws them: no gutter, a 6px thumb
+ * 4px from the edge that appears while the reader scrolls or points at the container, widens when
+ * pointed at, and can be dragged. The native bar is hidden on that container only; wheel, touch and
+ * keyboard scrolling are the browser's own, and the bar is hidden from assistive tech.
+ */
+export function overlayScrollbar(viewport: HTMLElement) {
+  viewport.classList.add("overlay-scroll")
+  const bar = document.createElement("div")
+  bar.className = "scrollbar"
+  bar.setAttribute("aria-hidden", "true")
+  const thumb = document.createElement("div")
+  thumb.className = "scrollbar-thumb"
+  bar.append(thumb)
+  document.body.append(bar)
+
+  let frame = 0
+  let hideTimer: ReturnType<typeof setTimeout> | undefined
+  let hovering = false
+  let drag: { startY: number; startTop: number; ratio: number } | undefined
+  let geometry = { track: 0, thumb: 0 }
+
+  const measure = () => {
+    frame = 0
+    const { scrollHeight: total, clientHeight: view, scrollTop } = viewport
+    const r = viewport.getBoundingClientRect()
+    const scrollable = viewport.isConnected && r.height > 0 && total > view + 1
+    bar.hidden = !scrollable
+    if (!scrollable) return
+    const track = r.height - SCROLLBAR_INSET * 2
+    const length = Math.max(SCROLLBAR_MIN_THUMB, (track * view) / total)
+    const top = ((track - length) * scrollTop) / (total - view)
+    geometry = { track, thumb: length }
+    bar.style.height = `${Math.round(track)}px`
+    bar.style.transform = `translate(${Math.round(r.right - 16)}px, ${Math.round(r.top + SCROLLBAR_INSET)}px)`
+    thumb.style.height = `${Math.round(length)}px`
+    thumb.style.transform = `translateY(${Math.round(top)}px)`
+  }
+  const schedule = () => {
+    if (!frame) frame = requestAnimationFrame(measure)
+  }
+  const reveal = () => {
+    bar.classList.add("shown")
+    clearTimeout(hideTimer)
+    if (!hovering && !drag) hideTimer = setTimeout(() => bar.classList.remove("shown"), SCROLLBAR_HIDE_MS)
+  }
+
+  viewport.addEventListener(
+    "scroll",
+    () => {
+      schedule()
+      reveal()
+    },
+    { passive: true },
+  )
+  for (const node of [viewport, bar]) {
+    node.addEventListener("pointerenter", () => {
+      hovering = true
+      schedule()
+      reveal()
+    })
+    node.addEventListener("pointerleave", () => {
+      hovering = false
+      reveal()
+    })
+  }
+
+  thumb.addEventListener("pointerdown", (e) => {
+    e.preventDefault()
+    thumb.setPointerCapture(e.pointerId)
+    const room = geometry.track - geometry.thumb
+    drag = { startY: e.clientY, startTop: viewport.scrollTop, ratio: room > 0 ? (viewport.scrollHeight - viewport.clientHeight) / room : 0 }
+    bar.classList.add("dragging")
+    reveal()
+  })
+  thumb.addEventListener("pointermove", (e) => {
+    if (drag) viewport.scrollTop = drag.startTop + (e.clientY - drag.startY) * drag.ratio
+  })
+  const endDrag = () => {
+    drag = undefined
+    bar.classList.remove("dragging")
+    reveal()
+  }
+  thumb.addEventListener("pointerup", endDrag)
+  thumb.addEventListener("pointercancel", endDrag)
+  new ResizeObserver(schedule).observe(viewport)
+  new MutationObserver(schedule).observe(viewport, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+    attributes: true,
+    attributeFilter: ["hidden", "open", "class"],
+  })
+  window.addEventListener("resize", schedule)
+  schedule()
+}

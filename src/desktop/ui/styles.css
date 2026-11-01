@@ -5,6 +5,7 @@
 /* Hallmark · pre-emit critique: P4 H4 E4 S4 R4 V3 · weakest: V, it follows Ghostex on purpose; the agent marks and the thread tree carry what is ours */
 /* Hallmark · waive 72 · every truncated row title has its full text in the row tooltip · sidebar and thread titles end in an ellipsis by design, as Ghostex rows do */
 /* Hallmark · dropped 3g · the thread count read together with the G initial; the count stays beside the crew icon and the initials became the agents' own marks */
+/* Hallmark · answered F7 · the pills here are round marks, not boxes: status dots, the spinner, choice badges and the scrollbar thumb, which Ghostex also draws fully rounded */
 
 /*
  * The look follows Ghostex (github.com/maddada/Ghostex, MIT), read from its native GPUI code:
@@ -47,6 +48,8 @@
   --color-field-edge: #8a8a8f;
   --color-fill: rgb(0 0 0 / 0.06);
   --color-fill-hover: rgb(0 0 0 / 0.1);
+  --color-scrollbar: rgb(0 0 0 / 0.28);
+  --color-scrollbar-hover: rgb(0 0 0 / 0.45);
   --color-fill-press: rgb(0 0 0 / 0.14);
   --color-selected: #e7e7e7;
   --color-primary: #262626;
@@ -116,6 +119,8 @@
     --color-field-edge: #6a6a6a;
     --color-fill: rgb(255 255 255 / 0.1);
     --color-fill-hover: rgb(255 255 255 / 0.14);
+    --color-scrollbar: rgb(255 255 255 / 0.22);
+    --color-scrollbar-hover: rgb(255 255 255 / 0.4);
     --color-fill-press: rgb(255 255 255 / 0.18);
     --color-selected: rgb(255 255 255 / 0.12);
     --color-primary: #e5e5e5;
@@ -217,10 +222,17 @@ svg {
   stroke-linejoin: round;
   flex-shrink: 0;
 }
-/* Thin floating scrollbars, as Ghostex draws them */
+/* Elsewhere (dialogs, code, fields) a thin native bar in the theme's colours */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-raised-2) transparent;
+  scrollbar-color: var(--color-scrollbar) transparent;
+}
+/* The chat, the sidebar and the thread panel draw Ghostex's overlay bar instead (chrome.ts) */
+.overlay-scroll {
+  scrollbar-width: none;
+}
+.overlay-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 /* Three columns: sidebar, chat, thread detail */
@@ -1447,6 +1459,12 @@ svg {
 .backends {
   border-top: 0;
 }
+/* A turn's delegation cards, kept together after its fold */
+.turn-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
 /* A delegation in the transcript: one line, 44px, the fill and hairline of Ghostex's cards */
 .agent-card {
   display: flex;
@@ -1866,6 +1884,41 @@ svg {
   height: 1px;
   margin: var(--space-1) var(--space-2);
   background: var(--color-rule);
+}
+/* Ghostex's overlay scrollbar: a 16px strip, a 6px thumb 4px from the edge that widens to 8px
+   when pointed at or dragged; it fades in while scrolling or hovered. Only the thumb takes the
+   pointer, so the strip never covers a row's actions. */
+.scrollbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 10;
+  width: 16px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-short) var(--ease-out);
+}
+.scrollbar.shown,
+.scrollbar.dragging {
+  opacity: 1;
+}
+.scrollbar-thumb {
+  position: absolute;
+  top: 0;
+  right: var(--space-1);
+  width: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--color-scrollbar);
+  transform-origin: right center;
+  transition: background-color var(--dur-short) var(--ease-out);
+}
+.scrollbar.shown .scrollbar-thumb {
+  pointer-events: auto;
+}
+.scrollbar-thumb:hover,
+.scrollbar.dragging .scrollbar-thumb {
+  background: var(--color-scrollbar-hover);
+  box-shadow: 0 0 0 1px var(--color-scrollbar-hover);
 }
 @media (prefers-reduced-motion: reduce) {
   *,

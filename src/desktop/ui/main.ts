@@ -13,7 +13,7 @@ import type {
   WireEvent,
   WorktreePreview,
 } from "../../server/protocol"
-import { closePopovers, flash, installTooltips, type MenuItem, openMenu, popover } from "./chrome"
+import { closePopovers, flash, installTooltips, type MenuItem, openMenu, overlayScrollbar, popover } from "./chrome"
 import { type DiffFile, formatReview, parseUnifiedDiff, type ReviewComment } from "./diff"
 import { agentLogoSvg } from "./icons"
 import { escapeHtml, renderMarkdown, resultLine } from "./markdown"
@@ -277,7 +277,16 @@ function describeTool(input: unknown): string {
   return String(detail)
 }
 
-/** The turn's fold, created with Conductor's first tool call (Ghostex: one per turn, its work collapsed). */
+/*
+ * A turn always reads in the same order, whatever order its events come in:
+ *   1. the fold: Conductor's own text and tool calls while it works ("Worked for Ns" once done),
+ *   2. the delegation cards,
+ *   3. the reply (the text after the last tool call, moved out of the fold at the end), then any
+ *      question form or error.
+ * Both the fold and the cards' group are created on first use and put in their place.
+ */
+
+/** The turn's fold, created with Conductor's first text or tool call (Ghostex: one per turn, its work collapsed). */
 function turnFold() {
   if (state.fold) return state.fold
   const fold = document.createElement("details")
@@ -286,15 +295,28 @@ function turnFold() {
   const summary = document.createElement("summary")
   const body = el("div", "fold-body")
   fold.append(summary, body)
-  append(fold)
+  $("empty")?.remove()
+  if (state.turnEl) state.turnEl.prepend(fold)
+  else append(fold)
   state.fold = { el: fold, body, started: Date.now(), tools: 0 }
-  renderFoldSummary(false)
+  renderFoldSummary(state.fold, false)
   return state.fold
 }
 
-function renderFoldSummary(done: boolean) {
-  const f = state.fold
-  if (!f) return
+/** The turn's delegation cards, kept together right after the fold. */
+function turnCards(): HTMLElement {
+  const turn = state.turnEl
+  if (!turn) return log
+  const existing = turn.querySelector<HTMLElement>(":scope > .turn-cards")
+  if (existing) return existing
+  const cards = el("div", "turn-cards")
+  const fold = turn.querySelector(":scope > .turn-fold")
+  if (fold) fold.after(cards)
+  else turn.prepend(cards)
+  return cards
+}
+
+function renderFoldSummary(f: NonNullable<typeof state.fold>, done: boolean) {
   const summary = f.el.querySelector("summary") as HTMLElement
   const secs = Math.max(1, Math.round((Date.now() - f.started) / 1000))
   summary.replaceChildren(
@@ -302,7 +324,7 @@ function renderFoldSummary(done: boolean) {
     Object.assign(el("span", "fold-title"), {
       textContent: done ? `Worked for ${secs < 60 ? `${secs}s` : `${Math.round(secs / 60)}m`}` : "Working",
     }),
-    Object.assign(el("span", "count-pill"), { textContent: `${f.tools} tool call${f.tools === 1 ? "" : "s"}` }),
+    ...(f.tools ? [Object.assign(el("span", "count-pill"), { textContent: `${f.tools} tool call${f.tools === 1 ? "" : "s"}` })] : []),
   )
 }
 
@@ -310,18 +332,29 @@ function renderFoldSummary(done: boolean) {
 function closeFold() {
   const f = state.fold
   if (!f) return
-  const last = f.body.lastElementChild
-  if (last?.classList.contains("md") && state.turnEl) state.turnEl.append(last)
-  renderFoldSummary(true)
-  f.el.open = false
   state.fold = undefined
+  // The reply is every text block after the last tool call; it goes below the cards.
+  const reply: Element[] = []
+  for (let node = f.body.lastElementChild; node?.classList.contains("md"); node = node.previousElementSibling) reply.unshift(node)
+  const turn = state.turnEl
+  if (turn && reply.length) {
+    const anchor = turn.querySelector(":scope > .turn-cards") ?? f.el
+    anchor.after(...reply)
+  }
+  // A turn that only talked has nothing left to fold.
+  if (!f.body.childElementCount) {
+    f.el.remove()
+    return
+  }
+  renderFoldSummary(f, true)
+  f.el.open = false
 }
 
 function conductorEvent(event: WireEvent) {
   switch (event.type) {
     case "text":
       for (const seg of splitQuestions(event.text)) {
-        if (seg.kind === "markdown") append(el("div", "md", renderMarkdown(seg.text)), state.fold?.body ?? state.turnEl ?? log)
+        if (seg.kind === "markdown") append(el("div", "md", renderMarkdown(seg.text)), state.turnEl ? turnFold().body : log)
         else {
           append(renderQuestionForm(seg.form))
           notifyIfAway("agent-router: Conductor has questions", seg.form.title ?? seg.form.questions[0]?.question ?? "")
@@ -336,7 +369,7 @@ function conductorEvent(event: WireEvent) {
       ;(line.querySelector(".tool-detail") as HTMLElement).textContent = describeTool(event.input)
       const fold = turnFold()
       fold.tools += 1
-      renderFoldSummary(false)
+      renderFoldSummary(fold, false)
       append(line, fold.body)
       return
     }
@@ -1177,7 +1210,7 @@ function delegationStarted(msg: Extract<ServerMessage, { type: "delegation.start
   const row = el("button", "agent-card") as HTMLButtonElement
   row.type = "button"
   row.addEventListener("click", () => selectThread(t.id))
-  append(row)
+  append(row, turnCards())
   t.chatRow = row
   state.threads.set(t.id, t)
   refreshThread(t)
@@ -1449,6 +1482,7 @@ for (const select of [profileSelect, planSelect, permissionSelect]) select.addEv
 popover($<HTMLButtonElement>("mode-pill"), $("mode-menu"))
 popover($<HTMLButtonElement>("threads-pill"), $("threads-menu"))
 installTooltips($("tooltip"))
+for (const id of ["log", "threads", "detail-body"]) overlayScrollbar($(id))
 
 // Ghostex's keys: Mod+B the sidebar, Mod+N a new chat, Escape closes the thread panel.
 document.addEventListener("keydown", (e) => {
