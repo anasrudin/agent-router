@@ -55,6 +55,11 @@ export interface DelegationSummary {
   findings: { severity: string; message: string }[]
   notes: string[]
   worktree?: string
+  /** The delegate's session on `provider`, for a follow-up that resumes it. */
+  sessionId?: string
+  taskClass: string
+  /** Edit mode in a git checkout: the thread's before/after snapshots (diff view, Revert). */
+  checkpoint?: ThreadCheckpoint
   /** Edit mode: git status lines that appeared during the task, with line counts. */
   changedFiles: string[]
   /** The delegate's report, verbatim. */
@@ -86,6 +91,10 @@ export type BridgeReply = { type: "approval.response"; id: string; allow: boolea
 export type ClientMessage =
   | { type: "start"; prompt: string; workspace: string; permission: PermissionMode; profile?: string; plan?: string }
   | { type: "cancel" }
+  /** A thread's diff between its checkpoints. */
+  | { type: "thread.diff"; requestId: string; workspace: string; checkpoint: ThreadCheckpoint }
+  /** Undo a thread's changes in its checkout. */
+  | { type: "thread.revert"; requestId: string; workspace: string; checkpoint: ThreadCheckpoint; title: string }
   /** Drop a queued request. */
   | { type: "queue.remove"; id: string }
   /** Run a queued request next: now if idle (also resumes a paused queue), otherwise right after the current turn. */
@@ -104,6 +113,12 @@ export type ClientMessage =
       reasoning: string
       trustWorkspace: boolean
     }
+
+export interface ThreadCheckpoint {
+  before: string
+  after?: string
+  cwd: string
+}
 
 export interface QueuedPrompt {
   id: string
@@ -140,6 +155,8 @@ export type ServerMessage =
       resumed: boolean /** Keywords in the message that changed routing, e.g. "economy profile". */
       mode?: string
     }
+  | { type: "thread.diff"; requestId: string; patch: string; truncated: boolean; error?: string }
+  | { type: "thread.reverted"; requestId: string; ok: boolean; message: string; files: string[] }
   /** Requests waiting for the current turn. `paused` after a cancelled turn: nothing starts until the user says. */
   | { type: "queue"; items: QueuedPrompt[]; paused: boolean }
   | { type: "conductor"; turnId: string; event: WireEvent }

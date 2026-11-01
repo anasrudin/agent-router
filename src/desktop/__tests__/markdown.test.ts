@@ -28,7 +28,29 @@ describe("renderMarkdown()", () => {
   })
 })
 
+describe("code spans", () => {
+  test("escaped backticks inside single-backtick code, as models write them", () => {
+    expect(renderMarkdown("`return \\`Goodbye, name.\\``")).toBe("<p><code>return `Goodbye, name.`</code></p>")
+  })
+  test("a Windows path ending in a backslash still closes where CommonMark says", () => {
+    expect(renderMarkdown("Open `C:\\work\\` and run `npm test`.")).toBe(
+      "<p>Open <code>C:\\work\\</code> and run <code>npm test</code>.</p>",
+    )
+  })
+  test("an unclosed backtick stays text", () => {
+    expect(renderMarkdown("a ` b")).toBe("<p>a ` b</p>")
+  })
+  test("double backticks show a single backtick inside, and emphasis does not apply in code", () => {
+    expect(renderMarkdown("returns `` `Hello, name!` `` and `a*b*c`")).toBe(
+      "<p>returns <code>`Hello, name!`</code> and <code>a*b*c</code></p>",
+    )
+  })
+})
+
 describe("resultLine()", () => {
+  test("skips a sub-heading at the top of Result", () => {
+    expect(resultLine("## Result\n### Verdict\nNo defects found.\n\n## Evidence\nx")).toBe("No defects found.")
+  })
   test("first line of the Result section, without list or code marks", () => {
     const report = "## Status\ndone\n\n## Result\n\n- `src/a.ts:12` — **createSession()**\n- more\n\n## Evidence\nran grep"
     expect(resultLine(report)).toBe("src/a.ts:12 — createSession()")

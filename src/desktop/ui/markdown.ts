@@ -6,11 +6,66 @@ export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string)
 }
 
+const runAt = (s: string, i: number) => {
+  let j = i
+  while (s[j] === "`") j++
+  return j - i
+}
+
+/**
+ * Where the code span opened by `n` backticks at `from` closes, and its content. CommonMark: a run
+ * of exactly n backticks. Models also write `return \`x\`` for a backtick inside single-backtick
+ * code, which CommonMark does not allow; take that reading only when the escaped backticks pair
+ * up (even count), so a Windows path like `C:\work\` still closes where CommonMark says.
+ */
+function closeSpan(s: string, from: number, n: number): { end: number; body: string } | undefined {
+  let commonmark: { end: number; body: string } | undefined
+  let escapes = 0
+  for (let i = from; i < s.length; i++) {
+    if (s[i] !== "`") continue
+    const run = runAt(s, i)
+    // An escaped backtick counts on its own, even when another backtick follows it.
+    if (n === 1 && s[i - 1] === "\\") {
+      if (!commonmark && run === 1) commonmark = { end: i + 1, body: s.slice(from, i) }
+      escapes++
+      continue
+    }
+    if (run === n) {
+      if (escapes > 0 && escapes % 2 === 0) return { end: i + n, body: s.slice(from, i).replaceAll("\\`", "`") }
+      return commonmark ?? { end: i + n, body: s.slice(from, i) }
+    }
+    i += run - 1
+  }
+  return commonmark
+}
+
 function inline(text: string): string {
-  return escapeHtml(text)
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
+  // Code spans first, set aside so emphasis never applies inside them.
+  const spans: string[] = []
+  const source = escapeHtml(text)
+  let escaped = ""
+  for (let i = 0; i < source.length; ) {
+    if (source[i] !== "`") {
+      escaped += source[i]
+      i++
+      continue
+    }
+    const n = runAt(source, i)
+    const span = closeSpan(source, i + n, n)
+    if (!span?.body) {
+      escaped += source.slice(i, i + n)
+      i += n
+      continue
+    }
+    const body = /^ [\s\S]* $/.test(span.body) && span.body.trim() ? span.body.slice(1, -1) : span.body
+    spans.push(`<code>${body}</code>`)
+    escaped += `\uE000${spans.length - 1}\uE001`
+    i = span.end
+  }
+  return escaped
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
+    .replace(/\uE000(\d+)\uE001/g, (_, i: string) => spans[Number(i)] as string)
 }
 
 const isTableRow = (line: string) => /^\s*\|.*\|\s*$/.test(line)
@@ -135,9 +190,10 @@ export function renderMarkdown(source: string): string {
 
 /** The first line of the report's Result section: what a thread found or did, in one line. */
 export function resultLine(report: string): string {
-  const match = /^##\s*Result\s*\n+([\s\S]*?)(?=\n##\s|$)/m.exec(report)
+  const match = /^##\s*Result\s*\n+([\s\S]*?)(?=\n##\s|(?![\s\S]))/m.exec(report)
   const body = (match?.[1] ?? report).trim()
-  const line = body.split("\n").find((l) => l.trim()) ?? ""
+  // Skip sub-headings such as a reviewer's "### Verdict": the first line of prose says what happened.
+  const line = body.split("\n").find((l) => l.trim() && !/^#{1,6}\s/.test(l.trim())) ?? ""
   // Underscores stay: they are part of names like delegate_tokens or __tests__.
   return line
     .replace(/^[-*]\s+/, "")

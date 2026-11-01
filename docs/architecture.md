@@ -105,6 +105,10 @@ Claude delegates get it through `--strict-mcp-config --mcp-config <file>` with `
 
 `src/coordinator/ledger.ts`. Each chat gets a JSON-lines file in the OS temp folder (`agent-router-ledgers/chat-<uuid>.jsonl`). The MCP server appends `started`, `finished` and `failed` entries. When a new MCP server starts (one per turn), entries still marked `started` belong to a turn that ended, and are closed as interrupted. `ledgerContext()` renders running jobs and the last 25 finished ones, with the `resume` arguments for each delegate session.
 
+## Checkpoints
+
+`src/coordinator/checkpoints.ts`. For an edit delegation in a git checkout, `snapshot()` runs before the first attempt and after the last: `read-tree HEAD` into a temporary `GIT_INDEX_FILE`, `add -A` (honouring `.gitignore`, skipping `.harness/`), `write-tree`, `commit-tree` on top of HEAD, and `update-ref refs/agent-router/checkpoints/<delegation id>-before|after`. The user's index and branch are never touched. The newest 200 refs are kept. Because a second writer in the same checkout must use a worktree, the diff between a delegation's two commits is that delegation's work alone. `revertCheckpoint()` applies that diff in reverse with `git apply -R` from the repository root, after a `--check`, so it either undoes everything or nothing. The server only accepts a checkout that is the workspace or one of its `.harness/worktrees/*`, and full commit ids (`trustedCheckpoint()` in `serve.ts`).
+
 ## Desktop app
 
 ```
@@ -115,4 +119,4 @@ Tauri shell ── spawns ──► agent-router serve --port 0  (prints port + 
                                │                 delegation.* events, approval.request
 ```
 
-Messages are typed in `src/server/protocol.ts`. The client sends `start`, `cancel`, `reset`, `approval` and `settings.*`. The server answers with `turn.started` (including the active mode), `conductor` events, `delegation.*`, `approval.request`, `turn.finished` and `settings.*`. Closing the app closes the core's stdin, which cancels Conductor and every delegate.
+Messages are typed in `src/server/protocol.ts`. The client sends `start`, `cancel`, `reset`, `approval`, `queue.remove`, `queue.send`, `thread.diff`, `thread.revert` and `settings.*`. The server answers with `turn.started` (with the request and the active mode), `conductor` events, `delegation.*`, `approval.request`, `turn.finished`, `queue`, `thread.diff`, `thread.reverted` and `settings.*`. A `start` that arrives during a turn is queued (`PromptQueue`); a cancelled turn pauses the queue. Review comments on a thread's diff are sent as an ordinary `start` whose text names the delegate's session, so Conductor resumes it. After a revert, the server adds a note to the next turn's prompt so Conductor knows the files changed. Closing the app closes the core's stdin, which cancels Conductor and every delegate.
