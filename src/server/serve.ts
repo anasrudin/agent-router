@@ -8,7 +8,10 @@ import { describePlan, PLAN_PRESETS } from "../config/plans"
 import { PROVIDERS, type ProviderId, type RoutingConfig } from "../config/schema"
 import { checkpointDiff, revertCheckpoint } from "../coordinator/checkpoints"
 import { newLedgerPath } from "../coordinator/ledger"
+import { applyWorktree, previewMerge, removeDelegateWorktree } from "../coordinator/merge"
 import { Session } from "../coordinator/session"
+import { isDelegateWorktree, samePath } from "../coordinator/worktrees"
+import { describePreview } from "../mcp/server"
 import { type Overrides, parseOverrides, ULTRAWORK_NOTE } from "../router/classify"
 import { QuotaTracker } from "../router/quota"
 import { toWire } from "./bridge"
@@ -78,9 +81,9 @@ function describeConfiguredPlan(plan: RoutingConfig["plan"]): string | undefined
 export function trustedCheckpoint(workspace: string, c: ThreadCheckpoint): ThreadCheckpoint {
   const ws = assertDirectory(workspace)
   const cwd = path.resolve(c.cwd)
-  const worktrees = path.join(ws, ".harness", "worktrees")
-  const inside = cwd === ws || (path.dirname(cwd) === worktrees && statSync(cwd, { throwIfNoEntry: false })?.isDirectory())
-  if (!inside) throw new Error("That checkout is not this workspace or one of its delegate worktrees.")
+  if (!samePath(cwd, ws) && !isDelegateWorktree(ws, cwd)) {
+    throw new Error("That checkout is not this workspace or one of its delegate worktrees.")
+  }
   const sha = /^[0-9a-f]{40}$/
   if (!sha.test(c.before) || (c.after !== undefined && !sha.test(c.after))) throw new Error("Not a checkpoint.")
   return { before: c.before, after: c.after, cwd }
@@ -354,6 +357,27 @@ export function startServer(opts: ServeOptions) {
           .catch((e: unknown) =>
             reply(socket, { type: "thread.reverted", requestId: msg.requestId, ok: false, message: errorText(e), files: [] }),
           )
+        return
+      case "worktree.action":
+        Promise.resolve()
+          .then((): ServerMessage => {
+            const ws = assertDirectory(msg.workspace)
+            if (msg.action === "preview") {
+              const preview = previewMerge(ws, msg.worktree)
+              return { type: "worktree.result", requestId: msg.requestId, ok: true, message: describePreview(preview), preview }
+            }
+            const r = msg.action === "apply" ? applyWorktree(ws, msg.worktree) : removeDelegateWorktree(ws, msg.worktree, msg.force)
+            if (r.ok) {
+              pendingNotes.push(
+                msg.action === "apply"
+                  ? `The user applied the worktree of thread "${msg.title}" to the workspace (uncommitted).`
+                  : `The user removed the worktree of thread "${msg.title}" (${msg.worktree}).`,
+              )
+            }
+            return { type: "worktree.result", requestId: msg.requestId, ok: r.ok, message: r.message }
+          })
+          .then((m) => reply(socket, m))
+          .catch((e: unknown) => reply(socket, { type: "worktree.result", requestId: msg.requestId, ok: false, message: errorText(e) }))
         return
       case "queue.remove":
         queue.remove(msg.id)

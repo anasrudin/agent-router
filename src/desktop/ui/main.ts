@@ -11,10 +11,12 @@ import type {
   QueuedPrompt,
   ServerMessage,
   WireEvent,
+  WorktreePreview,
 } from "../../server/protocol"
 import { type DiffFile, formatReview, parseUnifiedDiff, type ReviewComment } from "./diff"
 import { escapeHtml, renderMarkdown, resultLine } from "./markdown"
 import { notifyIfAway } from "./notify"
+import { type Answer, formatAnswers, letter, type QuestionForm, splitQuestions } from "./questions"
 import { createSettings } from "./settings"
 
 interface ServerInfo {
@@ -271,7 +273,13 @@ function describeTool(input: unknown): string {
 function conductorEvent(event: WireEvent) {
   switch (event.type) {
     case "text":
-      if (event.text.trim()) append(el("div", "md", renderMarkdown(event.text)))
+      for (const seg of splitQuestions(event.text)) {
+        if (seg.kind === "markdown") append(el("div", "md", renderMarkdown(seg.text)))
+        else {
+          append(renderQuestionForm(seg.form))
+          notifyIfAway("agent-router: Conductor has questions", seg.form.title ?? seg.form.questions[0]?.question ?? "")
+        }
+      }
       return
     case "tool_call": {
       // Delegations get their own card from the router; showing the raw call too would duplicate it.
@@ -295,6 +303,82 @@ function conductorEvent(event: WireEvent) {
     default:
       return
   }
+}
+
+// ── Question forms: Conductor asks, the answers go back as the next request ──
+
+function renderQuestionForm(form: QuestionForm): HTMLElement {
+  const card = el("article", "card questions")
+  const answers: Record<string, Answer> = Object.fromEntries(form.questions.map((q) => [q.id, { picked: [] }]))
+  card.append(Object.assign(el("h4"), { textContent: form.title ?? "Conductor asks" }))
+  const controls: (HTMLButtonElement | HTMLInputElement | HTMLTextAreaElement)[] = []
+  form.questions.forEach((q, qi) => {
+    const block = el("section", "question")
+    block.append(Object.assign(el("p", "question-text"), { textContent: `${qi + 1}. ${q.question}` }))
+    const a = answers[q.id] as Answer
+    const buttons: HTMLButtonElement[] = []
+    q.choices.forEach((c, ci) => {
+      const b = el("button", "choice") as HTMLButtonElement
+      b.type = "button"
+      b.setAttribute("aria-pressed", "false")
+      b.append(
+        Object.assign(el("span", "choice-letter"), { textContent: letter(ci) }),
+        Object.assign(el("span", "choice-label"), { textContent: c.label }),
+      )
+      if (c.recommended) b.append(Object.assign(el("span", "choice-rec"), { textContent: "recommended" }))
+      if (c.description) b.append(Object.assign(el("span", "choice-desc"), { textContent: c.description }))
+      b.addEventListener("click", () => {
+        a.skipped = false
+        if (q.multiple) a.picked = a.picked.includes(c.label) ? a.picked.filter((l) => l !== c.label) : [...a.picked, c.label]
+        else a.picked = a.picked[0] === c.label ? [] : [c.label]
+        for (const [i, other] of buttons.entries()) other.setAttribute("aria-pressed", String(a.picked.includes(q.choices[i]?.label ?? "")))
+        skip.setAttribute("aria-pressed", "false")
+      })
+      buttons.push(b)
+      controls.push(b)
+      block.append(b)
+    })
+    const own = document.createElement(q.choices.length ? "input" : "textarea") as HTMLInputElement | HTMLTextAreaElement
+    own.className = "question-own"
+    own.placeholder = q.choices.length ? "Other (your own answer)" : "Your answer"
+    if (own instanceof HTMLTextAreaElement) own.rows = 2
+    own.addEventListener("input", () => {
+      a.other = own.value
+      if (own.value.trim()) {
+        a.skipped = false
+        skip.setAttribute("aria-pressed", "false")
+      }
+    })
+    controls.push(own)
+    const skip = el("button", "ghost small skip") as HTMLButtonElement
+    skip.type = "button"
+    skip.textContent = "Skip"
+    skip.setAttribute("aria-pressed", "false")
+    skip.addEventListener("click", () => {
+      a.skipped = !a.skipped
+      skip.setAttribute("aria-pressed", String(a.skipped))
+    })
+    controls.push(skip)
+    const row = el("div", "question-own-row")
+    row.append(own, skip)
+    block.append(row)
+    card.append(block)
+  })
+  const footer = el("div", "buttons")
+  const submit = el("button", "primary") as HTMLButtonElement
+  submit.type = "button"
+  submit.textContent = "Send answers"
+  const hint = Object.assign(el("span", "muted"), { textContent: "Unanswered questions are left to Conductor's judgement." })
+  submit.addEventListener("click", () => {
+    if (!startRequest(formatAnswers(form, answers))) return
+    for (const c of [...controls, submit]) c.disabled = true
+    card.classList.add("answered")
+    hint.textContent = state.running ? "Sent: queued behind the current turn." : "Sent."
+  })
+  controls.push(submit)
+  footer.append(submit, hint)
+  card.append(footer)
+  return card
 }
 
 // ── Threads: one per delegation, in the sidebar, the chat and the detail panel ──
@@ -327,6 +411,15 @@ interface Thread {
   draft?: string
   /** "confirm" while the Revert button asks to be pressed again; the outcome once done. */
   revert?: "confirm" | { ok: boolean; message: string }
+  /** Bringing a worktree thread's work in: last preview, the action awaiting a second press, the last outcome. */
+  wt?: {
+    preview?: WorktreePreview
+    confirm?: "apply" | "remove" | "force"
+    result?: { ok: boolean; message: string }
+    busy?: boolean
+    applied?: boolean
+    gone?: boolean
+  }
 }
 
 const PROVIDER_GLYPH: Record<ProviderId, string> = { claude: "C", gemini: "G", openai: "X" }
@@ -582,6 +675,9 @@ function renderFileDiff(t: Thread, f: DiffFile, open: boolean): HTMLElement {
 }
 
 function renderChanges(t: Thread): HTMLElement {
+  if (t.wt?.gone && !t.diff) {
+    return Object.assign(el("div", "muted"), { textContent: "The worktree was removed, so this thread's diff is no longer available." })
+  }
   loadDiff(t)
   const box = el("div", "changes")
   const bar = el("div", "changes-bar")
@@ -610,7 +706,10 @@ function renderChanges(t: Thread): HTMLElement {
     })
     bar.append(sendBtn)
   }
+  // A removed worktree's checkout is gone, so there is nothing left to revert in.
+  const worktreeGone = Boolean(t.wt?.gone)
   const revert = el("button", "ghost small danger") as HTMLButtonElement
+  revert.hidden = worktreeGone
   revert.type = "button"
   revert.textContent = t.revert === "confirm" ? "Confirm revert" : "Revert thread"
   revert.title = "Undo this thread's changes in its checkout. Refused if the files changed since."
@@ -671,6 +770,97 @@ function renderChanges(t: Thread): HTMLElement {
   return box
 }
 
+// ── A worktree thread: bring its work into the workspace ───────────────
+
+function worktreeAction(t: Thread, worktree: string, action: "preview" | "apply" | "remove", force = false) {
+  if (!t.wt) t.wt = {}
+  const wt = t.wt
+  wt.busy = true
+  wt.confirm = undefined
+  renderDetail()
+  void request({
+    type: "worktree.action",
+    requestId: nextRequestId(),
+    workspace: state.workspace,
+    worktree,
+    action,
+    force,
+    title: taskTitle(t.task),
+  }).then((msg) => {
+    if (msg.type !== "worktree.result") return
+    wt.busy = false
+    if (msg.preview) wt.preview = msg.preview
+    wt.result = action === "preview" && msg.ok ? undefined : { ok: msg.ok, message: msg.message }
+    if (action !== "preview" && msg.ok) {
+      // What the preview said no longer holds once the work is in or the worktree is gone.
+      wt.preview = undefined
+      if (action === "apply") wt.applied = true
+      else wt.gone = true
+    }
+    if (state.selected === t.id) renderDetail()
+  })
+}
+
+function renderWorktree(t: Thread, worktree: string): HTMLElement {
+  if (!t.wt) t.wt = {}
+  const wt = t.wt
+  const box = el("div", "worktree")
+  box.append(Object.assign(el("div", "mono facts"), { textContent: worktree }))
+  const bar = el("div", "changes-bar")
+  const button = (label: string, cls: string, onClick: () => void, disabled = false) => {
+    const b = el("button", `${cls} small`) as HTMLButtonElement
+    b.type = "button"
+    b.textContent = label
+    b.disabled = disabled || Boolean(wt.busy) || Boolean(wt.gone)
+    b.addEventListener("click", onClick)
+    bar.append(b)
+  }
+  const second = (action: NonNullable<NonNullable<Thread["wt"]>["confirm"]>) => () => {
+    if (wt.confirm === action) worktreeAction(t, worktree, action === "force" ? "remove" : action, action === "force")
+    else {
+      wt.confirm = action
+      renderDetail()
+    }
+  }
+  button("Preview merge", "ghost", () => worktreeAction(t, worktree, "preview"))
+  button(
+    wt.applied ? "Applied" : wt.confirm === "apply" ? "Confirm apply" : "Apply to workspace",
+    "primary",
+    second("apply"),
+    wt.preview?.appliesCleanly === false || Boolean(wt.applied),
+  )
+  const refused = wt.result && !wt.result.ok && /not in the workspace yet/.test(wt.result.message)
+  if (refused) button(wt.confirm === "force" ? "Confirm discard" : "Remove and discard", "ghost danger", second("force"))
+  else button(wt.confirm === "remove" ? "Confirm remove" : "Remove worktree", "ghost", second("remove"))
+  if (wt.confirm) {
+    button("Cancel", "ghost", () => {
+      wt.confirm = undefined
+      renderDetail()
+    })
+  }
+  box.append(bar)
+  if (wt.busy) box.append(Object.assign(el("div", "muted"), { textContent: "Working…" }))
+  const p = wt.preview
+  if (p) {
+    const lines = el("ul", "facts preview-list")
+    const li = (text: string, cls = "") => lines.append(Object.assign(el("li", cls), { textContent: text }))
+    li(`Changed: ${p.files.join(", ") || "nothing"}`)
+    li(
+      p.conflicts.length ? `Conflicts with HEAD: ${p.conflicts.join(", ")}` : "No conflicts with HEAD",
+      p.conflicts.length ? "bad" : "good",
+    )
+    li(
+      p.appliesCleanly ? "Applies cleanly to the workspace as it is now" : "Does not apply cleanly to the workspace as it is now",
+      p.appliesCleanly ? "good" : "bad",
+    )
+    if (p.unmergedCommits) li(`Its branch has ${p.unmergedCommits} commit(s) the workspace lacks`)
+    box.append(lines)
+    if (p.applyError) box.append(Object.assign(el("pre", "mono apply-error"), { textContent: p.applyError }))
+  }
+  if (wt.result) box.append(Object.assign(el("div", wt.result.ok ? "notice ok" : "error"), { textContent: wt.result.message }))
+  return box
+}
+
 function renderDetail() {
   const t = state.selected ? state.threads.get(state.selected) : undefined
   if (!t) return
@@ -701,6 +891,7 @@ function renderDetail() {
   section("Task", Object.assign(el("p", "task"), { textContent: t.task }))
   if (t.error) section("Error", Object.assign(el("div", "error"), { textContent: t.error }))
   const sum = t.summary
+  if (sum?.worktree) section("Worktree", renderWorktree(t, sum.worktree))
   if (sum?.checkpoint?.after) section("Changes", renderChanges(t))
   else if (sum?.changedFiles.length) {
     const list = el("ul", "files mono")
@@ -857,7 +1048,10 @@ function approvalRequest(msg: Extract<ServerMessage, { type: "approval.request" 
 
 function onMessage(msg: ServerMessage) {
   if (settings.onMessage(msg)) return
-  if ((msg.type === "thread.diff" || msg.type === "thread.reverted") && pendingRequests.has(msg.requestId)) {
+  if (
+    (msg.type === "thread.diff" || msg.type === "thread.reverted" || msg.type === "worktree.result") &&
+    pendingRequests.has(msg.requestId)
+  ) {
     pendingRequests.get(msg.requestId)?.(msg)
     pendingRequests.delete(msg.requestId)
     return

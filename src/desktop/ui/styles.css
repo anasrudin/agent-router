@@ -527,6 +527,96 @@ svg {
   gap: 8px;
 }
 
+/* Question forms */
+.questions {
+  border-left: 4px solid var(--attention);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.questions h4 {
+  margin: 0;
+  font-size: 14px;
+}
+.question {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.question-text {
+  margin: 0;
+  font-weight: 600;
+}
+.choice {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  column-gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  text-align: left;
+  cursor: pointer;
+}
+.choice:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.choice[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel-2));
+}
+.choice-letter {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: var(--panel);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.choice[aria-pressed="true"] .choice-letter {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+.choice-rec {
+  font-size: 11px;
+  color: var(--ok);
+}
+.choice-desc {
+  grid-column: 2 / 4;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.question-own-row {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+}
+.question-own {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  font: inherit;
+  font-size: 13px;
+  resize: vertical;
+}
+.skip[aria-pressed="true"] {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.questions .buttons {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.questions.answered {
+  opacity: 0.75;
+}
+
 /* Approvals */
 .approval {
   border: 1px solid var(--warn);
@@ -885,6 +975,30 @@ svg {
 }
 .hint-line {
   font-size: 12.5px;
+}
+.worktree {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.preview-list {
+  margin: 0;
+  padding-left: 16px;
+}
+.preview-list .good {
+  color: var(--ok);
+}
+.preview-list .bad {
+  color: var(--bad);
+}
+.apply-error {
+  margin: 0;
+  padding: 6px 8px;
+  max-height: 140px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--code-bg);
+  white-space: pre-wrap;
 }
 .diff-file {
   border: 1px solid var(--border);

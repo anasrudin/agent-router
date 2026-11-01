@@ -14,6 +14,10 @@ describe("approvalDecision() — headless permission prompts", () => {
     ["acceptEdits", mcpToolName("delegate"), delegateCall("edit"), "allow"],
     ["acceptEdits", "Bash", { command: "bun test" }, "deny"],
     ["bypass", "Bash", { command: "bun test" }, "allow"],
+    ["default", mcpToolName("worktree_apply"), { worktree: "w" }, "deny"],
+    ["acceptEdits", mcpToolName("worktree_apply"), { worktree: "w" }, "allow"],
+    ["acceptEdits", mcpToolName("worktree_remove"), { worktree: "w" }, "allow"],
+    ["acceptEdits", mcpToolName("worktree_remove"), { worktree: "w", force: true }, "deny"],
   ]
   for (const [permission, tool, input, behavior] of cases) {
     test(`${permission}: ${tool} ${JSON.stringify(input)} → ${behavior}`, () => {

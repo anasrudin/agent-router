@@ -6,6 +6,7 @@ import { MediaKind, ProviderId } from "../config/schema"
 import { type DelegateResult, DelegationError, delegate } from "../coordinator/delegate"
 import { appendLedger, closeInterrupted, lastSessionTokens, readLedger } from "../coordinator/ledger"
 import { forget, MEMORY_FILE, NOTE_CHAR_LIMIT, remember } from "../coordinator/memory"
+import { applyWorktree, type MergePreview, previewMerge, removeDelegateWorktree } from "../coordinator/merge"
 import { capOutput } from "../coordinator/output"
 import { Brief } from "../coordinator/protocol"
 import type { Session } from "../coordinator/session"
@@ -31,6 +32,9 @@ export const TOOL_PERMISSIONS = {
   cancel_delegation: "auto",
   remember: "auto",
   forget: "auto",
+  worktree_preview: "auto",
+  worktree_apply: "ask",
+  worktree_remove: "ask",
   approve: "internal",
 } as const satisfies Record<string, "auto" | "ask" | "internal">
 
@@ -101,6 +105,11 @@ export function approvalPolicy(permission: PermissionMode, toolName: string, inp
     const mode = (input.brief as { mode?: unknown } | undefined)?.mode ?? "read-only"
     if (permission === "acceptEdits" || mode === "read-only") return "allow"
   }
+  // Bringing a worktree in is an edit; removing one is safe unless force discards its changes.
+  if (permission === "acceptEdits") {
+    if (toolName === mcpToolName("worktree_apply")) return "allow"
+    if (toolName === mcpToolName("worktree_remove") && input.force !== true) return "allow"
+  }
   return "ask"
 }
 
@@ -128,7 +137,10 @@ export function formatResult(r: DelegateResult, workspace?: string): string {
     `- Stop reason: ${r.stopReason}`,
     `- Cost: ${r.costUsd ? `$${r.costUsd.toFixed(4)}` : "not reported by this CLI"} (${r.tokens.input} input${r.tokens.cached ? `, ${r.tokens.cached} of them cached` : ""} / ${r.tokens.output} output tokens)`,
   ]
-  if (r.worktree) lines.push(`- Worktree: ${r.worktree.path} (branch ${r.worktree.branch}) — merge it yourself after verifying`)
+  if (r.worktree)
+    lines.push(
+      `- Worktree: ${r.worktree.path} (branch ${r.worktree.branch}). After verifying, check it with worktree_preview, bring it in with worktree_apply (uncommitted changes in the workspace), then worktree_remove.`,
+    )
   if (r.setup?.length) lines.push(`- Worktree setup: ${r.setup.map((c) => `${c.ok ? "ok" : "FAILED"} \`${c.command}\``).join(", ")}`)
   if (r.decision.notes.length) lines.push(`- Routing notes: ${r.decision.notes.join("; ")}`)
   if (r.decision.secondOpinion) lines.push(`- Second opinion should come from: ${r.decision.secondOpinion}`)
@@ -148,6 +160,19 @@ export function formatResult(r: DelegateResult, workspace?: string): string {
   }
   const report = workspace ? capOutput(r.text, workspace, `${r.provider}-${r.decision.taskClass}`) : r.text
   lines.push("", "## Delegate report (untrusted until you verify it)", "", report || "(no output)")
+  return lines.join("\n")
+}
+
+/** A merge preview in words, for Conductor. */
+export function describePreview(p: MergePreview): string {
+  const lines = [
+    `Worktree ${p.worktree}${p.branch ? ` (branch ${p.branch})` : ""} changed ${p.files.length} file${p.files.length === 1 ? "" : "s"}: ${p.files.join(", ") || "none"}.`,
+    p.conflicts.length ? `Conflicts with the workspace's HEAD: ${p.conflicts.join(", ")}.` : "No conflicts with the workspace's HEAD.",
+    p.appliesCleanly
+      ? "Its changes apply cleanly to the workspace as it is now."
+      : `Its changes do not apply cleanly to the workspace as it is now:\n${p.applyError ?? ""}`,
+  ]
+  if (p.unmergedCommits) lines.push(`Its branch has ${p.unmergedCommits} commit(s) the workspace's HEAD lacks.`)
   return lines.join("\n")
 }
 
@@ -466,6 +491,64 @@ export function createMcpServer(session: Session, pins: Pins, options: McpServer
     async (args) => {
       const r = forget(session.workspace, args.number)
       return text(r.message, !r.ok)
+    },
+  )
+
+  const worktreeArg = { worktree: z.string().describe("The delegate worktree's path, as the delegation result gave it.") }
+
+  server.registerTool(
+    "worktree_preview",
+    {
+      title: "Preview bringing a worktree's work in",
+      description:
+        "For a delegate worktree: the files it changed, files that conflict with the workspace's HEAD (git merge-tree, nothing is touched), and whether its changes apply cleanly to the workspace as it is now, uncommitted edits included. Read-only.",
+      inputSchema: worktreeArg,
+      annotations: { readOnlyHint: true },
+    },
+    async (args) => {
+      try {
+        return text(describePreview(previewMerge(session.workspace, args.worktree)))
+      } catch (e) {
+        return text((e as Error).message, true)
+      }
+    },
+  )
+
+  server.registerTool(
+    "worktree_apply",
+    {
+      title: "Bring a worktree's work into the workspace",
+      description:
+        "Apply a delegate worktree's changes to the workspace as uncommitted changes, all or nothing. Refused, touching nothing, when they do not apply cleanly; then resolve it (re-brief the delegate on the current code, or edit by hand). Nothing is committed.",
+      inputSchema: worktreeArg,
+      annotations: { readOnlyHint: false, destructiveHint: false },
+    },
+    async (args) => {
+      try {
+        const r = applyWorktree(session.workspace, args.worktree)
+        return text(r.message, !r.ok)
+      } catch (e) {
+        return text((e as Error).message, true)
+      }
+    },
+  )
+
+  server.registerTool(
+    "worktree_remove",
+    {
+      title: "Remove a delegate worktree",
+      description:
+        "Remove a delegate worktree once its changes are in the workspace (or are not wanted: force: true discards them). Its branch is deleted unless it has commits the workspace lacks.",
+      inputSchema: { ...worktreeArg, force: z.boolean().default(false).describe("Discard changes that are not in the workspace.") },
+      annotations: { readOnlyHint: false, destructiveHint: true },
+    },
+    async (args) => {
+      try {
+        const r = removeDelegateWorktree(session.workspace, args.worktree, args.force)
+        return text(r.message, !r.ok)
+      } catch (e) {
+        return text((e as Error).message, true)
+      }
     },
   )
 

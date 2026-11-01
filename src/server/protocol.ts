@@ -95,6 +95,16 @@ export type ClientMessage =
   | { type: "thread.diff"; requestId: string; workspace: string; checkpoint: ThreadCheckpoint }
   /** Undo a thread's changes in its checkout. */
   | { type: "thread.revert"; requestId: string; workspace: string; checkpoint: ThreadCheckpoint; title: string }
+  /** A delegate worktree: preview bringing its work in, apply it, or remove the worktree. */
+  | {
+      type: "worktree.action"
+      requestId: string
+      workspace: string
+      worktree: string
+      action: "preview" | "apply" | "remove"
+      force?: boolean
+      title: string
+    }
   /** Drop a queued request. */
   | { type: "queue.remove"; id: string }
   /** Run a queued request next: now if idle (also resumes a paused queue), otherwise right after the current turn. */
@@ -113,6 +123,17 @@ export type ClientMessage =
       reasoning: string
       trustWorkspace: boolean
     }
+
+/** coordinator/merge.ts MergePreview, as plain data. */
+export interface WorktreePreview {
+  worktree: string
+  branch?: string
+  files: string[]
+  conflicts: string[]
+  appliesCleanly: boolean
+  applyError?: string
+  unmergedCommits: number
+}
 
 export interface ThreadCheckpoint {
   before: string
@@ -157,6 +178,7 @@ export type ServerMessage =
     }
   | { type: "thread.diff"; requestId: string; patch: string; truncated: boolean; error?: string }
   | { type: "thread.reverted"; requestId: string; ok: boolean; message: string; files: string[] }
+  | { type: "worktree.result"; requestId: string; ok: boolean; message: string; preview?: WorktreePreview }
   /** Requests waiting for the current turn. `paused` after a cancelled turn: nothing starts until the user says. */
   | { type: "queue"; items: QueuedPrompt[]; paused: boolean }
   | { type: "conductor"; turnId: string; event: WireEvent }
