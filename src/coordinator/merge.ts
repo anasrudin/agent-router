@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process"
-import { existsSync } from "node:fs"
 import path from "node:path"
 import { snapshot } from "./checkpoints"
+import { isDelegateWorktree } from "./worktrees"
 
 /**
  * Bringing a delegate worktree's work back into the workspace. A worktree delegate leaves its
@@ -32,11 +32,10 @@ function git(cwd: string, args: string[]): string {
 
 /** A path that is one of this workspace's delegate worktrees, resolved; anything else throws. */
 export function delegateWorktree(workspace: string, worktree: string): string {
-  const resolved = path.resolve(workspace, worktree)
-  if (path.dirname(resolved) !== path.join(path.resolve(workspace), ".harness", "worktrees") || !existsSync(resolved)) {
+  if (!isDelegateWorktree(workspace, worktree)) {
     throw new Error(`${worktree} is not one of this workspace's delegate worktrees (.harness/worktrees/*).`)
   }
-  return resolved
+  return path.resolve(workspace, worktree)
 }
 
 interface WorktreeState {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { applyWorktree, previewMerge, removeDelegateWorktree } from "../merge"
@@ -75,6 +75,15 @@ describe("worktree merge", () => {
     expect(existsSync(s.wt.path)).toBe(false)
     expect(() => previewMerge(s.dir, s.dir)).toThrow("not one of this workspace's delegate worktrees")
     expect(() => previewMerge(s.dir, path.join(s.dir, ".harness", "worktrees", "..", ".."))).toThrow("delegate worktrees")
+  })
+
+  test("the workspace path and git's path for it may differ (symlink, Windows short name)", () => {
+    const s = setup()
+    // git reports the real path; the user's workspace path is a link to it.
+    const link = path.join(mkdtempSync(path.join(tmpdir(), "ar-link-")), "ws")
+    symlinkSync(s.dir, link, process.platform === "win32" ? "junction" : "dir")
+    writeFileSync(s.at(s.wt.path, "b.ts"), "changed\n")
+    expect(previewMerge(link, s.wt.path).files).toEqual(["b.ts"])
   })
 
   test("a branch with its own commits is kept on remove", () => {

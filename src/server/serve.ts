@@ -10,6 +10,7 @@ import { checkpointDiff, revertCheckpoint } from "../coordinator/checkpoints"
 import { newLedgerPath } from "../coordinator/ledger"
 import { applyWorktree, previewMerge, removeDelegateWorktree } from "../coordinator/merge"
 import { Session } from "../coordinator/session"
+import { isDelegateWorktree, samePath } from "../coordinator/worktrees"
 import { describePreview } from "../mcp/server"
 import { type Overrides, parseOverrides, ULTRAWORK_NOTE } from "../router/classify"
 import { QuotaTracker } from "../router/quota"
@@ -80,9 +81,9 @@ function describeConfiguredPlan(plan: RoutingConfig["plan"]): string | undefined
 export function trustedCheckpoint(workspace: string, c: ThreadCheckpoint): ThreadCheckpoint {
   const ws = assertDirectory(workspace)
   const cwd = path.resolve(c.cwd)
-  const worktrees = path.join(ws, ".harness", "worktrees")
-  const inside = cwd === ws || (path.dirname(cwd) === worktrees && statSync(cwd, { throwIfNoEntry: false })?.isDirectory())
-  if (!inside) throw new Error("That checkout is not this workspace or one of its delegate worktrees.")
+  if (!samePath(cwd, ws) && !isDelegateWorktree(ws, cwd)) {
+    throw new Error("That checkout is not this workspace or one of its delegate worktrees.")
+  }
   const sha = /^[0-9a-f]{40}$/
   if (!sha.test(c.before) || (c.after !== undefined && !sha.test(c.after))) throw new Error("Not a checkpoint.")
   return { before: c.before, after: c.after, cwd }
