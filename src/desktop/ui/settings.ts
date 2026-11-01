@@ -113,7 +113,7 @@ export function createSettings(send: Send, workspace: () => string, notify: (mes
     for (const p of PROVIDERS) {
       const section = document.createElement("section")
       section.className = "provider"
-      section.innerHTML = `<h3>${LABEL[p]}<span class="exe source"></span></h3>`
+      section.innerHTML = `<h3>${LABEL[p]}</h3><p class="source"></p>`
       const detected = options?.[p].models.some((m) => m.source === "detected")
       ;(section.querySelector(".source") as HTMLElement).textContent = detected
         ? options?.[p].authoritative

@@ -11,4 +11,16 @@ if (!result.success) {
   process.exit(1)
 }
 for (const file of ["index.html", "styles.css"]) copyFileSync(path.join(ui, file), path.join(dist, file))
+
+// The interface faces Ghostex uses (all SIL OFL), bundled so the app needs no network for fonts.
+const fonts = path.join(dist, "fonts")
+mkdirSync(fonts, { recursive: true })
+const modules = path.join(import.meta.dir, "..", "..", "node_modules", "@fontsource-variable")
+for (const [name, file] of <[string, string][]>[
+  ["inter.woff2", "inter/files/inter-latin-wght-normal.woff2"],
+  ["dm-sans.woff2", "dm-sans/files/dm-sans-latin-wght-normal.woff2"],
+  ["jetbrains-mono.woff2", "jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2"],
+]) {
+  copyFileSync(path.join(modules, file), path.join(fonts, name))
+}
 console.log(`desktop UI built into ${dist}`)

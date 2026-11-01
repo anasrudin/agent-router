@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>agent-router</title>
+    <meta name="description" content="Conductor and its delegated threads across Claude Code, Gemini CLI and Codex, in one window." />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -23,13 +24,20 @@
           <span id="workspace-path" class="path">Choose a folder…</span>
         </button>
         <nav id="threads" class="tree" aria-label="This chat"></nav>
+        <section class="usage" aria-label="This chat's usage">
+          <span id="cost" class="cost" title="Reported spend and tokens this chat, Conductor and delegates together"></span>
+          <span id="status-threads" class="muted"></span>
+        </section>
         <fieldset id="backends" class="backends" aria-label="Backend status"></fieldset>
       </aside>
 
       <section class="main">
         <header class="main-head">
-          <svg class="crown" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12.5h12M2.5 11 1.8 5l3.6 2.6L8 3l2.6 4.6L14.2 5l-.7 6z" /></svg>
-          <span id="chat-title" class="chat-title">Conductor</span>
+          <nav class="crumbs" aria-label="Where you are">
+            <span id="crumb-workspace" class="crumb">No folder</span>
+            <span class="crumb-sep" aria-hidden="true">/</span>
+            <span id="chat-title" class="chat-title">Conductor</span>
+          </nav>
         </header>
 
         <main id="log" class="log" aria-live="polite">
@@ -45,36 +53,50 @@
 
         <footer class="composer">
           <div id="banner" class="banner" hidden></div>
+          <div class="pill-strip">
+            <div class="threads-pill-wrap">
+              <button id="threads-pill" type="button" class="strip-pill" aria-haspopup="menu" aria-expanded="false" aria-controls="threads-menu" hidden>
+                <span id="threads-pill-dot" class="mark"></span>
+                <span>Threads</span>
+                <span id="threads-pill-count" class="muted"></span>
+              </button>
+              <div id="threads-menu" class="popover threads-menu" role="menu" aria-label="This chat's threads" hidden></div>
+            </div>
+          </div>
           <div id="queue" class="queue" hidden></div>
           <form id="form" class="composer-box">
             <textarea id="prompt" rows="2" placeholder="Describe the task. Enter to send, Shift+Enter for a new line." autocomplete="off"></textarea>
             <div class="composer-bar">
-              <label class="pick" title="How much depth to buy above each task's quality floor">
-                <span class="sr-only">Profile</span>
-                <select id="profile"><option value="">Default</option></select>
-              </label>
-              <label class="pick" title="Your subscriptions: the backend you pay most for does the frontier work">
-                <span class="sr-only">Plan</span>
-                <select id="plan"><option value="">As configured</option></select>
-              </label>
-              <label class="pick" title="What Conductor and its delegates may do without asking">
-                <span class="sr-only">Permission</span>
-                <select id="permission">
-                  <option value="default">Ask before changes</option>
-                  <option value="acceptEdits">Accept edits</option>
-                  <option value="bypass">Bypass (no prompts)</option>
-                </select>
-              </label>
+              <div class="mode">
+                <button id="mode-pill" type="button" class="mode-pill" aria-haspopup="dialog" aria-expanded="false" aria-controls="mode-menu" title="Profile, plan and permission for the next request">
+                  <span id="mode-summary">Default</span>
+                  <svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
+                </button>
+                <div id="mode-menu" class="popover mode-menu" role="dialog" aria-label="Profile, plan and permission" hidden>
+                  <label class="field" title="How much depth to buy above each task's quality floor">
+                    <span>Profile</span>
+                    <select id="profile"><option value="">Default</option></select>
+                  </label>
+                  <label class="field" title="Your subscriptions: the backend you pay most for does the frontier work">
+                    <span>Plan</span>
+                    <select id="plan"><option value="">As configured</option></select>
+                  </label>
+                  <label class="field" title="What Conductor and its delegates may do without asking">
+                    <span>Permission</span>
+                    <select id="permission">
+                      <option value="default">Ask before changes</option>
+                      <option value="acceptEdits">Accept edits</option>
+                      <option value="bypass">Bypass (no prompts)</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
               <span class="spacer"></span>
               <button id="send" type="submit" class="send" aria-label="Send" title="Send">
                 <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" /></svg>
               </button>
             </div>
           </form>
-          <div class="statusbar">
-            <span id="cost" class="cost" title="Reported spend and tokens this chat (Conductor + delegates)">$0.0000 · 0 tokens</span>
-            <span id="status-threads"></span>
-          </div>
         </footer>
       </section>
 
@@ -111,6 +133,7 @@
       </form>
     </dialog>
 
+    <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
     <script type="module" src="main.js"></script>
   </body>
 </html>
