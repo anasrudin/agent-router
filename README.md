@@ -41,7 +41,7 @@ Config is layered, later files winning key by key: the shipped `routing.yaml`, t
 
 ![The desktop app after a real run: Conductor delegated a lookup, Gemini was rate-limited so it fell back to Claude Haiku, and the thread is open on the right](docs/screenshots/threads-detail.png)
 
-The layout follows [Ghostex](https://github.com/maddada/Ghostex) (MIT): the workspace and this chat's threads on the left, Conductor's conversation in the middle, the selected thread beside it. Every delegation is a **thread**: a row in the sidebar (backend, task, status, age), a line in the turn's **Threads** card (what it found or why it stopped), and on click a detail panel with its route, attempts, files changed, findings, report and live activity. Profile, plan and permission sit in the composer; spend, tokens and running threads in the line under it. Light and dark follow the system.
+The layout follows [Ghostex](https://github.com/maddada/Ghostex) (MIT): the workspace and this chat's threads on the left, Conductor's conversation in the middle, the selected thread beside it. Every delegation is a **thread**: a row in the sidebar (backend, task, status, age), a line in the turn's **Threads** card (what it found or why it stopped), and on click a detail panel with its route, attempts, files changed, findings, report and live activity. Profile, plan and permission sit in the composer; spend, tokens and running threads in the line under it. Requests sent while Conductor works queue above the composer, and each backend in the sidebar shows how full its subscription window is. Light and dark follow the system.
 
 | | |
 |---|---|
@@ -76,6 +76,16 @@ Choose them in the desktop app under **Models**, which saves to this project or 
 | fast | haiku | gemini-3-flash-preview | gpt-6-luna, low |
 | standard | sonnet | gemini-3-flash-preview | gpt-6-luna, medium |
 | deep | opus, high | gemini-3-pro-preview (needs paid quota; otherwise falls back) | gpt-6-luna, xhigh |
+
+**Model catalog and detection.** The model lists come from the CLI where it can list them, and from a catalog (`agent-harness-prompts/config/models.json`, shape adapted from Ghostex's) where it cannot:
+
+| Backend | Where the list comes from |
+|---|---|
+| Codex | `codex debug models`: exactly what your account may use, with each model's efforts |
+| Gemini | The Gemini API's model list when `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set, plus the catalog; otherwise the catalog |
+| Claude | The catalog (Claude Code has no list command; `haiku`, `sonnet`, `opus` and `fable` always mean the latest) |
+
+`agent-router models` prints every list with the tier each model is set to and flags problems: a model your account does not offer, an effort the model does not accept, a tier left on the CLI default. `doctor` reports the same problems. The Models dialog says where each list came from and which tier the catalog suggests for each model.
 
 Gemini only runs headless in folders it trusts. Trust the folder in Gemini once, or tick the trust checkbox under Gemini in **Models** (`trust_workspace: true`).
 
@@ -140,6 +150,10 @@ Measured on 2026-10-28 (3 small tasks × 2 runs each): every profile passed ever
 - **Honest token counts:** output includes thinking tokens (Gemini reports them apart from `output_tokens`, but bills them as output), and delegation results and telemetry say how much of the input was a prompt-cache read. A delegate re-sends its whole conversation on every tool call, so a long lookup's input total is mostly cache reads.
 - **Leaner delegate prompts:** delegates get the report half of the delegation protocol, not the brief-writing rules meant for Conductor (about 400 tokens less on every turn of every delegate). Scout has a tool-call budget: 2–6 calls for a typical lookup, report as soon as every acceptance item has a location.
 - **Token economy rules:** Conductor's prompt (§8) tells it to handle small tasks itself, scout before briefing an expensive agent, pass `path:start-end` references instead of whole files, keep handoffs short, resume sessions and verify from the changed-file list. Scout's report is capped at about 20 locations.
+- **Live quota:** Claude Code reports its 5-hour and weekly usage in its stream, and Codex records its windows in each thread's rollout file. The router keeps the latest per account (`~/.cache/agent-router/quota.json`, shared by every process). A backend whose window is full is skipped until the window resets, and one past `limits.quota_avoid_at` (90%) goes to the back of the line unless you pinned it. A rate limit with a known reset time no longer takes the backend out for the whole session. The desktop sidebar shows each backend's fullest window, with every window in the tooltip.
+- **Worktree setup:** `worktrees.setup` commands (e.g. `["npm ci"]`) run in each new delegate worktree before the delegate starts, with `AGENT_ROUTER_WORKSPACE` pointing at the main checkout so a script can copy `.env` or link caches. A failed step is a finding; the delegate still runs.
+- **Project memory:** `.harness/memory.md` holds lasting facts and standing rules ("tests need `make test-local`", "never edit billing/"), one per line. Conductor's prompt and every brief carry them, so they survive compaction and new chats. Conductor adds a note with its `remember` tool when you state a lasting rule or it verifies a fact worth keeping (and tells you), removes one with `forget`, and you can edit the file by hand. At most 60 notes of 600 characters.
+- **Prompt queue:** in the desktop app, a request sent while Conductor works waits in a queue above the composer and starts when the turn ends. You can move one to the front or drop it. Stop pauses the queue rather than letting the next request start; sending or **Resume** carries on. The queue is in memory only, so nothing is ever re-sent after a crash.
 - **Read-only Claude delegates can search:** Claude Code 2.1.312 has no Grep/Glob tools, so read-only delegates may run `grep`, `ls`, `cat`, `head`, `tail` and `wc`, and nothing else (no `rg --pre`, `git`, `find`, or redirection). No delegate may start subagents.
 
 The watchdog, output cap, directory rules, report gate, background delegations, keyword modes, compaction recovery, project checks, non-interactive environment, nudges, context restarts, evidence files, rule files, code navigation, comment checks and notifications follow ideas from oh-my-openagent. They were reimplemented here, not copied: most of that project is under a non-open-source license, and its MIT LSP package depends on parts that are not MIT. One idea did not carry over: hints after a failed edit. Claude Code 2.1.312 rejects a bad Edit before any hook runs, so no hook can see it.

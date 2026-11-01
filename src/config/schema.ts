@@ -138,6 +138,8 @@ export const RoutingConfig = z.object({
       delegate_stall_seconds: z.number().int().positive().default(300),
       max_identical_tool_calls: z.number().int().min(2).default(12),
       backend_unhealthy_after_errors: z.number().int().positive().default(2),
+      /** Prefer other backends once a subscription window is this full (0–1); 1 turns it off. */
+      quota_avoid_at: z.number().min(0).max(1).default(0.9),
     })
     .default({
       max_parallel_agents: 3,
@@ -148,6 +150,7 @@ export const RoutingConfig = z.object({
       delegate_stall_seconds: 300,
       max_identical_tool_calls: 12,
       backend_unhealthy_after_errors: 2,
+      quota_avoid_at: 0.9,
     }),
   budget: z
     .object({
@@ -177,6 +180,13 @@ export const RoutingConfig = z.object({
       timeout_seconds: z.number().int().positive().default(600),
     })
     .default({ commands: [], timeout_seconds: 600 }),
+  /** Commands that prepare each new delegate worktree, run in it before the delegate starts. */
+  worktrees: z
+    .object({
+      setup: z.array(z.string().min(1)).default([]),
+      timeout_seconds: z.number().int().positive().default(600),
+    })
+    .default({ setup: [], timeout_seconds: 600 }),
   /** Code navigation for delegates through language servers (agent-router lsp-mcp). */
   lsp: z
     .object({

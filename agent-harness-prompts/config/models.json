@@ -1,0 +1,39 @@
+{
+  "_readme": "Known models per backend: what the Models dialog offers, what each model's reasoning effort may be, and which tier each suits. Detection wins where a CLI can list models (Codex: `codex debug models`; Gemini: the API's models.list when GEMINI_API_KEY or GOOGLE_API_KEY is set); this file fills in the rest and is the only source for Claude Code, which has no list command. Shape adapted from Ghostex's agent-model-catalog.json (github.com/maddada/Ghostex, MIT). Bump updatedAt on every edit.",
+  "schemaVersion": 1,
+  "updatedAt": "2026-11-01T12:00:00Z",
+  "providers": {
+    "claude": {
+      "efforts": ["low", "medium", "high", "xhigh", "max"],
+      "models": [
+        { "id": "haiku", "label": "Haiku (latest)", "description": "Alias for the latest Haiku: fastest", "tier": "fast" },
+        { "id": "sonnet", "label": "Sonnet (latest)", "description": "Alias for the latest Sonnet: balanced", "tier": "standard" },
+        { "id": "opus", "label": "Opus (latest)", "description": "Alias for the latest Opus: most capable", "tier": "deep" },
+        { "id": "fable", "label": "Fable (latest)", "description": "Alias for the latest Fable: for the toughest problems" },
+        { "id": "claude-haiku-5-5", "label": "Haiku 5.5" },
+        { "id": "claude-sonnet-5-5", "label": "Sonnet 5.5" },
+        { "id": "claude-opus-5-5", "label": "Opus 5.5" },
+        { "id": "claude-fable-5-1", "label": "Fable 5.1" }
+      ]
+    },
+    "openai": {
+      "efforts": ["low", "medium", "high", "xhigh", "max"],
+      "models": [
+        { "id": "gpt-6.1-sol", "label": "GPT 6.1 Sol", "description": "Workhorse model for coding and everyday work", "tier": "standard" },
+        { "id": "gpt-6-astra", "label": "GPT 6 Astra", "description": "Frontier intelligence for the most demanding work", "tier": "deep" },
+        { "id": "gpt-6.1-terra", "label": "GPT 6.1 Terra" },
+        { "id": "gpt-6-luna", "label": "GPT 6 Luna", "description": "Fast and affordable model for easier tasks", "tier": "fast" },
+        { "id": "gpt-6-sol", "label": "GPT 6 Sol", "description": "Previous generation workhorse model" },
+        { "id": "gpt-5.6-sol", "label": "GPT 5.6 Sol", "description": "Older generation workhorse model" },
+        { "id": "gpt-5.6-luna", "label": "GPT 5.6 Luna", "description": "Older fast and efficient model" }
+      ]
+    },
+    "gemini": {
+      "efforts": [],
+      "models": [
+        { "id": "gemini-3-flash-preview", "label": "Gemini 3 Flash", "description": "Fast; works on the free API tier", "tier": "fast" },
+        { "id": "gemini-3-pro-preview", "label": "Gemini 3 Pro", "description": "Most capable; needs paid API quota", "tier": "deep" }
+      ]
+    }
+  }
+}

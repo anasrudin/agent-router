@@ -1,5 +1,6 @@
 import { writeFileSync } from "node:fs"
 import path from "node:path"
+import { catalogOptions } from "../../config/catalog"
 import type { BackendConfig } from "../../config/schema"
 import { selfCommand } from "../../self"
 import type { AgentMode, Backend, BackendOptions, PermissionMode, RunOptions } from "../Backend"
@@ -13,20 +14,8 @@ export const CLAUDE_TESTED_VERSION = "2.1.312"
 const EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"]
 
 /** Claude Code has no model-list command; these are its aliases plus current full ids. */
-export const CLAUDE_OPTIONS: BackendOptions = {
-  models: [
-    { id: "haiku", description: "Alias for the latest Haiku: fastest" },
-    { id: "sonnet", description: "Alias for the latest Sonnet: balanced" },
-    { id: "opus", description: "Alias for the latest Opus: most capable" },
-    { id: "claude-haiku-5-5" },
-    { id: "claude-sonnet-5-5" },
-    { id: "claude-opus-5-5" },
-    { id: "claude-fable-5-1" },
-  ],
-  // `claude --help`: --effort <level> (low, medium, high, xhigh, max)
-  reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
-  supportsTrustOverride: false,
-}
+/** Claude Code has no model-list command: config/models.json is the list. `claude --help`: --effort low…max. */
+export const claudeOptions = (): BackendOptions => catalogOptions("claude")
 
 /**
  * Claude Code 2.1.312 has no Grep/Glob tools ("search file contents with grep via the Bash tool"),
@@ -134,7 +123,7 @@ export function createClaudeBackend(config: BackendConfig): Backend {
     id: "claude",
     supportsResume: true,
     detect: () => detectCli(config.executable, CLAUDE_TESTED_VERSION),
-    options: async () => CLAUDE_OPTIONS,
+    options: async () => claudeOptions(),
     async *run(options): AsyncGenerator<BackendEvent> {
       const servers = options.mcpServers ?? []
       const notes = servers.map((s) => `\n\n${s.note}`).join("")

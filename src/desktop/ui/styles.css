@@ -308,6 +308,19 @@ svg {
   font-size: 12px;
   color: var(--muted);
 }
+.chip-quota {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.chip-quota.ok {
+  color: var(--ok);
+}
+.chip-quota.warn {
+  color: var(--warn);
+}
+.chip-quota.bad {
+  color: var(--bad);
+}
 .dot {
   width: 7px;
   height: 7px;
@@ -632,6 +645,9 @@ svg {
   align-items: center;
   gap: 8px;
 }
+.provider h3 .source {
+  margin-left: 8px;
+}
 .provider h3 .exe {
   font-weight: 400;
   font-size: 12px;
@@ -840,6 +856,47 @@ svg {
   border-radius: 8px;
   background: color-mix(in srgb, var(--warn) 12%, transparent);
   font-size: 13px;
+}
+.queue {
+  max-width: 820px;
+  margin: 0 auto 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.queue[hidden] {
+  display: none;
+}
+.queue-row,
+.queue-paused {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  font-size: 13px;
+}
+.queue-paused {
+  justify-content: space-between;
+  padding: 4px 6px 4px 10px;
+  color: var(--warn);
+}
+.queue-num {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.queue-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ghost.small {
+  padding: 2px 10px;
+  font-size: 12.5px;
 }
 .composer-box {
   max-width: 820px;

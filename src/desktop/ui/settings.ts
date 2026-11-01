@@ -47,7 +47,10 @@ export function createSettings(send: Send, workspace: () => string, notify: (mes
     select.setAttribute("aria-label", `${LABEL[provider]} ${tier} model`)
     const models = options?.[provider].models ?? []
     const known = models.some((m) => m.id === current)
-    for (const m of models) select.add(new Option(m.description ? `${m.id} — ${m.description}` : m.id, m.id))
+    for (const m of models) {
+      const hint = [m.tier && `suits ${m.tier}`, m.description].filter(Boolean).join(" · ")
+      select.add(new Option(hint ? `${m.id} — ${hint}` : m.id, m.id))
+    }
     select.add(new Option("Other model id…", CUSTOM))
     const input = document.createElement("input")
     input.type = "text"
@@ -110,7 +113,13 @@ export function createSettings(send: Send, workspace: () => string, notify: (mes
     for (const p of PROVIDERS) {
       const section = document.createElement("section")
       section.className = "provider"
-      section.innerHTML = `<h3>${LABEL[p]}</h3>`
+      section.innerHTML = `<h3>${LABEL[p]}<span class="exe source"></span></h3>`
+      const detected = options?.[p].models.some((m) => m.source === "detected")
+      ;(section.querySelector(".source") as HTMLElement).textContent = detected
+        ? options?.[p].authoritative
+          ? "models detected from your account"
+          : "detected models, plus the catalog"
+        : "models from the catalog"
       for (const t of TIERS) {
         const row = document.createElement("div")
         row.className = "tier-row"

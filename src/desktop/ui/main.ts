@@ -1,8 +1,17 @@
 import { invoke } from "@tauri-apps/api/core"
 import { open } from "@tauri-apps/plugin-dialog"
 import type { PermissionMode } from "../../backends/Backend"
+import type { QuotaSnapshot, QuotaWindow } from "../../backends/events"
 import type { ProviderId } from "../../config/schema"
-import type { BackendStatus, ClientMessage, DelegationSummary, ProfileInfo, ServerMessage, WireEvent } from "../../server/protocol"
+import type {
+  BackendStatus,
+  ClientMessage,
+  DelegationSummary,
+  ProfileInfo,
+  QueuedPrompt,
+  ServerMessage,
+  WireEvent,
+} from "../../server/protocol"
 import { escapeHtml, renderMarkdown, resultLine } from "./markdown"
 import { notifyIfAway } from "./notify"
 import { createSettings } from "./settings"
@@ -49,6 +58,9 @@ const state = {
   selected: undefined as string | undefined,
   /** The chat's first request, which names it in the sidebar. */
   chatTitle: "",
+  backends: undefined as BackendStatus | undefined,
+  /** Live subscription usage, newest report per backend. */
+  quota: {} as QuotaSnapshot,
   costUsd: 0,
   tokensIn: 0,
   tokensOut: 0,
@@ -92,10 +104,54 @@ function addUsage(usd: number | undefined, input = 0, output = 0) {
 
 function setRunning(running: boolean) {
   state.running = running
-  sendButton.classList.toggle("stop", running)
-  sendButton.title = running ? "Stop" : "Send"
-  sendButton.setAttribute("aria-label", sendButton.title)
+  updateSendButton()
   renderSidebar()
+}
+
+/** While a turn runs the button stops it, unless there is text to queue behind it. */
+function updateSendButton() {
+  const stop = state.running && !promptBox.value.trim()
+  sendButton.classList.toggle("stop", stop)
+  sendButton.title = stop ? "Stop" : state.running ? "Queue: runs when the current turn ends" : "Send"
+  sendButton.setAttribute("aria-label", sendButton.title)
+}
+
+// ── Prompt queue ────────────────────────────────────────────────────────
+
+function renderQueue(items: QueuedPrompt[], paused: boolean) {
+  const box = $("queue")
+  box.replaceChildren()
+  box.hidden = !items.length
+  if (paused) {
+    const head = el("div", "queue-paused")
+    head.append(Object.assign(el("span"), { textContent: "Queue paused after Stop." }))
+    const resume = el("button", "ghost small") as HTMLButtonElement
+    resume.type = "button"
+    resume.textContent = "Resume"
+    resume.addEventListener("click", () => items[0] && send({ type: "queue.send", id: items[0].id }))
+    head.append(resume)
+    box.append(head)
+  }
+  items.forEach((item, i) => {
+    const row = el("div", "queue-row")
+    const label = el("span", "queue-text")
+    label.textContent = item.prompt
+    label.title = item.prompt
+    const next = el("button", "icon-btn") as HTMLButtonElement
+    next.type = "button"
+    next.title = i === 0 ? "Send now when idle" : "Send next"
+    next.setAttribute("aria-label", next.title)
+    next.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" /></svg>`
+    next.addEventListener("click", () => send({ type: "queue.send", id: item.id }))
+    const remove = el("button", "icon-btn") as HTMLButtonElement
+    remove.type = "button"
+    remove.title = "Remove from queue"
+    remove.setAttribute("aria-label", remove.title)
+    remove.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>`
+    remove.addEventListener("click", () => send({ type: "queue.remove", id: item.id }))
+    row.append(Object.assign(el("span", "queue-num"), { textContent: String(i + 1) }), label, next, remove)
+    box.append(row)
+  })
 }
 
 // ── Workspace and backends ──────────────────────────────────────────────
@@ -147,21 +203,53 @@ function renderPlans(plans: ProfileInfo[], configured: string | undefined) {
   planSelect.title = planSelect.selectedOptions[0]?.title ?? ""
 }
 
+/** "5h 72%, resets Sat 14:10" */
+function describeWindow(w: QuotaWindow): string {
+  const reset = w.resetsAt
+    ? `, resets ${new Date(w.resetsAt).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}`
+    : ""
+  return `${w.label} ${Math.round(w.usedFraction * 100)}%${w.limited ? " (limit reached)" : ""}${reset}`
+}
+
+/** Windows whose reset time has passed count as empty again. */
+function currentWindows(p: ProviderId): QuotaWindow[] {
+  const now = Date.now()
+  return (state.quota[p]?.windows ?? []).map((w) =>
+    w.resetsAt !== undefined && w.resetsAt <= now ? { ...w, usedFraction: 0, limited: false, resetsAt: undefined } : w,
+  )
+}
+
+function recordQuota(p: ProviderId, windows: QuotaWindow[]) {
+  state.quota[p] = { windows, at: Date.now() }
+  if (state.backends) renderBackends(state.backends)
+}
+
 function renderBackends(status: BackendStatus) {
+  state.backends = status
+  for (const p of Object.keys(status.quota ?? {}) as ProviderId[]) {
+    const known = status.quota[p]
+    if (known && known.at > (state.quota[p]?.at ?? 0)) state.quota[p] = known
+  }
   const box = $("backends")
   box.replaceChildren()
   for (const p of Object.keys(status.health) as ProviderId[]) {
     const h = status.health[p]
+    const windows = currentWindows(p)
+    const fullest = windows.reduce<QuotaWindow | undefined>((a, w) => (!a || w.usedFraction > a.usedFraction ? w : a), undefined)
+    const level = !fullest ? "" : fullest.limited || fullest.usedFraction >= 0.9 ? "bad" : fullest.usedFraction >= 0.7 ? "warn" : "ok"
     const chip = el(
       "span",
       "chip",
-      `<span class="dot ${h.healthy ? "ok" : "bad"}"></span><span class="chip-name">${PROVIDER_LABEL[p]}</span>`,
+      `<span class="dot ${h.healthy ? "ok" : "bad"}"></span><span class="chip-name">${PROVIDER_LABEL[p]}</span>${
+        fullest ? `<span class="chip-quota ${level}">${Math.round(fullest.usedFraction * 100)}%</span>` : ""
+      }`,
     )
     const detail = h.healthy
       ? `${status.executables[p]} ${h.version ?? ""}`.trim()
       : `${status.executables[p]}: ${h.reason ?? "unavailable"}`
+    const usage = windows.length ? `\nUsage: ${windows.map(describeWindow).join("; ")}` : ""
     // The name hides on narrow windows, so the tooltip and the accessible name carry it too.
-    chip.title = `${PROVIDER_LABEL[p]}: ${detail}`
+    chip.title = `${PROVIDER_LABEL[p]}: ${detail}${usage}`
     chip.setAttribute("aria-label", chip.title)
     box.append(chip)
   }
@@ -195,6 +283,10 @@ function conductorEvent(event: WireEvent) {
     }
     case "usage":
       addUsage(event.costUsd, event.inputTokens, event.outputTokens)
+      return
+    case "quota":
+      // Conductor runs on Claude.
+      recordQuota("claude", event.windows)
       return
     case "error":
       append(el("div", "error", escapeHtml(event.message)))
@@ -435,6 +527,10 @@ function delegationEvent(msg: Extract<ServerMessage, { type: "delegation.event" 
   const t = state.threads.get(msg.id)
   if (!t) return
   const ev = msg.event
+  if (ev.type === "quota") {
+    recordQuota(msg.provider, ev.windows)
+    return
+  }
   if (ev.type === "usage") {
     t.tokens += ev.inputTokens + ev.outputTokens
     t.provider = msg.provider
@@ -531,6 +627,11 @@ function onMessage(msg: ServerMessage) {
       renderPlans(msg.backends.plans, msg.backends.configuredPlan)
       return
     case "turn.started": {
+      append(el("div", "user", escapeHtml(msg.prompt)), log)
+      if (!state.chatTitle) {
+        state.chatTitle = taskTitle(msg.prompt)
+        $("chat-title").textContent = state.chatTitle
+      }
       state.turnEl = el("section", "turn")
       state.turnEl.append(
         el(
@@ -553,6 +654,9 @@ function onMessage(msg: ServerMessage) {
       notifyIfAway("agent-router", msg.ok ? "Your request is done." : `Stopped: ${(msg.error ?? "error").slice(0, 160)}`)
       setRunning(false)
       state.turnEl = undefined
+      return
+    case "queue":
+      renderQueue(msg.items, msg.paused)
       return
     case "delegation.started":
       delegationStarted(msg)
@@ -596,23 +700,20 @@ function reportStartupError(error: unknown) {
 const settings = createSettings(send, () => state.workspace, showBanner)
 
 function submit() {
-  if (state.running) {
+  const prompt = promptBox.value.trim()
+  if (state.running && !prompt) {
     send({ type: "cancel" })
     return
   }
-  const prompt = promptBox.value.trim()
   if (!prompt) return
   if (!state.workspace) {
     showBanner("Choose a workspace folder first.")
     return
   }
   showBanner(undefined)
-  append(el("div", "user", escapeHtml(prompt)), log)
-  if (!state.chatTitle) {
-    state.chatTitle = taskTitle(prompt)
-    $("chat-title").textContent = state.chatTitle
-  }
+  // The bubble appears when the server starts the turn: now, or later if it queues it.
   promptBox.value = ""
+  updateSendButton()
   send({
     type: "start",
     prompt,
@@ -627,6 +728,7 @@ $("form").addEventListener("submit", (e) => {
   e.preventDefault()
   submit()
 })
+promptBox.addEventListener("input", updateSendButton)
 promptBox.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
     e.preventDefault()

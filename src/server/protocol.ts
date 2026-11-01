@@ -3,6 +3,7 @@
  * child it starts via Conductor. Plain JSON over WebSocket; the UI imports these types only.
  */
 import type { BackendOptions, PermissionMode } from "../backends/Backend"
+import type { QuotaSnapshot, QuotaWindow } from "../backends/events"
 import type { ProviderId, Tier } from "../config/schema"
 import type { ProviderHealth } from "../router/health"
 
@@ -38,6 +39,7 @@ export type WireEvent =
   | { type: "tool_call"; name: string; input: unknown }
   | { type: "tool_result"; ok: boolean }
   | { type: "usage"; inputTokens: number; outputTokens: number; costUsd?: number }
+  | { type: "quota"; windows: QuotaWindow[] }
   | { type: "error"; kind: string; message: string }
   | { type: "done"; text: string }
 
@@ -84,6 +86,10 @@ export type BridgeReply = { type: "approval.response"; id: string; allow: boolea
 export type ClientMessage =
   | { type: "start"; prompt: string; workspace: string; permission: PermissionMode; profile?: string; plan?: string }
   | { type: "cancel" }
+  /** Drop a queued request. */
+  | { type: "queue.remove"; id: string }
+  /** Run a queued request next: now if idle (also resumes a paused queue), otherwise right after the current turn. */
+  | { type: "queue.send"; id: string }
   | { type: "reset" }
   | { type: "status"; workspace: string }
   | { type: "approval"; id: string; allow: boolean; message?: string }
@@ -99,6 +105,11 @@ export type ClientMessage =
       trustWorkspace: boolean
     }
 
+export interface QueuedPrompt {
+  id: string
+  prompt: string
+}
+
 export interface ProfileInfo {
   name: string
   label: string
@@ -107,6 +118,8 @@ export interface ProfileInfo {
 
 export interface BackendStatus {
   health: Record<ProviderId, ProviderHealth>
+  /** Live subscription usage windows, as last reported by each CLI. */
+  quota: QuotaSnapshot
   executables: Record<ProviderId, string>
   profiles: ProfileInfo[]
   defaultProfile?: string
@@ -122,9 +135,13 @@ export type ServerMessage =
   | {
       type: "turn.started"
       turnId: string
+      /** The request this turn runs, so every window shows it when it actually starts (queued ones later). */
+      prompt: string
       resumed: boolean /** Keywords in the message that changed routing, e.g. "economy profile". */
       mode?: string
     }
+  /** Requests waiting for the current turn. `paused` after a cancelled turn: nothing starts until the user says. */
+  | { type: "queue"; items: QueuedPrompt[]; paused: boolean }
   | { type: "conductor"; turnId: string; event: WireEvent }
   | { type: "turn.finished"; turnId: string; ok: boolean; error?: string }
   | { type: "error"; message: string }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { fakeRegistry, report, testSession } from "../../test-support"
 import { addAttemptTokens, DelegationError, delegate, describeChanges, gitChanges, type Tokens } from "../delegate"
@@ -244,6 +244,39 @@ describe("delegate()", () => {
       const r = await delegate(testSession(backends), { taskClass: "plan", brief: brief() })
       expect(r.attempts.map((a) => `${a.provider}:${a.errorKind ?? a.outcome}`)).toEqual(["claude:context_overflow", "openai:ok"])
     })
+  })
+})
+
+describe("worktrees.setup", () => {
+  function repoSession(setup: string[], text = report("done")) {
+    const backends = fakeRegistry({ claude: [{ text }] })
+    const session = testSession(backends, { worktrees: { setup } }, "acceptEdits")
+    const git = (...args: string[]) => spawnSync("git", args, { cwd: session.workspace })
+    git("init", "-q")
+    writeFileSync(path.join(session.workspace, "a.ts"), "one\n")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
+    return { session, backends }
+  }
+
+  test("runs in the new worktree before the delegate, with the main checkout in AGENT_ROUTER_WORKSPACE", async () => {
+    const { session, backends } = repoSession([
+      "node -e \"require('fs').writeFileSync('prepared.txt', process.env.AGENT_ROUTER_WORKSPACE)\"",
+    ])
+    const r = await delegate(session, { taskClass: "code.edit", brief: brief("edit"), isolation: "worktree" })
+    const wt = r.worktree?.path as string
+    expect(backends.claude.calls[0]?.cwd).toBe(wt)
+    expect(readFileSync(path.join(wt, "prepared.txt"), "utf8")).toBe(session.workspace)
+    expect(r.setup?.map((c) => c.ok)).toEqual([true])
+    expect(r.findings.some((f) => f.message.includes("Worktree setup"))).toBe(false)
+  })
+
+  test("a failing setup step is a finding, stops later steps, and the delegate still runs", async () => {
+    const { session, backends } = repoSession(['node -e "process.exit(3)"', "node -e \"require('fs').writeFileSync('never.txt','')\""])
+    const r = await delegate(session, { taskClass: "code.edit", brief: brief("edit"), isolation: "worktree" })
+    expect(r.setup?.map((c) => c.ok)).toEqual([false])
+    expect(r.findings[0]?.message).toContain('Worktree setup `node -e "process.exit(3)"` failed (exit 3)')
+    expect(backends.claude.calls).toHaveLength(1)
   })
 })
 

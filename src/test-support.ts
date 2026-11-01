@@ -81,6 +81,7 @@ export function testSession(backends: BackendRegistry, patch: unknown = {}, perm
     backends,
     selfProvider: "claude",
     permission,
+    quotaFile: null,
   })
 }
 

@@ -1,3 +1,4 @@
+import { detectGeminiModels, mergeDetected } from "../../config/catalog"
 import type { BackendConfig } from "../../config/schema"
 import type { AgentMode, Backend, BackendOptions, PermissionMode, RunOptions } from "../Backend"
 import { detectCli, runCli, withRolePreamble } from "../cli-runner"
@@ -15,14 +16,9 @@ export function geminiApprovalArgs(mode: AgentMode, permission: PermissionMode):
   return ["--approval-mode", permission === "bypass" ? "yolo" : "auto_edit"]
 }
 
-/** Gemini CLI has no model-list command. Both ids answered on 2026-10-28; gemini-2.5-* returned 404. */
-export const GEMINI_OPTIONS: BackendOptions = {
-  models: [
-    { id: "gemini-3-flash-preview", description: "Fast; works on the free API tier" },
-    { id: "gemini-3-pro-preview", description: "Most capable; needs paid API quota" },
-  ],
-  reasoningLevels: [],
-  supportsTrustOverride: true,
+/** Gemini CLI has no model-list command: the API lists models when a key is in the environment, else config/models.json. */
+export async function geminiOptions(): Promise<BackendOptions> {
+  return mergeDetected("gemini", await detectGeminiModels(), { authoritative: false })
 }
 
 export function geminiArgs(options: RunOptions, extra: string[], trustWorkspace = false): string[] {
@@ -44,7 +40,7 @@ export function createGeminiBackend(config: BackendConfig): Backend {
     id: "gemini",
     supportsResume: false,
     detect: () => detectCli(config.executable, GEMINI_TESTED_VERSION),
-    options: async () => GEMINI_OPTIONS,
+    options: geminiOptions,
     run: (options) =>
       runCli(
         "gemini",

@@ -37,12 +37,34 @@ export class BackendError extends Error {
   }
 }
 
+/** One usage window of a subscription, as the CLI reports it: "5h" at 72% until 14:10. */
+export interface QuotaWindow {
+  /** Window length in words: "5h", "7d", "30d". */
+  label: string
+  /** 0 to 1. */
+  usedFraction: number
+  /** Epoch milliseconds, when the CLI says. */
+  resetsAt?: number
+  /** The provider is refusing requests in this window until it resets. */
+  limited: boolean
+}
+
+export interface ProviderQuota {
+  windows: QuotaWindow[]
+  /** When this was reported, epoch milliseconds. */
+  at: number
+}
+
+export type QuotaSnapshot = Partial<Record<ProviderId, ProviderQuota>>
+
 export type BackendEvent =
   | { type: "session"; sessionId: string }
   | { type: "text"; text: string }
   | { type: "tool_call"; name: string; input: unknown }
   | { type: "tool_result"; ok: boolean }
   | { type: "usage"; usage: Usage }
+  /** The subscription's usage windows, when the CLI reports them (Claude stream, Codex rollout). */
+  | { type: "quota"; windows: QuotaWindow[] }
   | { type: "error"; error: BackendError }
   | { type: "done"; text: string }
 

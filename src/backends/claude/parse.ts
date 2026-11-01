@@ -1,3 +1,4 @@
+import { parseClaudeRateLimit } from "../../router/quota"
 import type { OutputParser } from "../cli-runner"
 import { num, safeJson } from "../cli-runner"
 import { BackendError, type BackendEvent, classifyErrorText } from "../events"
@@ -21,6 +22,11 @@ export function createClaudeParser(): OutputParser {
           return contentBlocks(msg)
             .filter((block) => block.type === "tool_result")
             .map((block) => ({ type: "tool_result", ok: block.is_error !== true }))
+        case "rate_limit_event": {
+          const info = msg.rate_limit_info as Record<string, unknown> | undefined
+          const windows = info ? parseClaudeRateLimit(info) : []
+          return windows.length ? [{ type: "quota", windows }] : []
+        }
         case "result":
           return resultEvents(msg)
         default:

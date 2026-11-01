@@ -8,6 +8,8 @@ export interface ProviderHealth {
   version?: string
   consecutiveErrors: number
   reason?: string
+  /** A rate limit with a known reset: healthy again from this time (epoch ms). */
+  retryAt?: number
 }
 
 /** Problems that will not clear by retrying within this session. */
@@ -24,7 +26,10 @@ const NEUTRAL: ReadonlySet<BackendErrorKind> = new Set(["cancelled", "context_ov
 export class HealthTracker {
   private readonly state = new Map<ProviderId, ProviderHealth>()
 
-  constructor(private readonly unhealthyAfterErrors: number) {
+  constructor(
+    private readonly unhealthyAfterErrors: number,
+    private readonly now: () => number = Date.now,
+  ) {
     for (const p of PROVIDERS) this.state.set(p, { healthy: true, consecutiveErrors: 0 })
   }
 
@@ -44,13 +49,15 @@ export class HealthTracker {
     }
   }
 
-  recordError(provider: ProviderId, kind: BackendErrorKind, message: string): void {
+  /** `retryAt`: for a rate limit whose reset time is known, when the backend may be used again. */
+  recordError(provider: ProviderId, kind: BackendErrorKind, message: string, retryAt?: number): void {
     if (NEUTRAL.has(kind)) return
     const s = this.get(provider)
     s.consecutiveErrors += 1
     if (HARD_FAILURES.has(kind) || s.consecutiveErrors >= this.unhealthyAfterErrors) {
       s.healthy = false
       s.reason = `${kind}: ${message.slice(0, 200)}`
+      s.retryAt = kind === "rate_limited" && retryAt && retryAt > this.now() ? retryAt : undefined
     }
   }
 
@@ -60,7 +67,12 @@ export class HealthTracker {
   }
 
   isHealthy(provider: ProviderId): boolean {
-    return this.get(provider).healthy
+    const s = this.get(provider)
+    if (!s.healthy && s.retryAt !== undefined && this.now() >= s.retryAt) {
+      // The rate-limit window has reset.
+      Object.assign(s, { healthy: true, consecutiveErrors: 0, reason: undefined, retryAt: undefined })
+    }
+    return s.healthy
   }
 
   snapshot(): Record<ProviderId, ProviderHealth> {

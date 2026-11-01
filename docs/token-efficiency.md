@@ -22,6 +22,7 @@ The levers that follow fall into four groups: fewer turns, a smaller context per
 | Profiles | `profiles`, the **Profile** menu, `@economy` | Trade depth above each class's quality floor. Balanced cost 58% less than Quality, Economy 65% less ([benchmark](../bench/RESULTS.md)). |
 | Plans | `plan`, the **Plan** menu | The backend you pay more for does the frontier work, and the other gets the overflow. |
 | Conductor tier | profile `conductor.tier` | Sonnet instead of Opus is most of Balanced's saving. |
+| Live quota | `limits.quota_avoid_at`, the CLIs' own usage reports | A full subscription window is skipped until it resets instead of failing a call and falling back; a nearly full one goes to the back of the line, so expensive work is not stranded mid-task when a limit hits. |
 
 ### Fewer turns
 
@@ -30,6 +31,8 @@ The levers that follow fall into four groups: fewer turns, a smaller context per
 | Do small work yourself | conductor.md §3 and §8 | A question or an edit under ~20 lines in a file Conductor has read never becomes a delegation. In the benchmark's `explain` and `fix` tasks no profile delegated anything. |
 | Scout budget | `prompts/agents/scout.md` | 2–6 tool calls for a typical lookup. It reports as soon as every acceptance item has a location, and stops past 10. |
 | Resume, don't restart | `resume` on `delegate`; ladder retries | A follow-up continues the delegate's session (Claude, Codex), which already holds what it read. A malformed report is fixed in the same session instead of a fresh attempt. |
+| Project memory | `.harness/memory.md`, `remember` | Facts that would otherwise be re-scouted every chat (the real test command, where config lives) ride in Conductor's prompt and every brief. |
+| Worktree setup | `worktrees.setup` | A delegate in a fresh worktree does not spend turns installing dependencies or fail the project checks for lack of them. |
 | Nudge before giving up | watchdog | A stalled or looping Claude/Codex delegate is resumed with a note instead of starting over. |
 | Report gate | Stop hook (Claude delegates) | A formatting slip costs one more turn, not a whole new attempt. |
 
