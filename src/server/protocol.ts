@@ -67,6 +67,21 @@ export interface DelegationSummary {
   report: string
 }
 
+/** coordinator/protocol.ts Brief, as plain data. */
+export interface DelegationBrief {
+  task: string
+  why: string
+  relevant_files: string[]
+  facts: string[]
+  excerpts: string[]
+  scope: string
+  mode: "read-only" | "run-commands" | "edit"
+  project_rules: string[]
+  do_not: string[]
+  acceptance: string[]
+  return_extra: string
+}
+
 /** MCP child → server. */
 export type BridgeMessage =
   | {
@@ -79,6 +94,12 @@ export type BridgeMessage =
       provider: ProviderId
       tier: Tier
       model?: string
+      /** Why it went to this backend at this tier, in plain lines (the routing policy's reasons). */
+      why?: string[]
+      /** The brief as Conductor wrote it, so the thread can be run again elsewhere. */
+      brief?: DelegationBrief
+      /** Set when the user re-ran an earlier thread on another backend. */
+      rerunOf?: string
     }
   | { type: "delegation.event"; id: string; provider: ProviderId; event: WireEvent }
   | { type: "delegation.finished"; id: string; summary: DelegationSummary }
@@ -99,6 +120,8 @@ export type ClientMessage =
       plan?: string
       /** A new chat only: run it in a new worktree from `base`, or in an existing worktree at `path`. */
       worktree?: { base: string } | { path: string }
+      /** Run even though a budget is reached (the user said so). */
+      overBudget?: boolean
     }
   | { type: "cancel" }
   /** A thread's diff between its checkpoints. */
@@ -153,6 +176,27 @@ export type ClientMessage =
   /** A saved chat as Markdown, to read beside the open one. */
   | { type: "chat.markdown"; requestId: string; id: string }
   | { type: "usage.summary"; requestId: string }
+  /** Run a read-only thread's brief again, pinned to another backend, without Conductor. */
+  | {
+      type: "thread.rerun"
+      workspace: string
+      threadId: string
+      taskClass: string
+      brief: DelegationBrief
+      provider: ProviderId
+      permission: PermissionMode
+      profile?: string
+    }
+  /** Put the chat's folder back to how it was before a turn (undoable). */
+  | { type: "turn.restore"; requestId: string; workspace: string; before: string; label: string }
+  | { type: "budget.get" }
+  | { type: "budget.set"; limits: BudgetLimits }
+  | { type: "routing.get"; requestId: string; workspace: string }
+  | { type: "routing.save"; requestId: string; workspace: string; scope: SettingsScope; routes: RouteEdit[] }
+  | { type: "route.test"; requestId: string; workspace: string; text: string; taskClass?: string; profile?: string }
+  | { type: "templates.list"; workspace: string }
+  | { type: "template.save"; workspace: string; scope: SettingsScope; name: string; text: string }
+  | { type: "template.delete"; workspace: string; scope: SettingsScope; name: string }
   | { type: "ide.status" }
   | { type: "ide.install" }
   | { type: "ide.start"; workspace: string }
@@ -247,6 +291,53 @@ export interface UsageSummary {
   turns: number
   costUsd: number
   tokens: number
+}
+
+export interface PromptTemplate {
+  name: string
+  scope: SettingsScope
+  text: string
+}
+
+export interface RouteRow {
+  taskClass: string
+  agent: string
+  primary: ProviderId | "self" | "auto_not_author"
+  fallback: ProviderId[]
+  tier: Tier
+  minTier: Tier
+}
+
+export interface RouteEdit {
+  taskClass: string
+  primary: RouteRow["primary"]
+  fallback: ProviderId[]
+  tier: Tier
+}
+
+export interface RouteTest {
+  taskClass: string
+  provider?: ProviderId
+  tier?: Tier
+  model?: string
+  agent?: string
+  why: string[]
+  error?: string
+}
+
+/** Spending limits the server enforces (null: none). `warnAt` is the share of a limit (or of a quota window) that warns. */
+export interface BudgetLimits {
+  chatUsd: number | null
+  dayUsd: number | null
+  warnAt: number
+}
+
+export interface BudgetState {
+  limits: BudgetLimits
+  chatUsd: number
+  dayUsd: number
+  over?: string
+  near?: string
 }
 
 export interface IdeState {
@@ -372,6 +463,14 @@ export type ServerMessage =
   | { type: "chat.markdowned"; requestId: string; text?: string; title?: string; error?: string }
   | { type: "usage"; requestId: string; summary: UsageSummary }
   | { type: "ide"; ide: IdeState }
+  /** A turn's own checkpoints: the whole turn's changes (Conductor's and its threads') to review or revert. */
+  | { type: "turn.checkpoint"; turnId: string; checkpoint: ThreadCheckpoint }
+  | { type: "turn.restored"; requestId: string; ok: boolean; message: string; files: string[]; undo?: string }
+  | { type: "budget"; budget: BudgetState }
+  | { type: "routing"; requestId: string; routes: RouteRow[]; profiles: string[]; error?: string }
+  | { type: "routing.saved"; requestId: string; path?: string; error?: string }
+  | { type: "route.tested"; requestId: string; result: RouteTest }
+  | { type: "templates"; items: PromptTemplate[] }
   | { type: "attachment.saved"; requestId: string; path: string; error?: string }
   | { type: "settings"; snapshot: SettingsSnapshot; options: Record<ProviderId, BackendOptions> }
   | { type: "settings.saved"; path: string; shadowed: string[]; snapshot: SettingsSnapshot }

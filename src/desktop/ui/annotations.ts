@@ -6,7 +6,10 @@ export type Mark = "good" | "clarify" | "tests" | "note"
 
 export const MARK_LABELS: Record<Mark, string> = { good: "Looks good", clarify: "Clarify", tests: "Needs tests", note: "Note" }
 
-export type NoteSource = { kind: "file"; path: string; start: number; end: number } | { kind: "report"; title: string; agent: string }
+export type NoteSource =
+  | { kind: "file"; path: string; start: number; end: number }
+  | { kind: "report"; title: string; agent: string }
+  | { kind: "drawing"; path: string; shape: string }
 
 export interface Annotation {
   id: string
@@ -18,6 +21,7 @@ export interface Annotation {
 
 function where(s: NoteSource): string {
   if (s.kind === "report") return `the report of thread "${s.title}" (${s.agent})`
+  if (s.kind === "drawing") return `the drawing ${s.path}, shape "${s.shape}"`
   return `${s.path} ${s.start === s.end ? `line ${s.start}` : `lines ${s.start}-${s.end}`}`
 }
 

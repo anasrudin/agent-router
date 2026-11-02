@@ -220,3 +220,37 @@ export function decide(ctx: PolicyContext, req: RouteRequest): RouteDecision {
     notes,
   }
 }
+
+const NAMES: Record<string, string> = { claude: "Claude", gemini: "Gemini", openai: "Codex" }
+const name = (p: string) => NAMES[p] ?? p
+
+/**
+ * Why a delegation went where it did, in plain lines for the thread card: the rule that picked
+ * the backend, the tier and its floor, the profile, and every note the policy recorded on the way
+ * (skips, fallbacks, quota, escalation).
+ */
+export function explainDecision(config: RoutingConfig, decision: RouteDecision, profile?: string): string[] {
+  const route = config.routes[decision.taskClass]
+  const lines: string[] = []
+  if (decision.pinned) lines.push(`${name(decision.provider)}: pinned by you for this request.`)
+  else if (route?.primary === "auto_not_author")
+    lines.push(`${name(decision.provider)}: a review runs on a backend other than the one that wrote the code.`)
+  else if (route) {
+    const first = route.primary === "self" ? "self" : route.primary
+    const order = [first, ...route.fallback].map(name).join(", then ")
+    lines.push(
+      decision.provider === first
+        ? `${name(decision.provider)}: first choice for ${decision.taskClass} (${order}).`
+        : `${name(decision.provider)}: ${name(first)} is first for ${decision.taskClass}, but could not take it (${order}).`,
+    )
+  }
+  if (route) {
+    const raised = decision.notes.some((n) => n.startsWith("tier raised to deep"))
+    lines.push(
+      `Tier ${decision.tier}${raised ? " (raised)" : ""}: ${decision.taskClass} runs at ${route.tier}, never below ${route.min_tier}${decision.model ? `; model ${decision.model}` : ""}.`,
+    )
+  }
+  if (profile) lines.push(`Profile: ${profile}.`)
+  for (const n of decision.notes) if (!n.startsWith("user override")) lines.push(n.charAt(0).toUpperCase() + n.slice(1))
+  return lines
+}

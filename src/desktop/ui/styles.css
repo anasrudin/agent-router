@@ -95,6 +95,9 @@
     radial-gradient(60% 55% at 75% 20%, oklch(0.9 0 0) 0%, transparent 70%), linear-gradient(160deg, oklch(0.97 0 0), oklch(0.85 0 0));
   --glass-blur: 28px;
   --color-terminal: var(--color-panel);
+  /* Excalidraw drawings are made on white paper, in either theme */
+  --color-drawing-paper: #fcfcfb;
+  --color-drawing-hint: #6b6b74;
   --dock-height: 280px;
 
   --font-ui: "Inter", ui-sans-serif, system-ui, sans-serif;
@@ -3762,6 +3765,204 @@ kbd {
   .page-card,
   .space-chip {
     transition: none;
+  }
+}
+
+/* ── Routing reasons, re-runs, a turn's changes ──────────────────────── */
+.why {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: var(--space-5);
+  color: var(--color-ink);
+  font-size: var(--text-sm);
+}
+.compare-side {
+  display: grid;
+  gap: var(--space-2);
+}
+.compare-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+.compare-head strong {
+  color: var(--color-ink-strong);
+  font-weight: 500;
+}
+.turn-changes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border: 1px dashed var(--color-rule);
+  border-radius: var(--radius-card);
+  font-size: var(--text-sm);
+}
+#banner:not([hidden]) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+#banner-text {
+  flex: 1;
+}
+.status-item.budget.warn {
+  color: var(--color-working);
+}
+.status-item.budget.bad {
+  color: var(--color-error);
+}
+
+/* ── Drawings (.excalidraw) ──────────────────────────────────────────── */
+.drawing-wrap {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius-control);
+  background: var(--color-drawing-paper);
+}
+.drawing {
+  width: 100%;
+  height: auto;
+  stroke: none;
+}
+.ex-el {
+  cursor: pointer;
+}
+.ex-el:hover,
+.ex-el.picked {
+  filter: drop-shadow(0 0 3px var(--color-focus));
+}
+.drawing-wrap .muted {
+  margin: 0;
+  color: var(--color-drawing-hint);
+  font-size: var(--text-xs);
+}
+
+/* ── Routing, templates and limits dialogs ───────────────────────────── */
+.routing-body,
+.templates-body {
+  display: grid;
+  gap: var(--space-4);
+  max-height: 72dvh;
+  overflow: auto;
+  padding: var(--space-2) var(--space-6) var(--space-6);
+}
+.routing-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+.routing-table th,
+.routing-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-rule);
+  text-align: left;
+  vertical-align: middle;
+}
+.routing-table th {
+  color: var(--color-muted);
+  font-weight: 500;
+}
+.field-input {
+  min-height: 30px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-field-edge);
+  border-radius: var(--radius-control);
+  background: var(--color-panel);
+  color: var(--color-ink-strong);
+  font-size: var(--text-sm);
+}
+.routing-fallback {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+.routing-fallback .check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  white-space: nowrap;
+}
+.routing-fallback .check input {
+  accent-color: var(--color-primary);
+}
+/* These forms sit in dialogs whose own form rule stacks everything: say their layout here. */
+.routing-body .route-test {
+  flex-direction: row;
+  gap: var(--space-2);
+}
+.routing-body .hint {
+  margin: 0;
+}
+.route-test .field-input {
+  flex: 1;
+}
+.route-result {
+  display: grid;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+.route-result:empty {
+  display: none;
+}
+.routing-body .buttons,
+.templates-body .buttons,
+.limits-form .buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+.template-form,
+.limits-form {
+  display: grid;
+  gap: var(--space-3);
+}
+.field-text {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-field-edge);
+  border-radius: var(--radius-control);
+  background: var(--color-panel);
+  color: var(--color-ink-strong);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  resize: vertical;
+}
+.template-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.template-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+}
+.template-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-body .limits-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.limits-form .buttons {
+  grid-column: 1 / -1;
+}
+@media (max-width: 720px) {
+  .usage-body .limits-form {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

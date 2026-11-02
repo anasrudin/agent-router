@@ -1,20 +1,23 @@
 import { type ChildProcess, spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { copyFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import type { ServerWebSocket } from "bun"
 import { resolveExecutable } from "../backends/process"
 import { createBackends } from "../backends/registry"
-import { prepareConductor, SELF_ENTRY, streamConductor } from "../conductor/run"
+import { createSession, prepareConductor, SELF_ENTRY, streamConductor } from "../conductor/run"
 import { loadConfig, resolvePlan } from "../config/load"
 import { describePlan, PLAN_PRESETS } from "../config/plans"
 import { PROVIDERS, type ProviderId, type RoutingConfig } from "../config/schema"
-import { checkpointDiff, revertCheckpoint } from "../coordinator/checkpoints"
+import { checkpointDiff, checkpointFiles, restoreCheckpoint, revertCheckpoint, snapshot } from "../coordinator/checkpoints"
+import { delegate } from "../coordinator/delegate"
 import { applyWorktree, previewMerge, removeDelegateWorktree } from "../coordinator/merge"
+import { Brief } from "../coordinator/protocol"
 import { Session } from "../coordinator/session"
 import { createWorktree, isDelegateWorktree, samePath } from "../coordinator/worktrees"
-import { describePreview } from "../mcp/server"
+import { describePreview, summarize } from "../mcp/server"
 import { type Overrides, parseOverrides, ULTRAWORK_NOTE } from "../router/classify"
+import { explainDecision } from "../router/policy"
 import { QuotaTracker } from "../router/quota"
 import { BoardStore } from "./boards"
 import { toWire } from "./bridge"
@@ -37,6 +40,8 @@ import type {
   BackendStatus,
   BridgeMessage,
   BridgeReply,
+  BudgetLimits,
+  BudgetState,
   ChatMeta,
   ClientMessage,
   IdeState,
@@ -45,10 +50,12 @@ import type {
   ThreadCheckpoint,
 } from "./protocol"
 import { catchUpPrompt, quickAsk, sideQuestionPrompt, transcriptDigest } from "./quick"
+import { readRouting, saveRouting, testRoute } from "./routing"
 import { ScheduleStore } from "./schedules"
 import { backendOptions, readSettings, saveSettings, testModel } from "./settings"
+import { deleteTemplate, listTemplates, saveTemplate } from "./templates"
 import { Terminals } from "./terminals"
-import { usageSummary } from "./usage"
+import { chatCost, checkBudget, usageSummary } from "./usage"
 
 type Role = "ui" | "bridge"
 type Socket = ServerWebSocket<{ role: Role }>
@@ -137,7 +144,7 @@ export function chatTitle(prompt: string): string {
 /** Messages a reopened chat needs; live-only ones (quota, approvals) are not saved. */
 function worthSaving(msg: ServerMessage): boolean {
   if (msg.type === "conductor" || msg.type === "delegation.event") return msg.event.type !== "quota"
-  return msg.type === "turn.started" || msg.type === "turn.finished" || msg.type.startsWith("delegation.")
+  return msg.type === "turn.started" || msg.type === "turn.finished" || msg.type === "turn.checkpoint" || msg.type.startsWith("delegation.")
 }
 
 /** The config's own plan in words, or undefined when none is set or it does not resolve. */
@@ -168,6 +175,8 @@ export function trustedCheckpoint(workspace: string, c: ThreadCheckpoint): Threa
 interface Turn {
   id: string
   abort: AbortController
+  /** The user chose to go over the budget for this request. */
+  overBudget?: boolean
 }
 
 type StartMessage = Extract<ClientMessage, { type: "start" }>
@@ -270,6 +279,39 @@ export function startServer(opts: ServeOptions) {
     }
   }
   const broadcastIde = () => broadcast({ type: "ide", ide: ideState() })
+
+  // Spending limits, enforced here: a turn does not start over budget, and stops once it gets there.
+  const budgetFile = path.join(dataRoot, "budget.json")
+  const readLimits = (): BudgetLimits => {
+    try {
+      return { chatUsd: null, dayUsd: null, warnAt: 0.8, ...JSON.parse(readFileSync(budgetFile, "utf8")) }
+    } catch {
+      return { chatUsd: null, dayUsd: null, warnAt: 0.8 }
+    }
+  }
+  const todayUsd = () =>
+    usageSummary(
+      chats.list().map((meta) => ({ meta, events: chats.events(meta.id) })),
+      Date.now(),
+      1,
+    ).days[0]?.costUsd ?? 0
+  const budgetState = (): BudgetState => {
+    const limits = readLimits()
+    const chatUsd = chat ? chatCost(chats.events(chat.id)) : 0
+    const dayUsd = limits.dayUsd ? todayUsd() : 0
+    return { limits, chatUsd, dayUsd, ...checkBudget(limits, chatUsd, dayUsd) }
+  }
+  const broadcastBudget = () => broadcast({ type: "budget", budget: budgetState() })
+  /** Called when spend moves during a turn: stop it at the limit. */
+  const enforceBudget = () => {
+    const state = budgetState()
+    broadcast({ type: "budget", budget: state })
+    if (state.over && turn && !turn.overBudget) {
+      budgetStop = state.over
+      turn.abort.abort()
+    }
+  }
+  let budgetStop: string | undefined
   const stopIde = () => {
     // The server runs in its own process group (a launcher script and node children): end all of it.
     const pid = ide.proc?.pid
@@ -356,14 +398,20 @@ export function startServer(opts: ServeOptions) {
       broadcast({ type: "chat.current", chat })
       broadcastChats()
     }
+    if (!msg.overBudget) {
+      const over = budgetState().over
+      if (over) throw new Error(`${over} Raise or clear the limit in Usage, or send the request again with "Send anyway".`)
+    }
     const id = `turn-${++turnCounter}`
     const abort = new AbortController()
-    turn = { id, abort }
+    turn = { id, abort, overBudget: msg.overBudget }
     const current = chat
     const runDir = current.runIn && statSync(current.runIn, { throwIfNoEntry: false })?.isDirectory() ? current.runIn : workspace
     const resume = current.sessionId
     let error: string | undefined
     let prepared: Awaited<ReturnType<typeof prepareConductor>> | undefined
+    // The folder before the turn, so its whole change can be reviewed, reverted or restored later.
+    const before = snapshot(runDir, `${current.id.slice(0, 8)}-${id}-before`)
     try {
       broadcast({
         type: "turn.started",
@@ -394,9 +442,13 @@ export function startServer(opts: ServeOptions) {
           if (event.type === "error") error = event.error.message
           if (event.type === "quota") quota.record("claude", event.windows)
           broadcast({ type: "conductor", turnId: id, event: toWire(event) })
+          if (event.type === "usage" && event.usage.costUsd) enforceBudget()
         },
       })
-      if (exit.cancelled && interrupting) error = "Interrupted: the next request runs now."
+      if (exit.cancelled && budgetStop) {
+        error = `Stopped: ${budgetStop}`
+        queue.paused = true
+      } else if (exit.cancelled && interrupting) error = "Interrupted: the next request runs now."
       else if (exit.cancelled) {
         error = "Cancelled."
         queue.paused = true
@@ -407,6 +459,13 @@ export function startServer(opts: ServeOptions) {
       prepared?.cleanup()
       turn = undefined
       interrupting = false
+      budgetStop = undefined
+      if (before) {
+        const after = snapshot(runDir, `${current.id.slice(0, 8)}-${id}-after`)
+        // Two snapshots never share a commit id; whether files changed is what counts.
+        if (after && checkpointFiles({ before, after, cwd: runDir }).length)
+          broadcast({ type: "turn.checkpoint", turnId: id, checkpoint: { before, after, cwd: runDir } })
+      }
       broadcast({
         type: "turn.finished",
         turnId: id,
@@ -414,6 +473,7 @@ export function startServer(opts: ServeOptions) {
         error,
       })
       broadcastChats()
+      broadcastBudget()
       drain()
     }
   }
@@ -442,6 +502,7 @@ export function startServer(opts: ServeOptions) {
         reply(socket, { type: "schedules", items: schedules.list() })
         reply(socket, { type: "terminals", items: terminals.list() })
         reply(socket, { type: "queue", ...queue.view() })
+        reply(socket, { type: "budget", budget: budgetState() })
       },
       close(socket) {
         ui.delete(socket)
@@ -478,6 +539,7 @@ export function startServer(opts: ServeOptions) {
         approvals.set(msg.id, socket)
       }
       broadcast(msg)
+      if (msg.type === "delegation.finished" && msg.summary.costUsd) enforceBudget()
       return
     }
     const msg = data as ClientMessage
@@ -576,6 +638,123 @@ export function startServer(opts: ServeOptions) {
           summary: usageSummary(chats.list().map((meta) => ({ meta, events: chats.events(meta.id) }))),
         })
         return
+      case "thread.rerun": {
+        if (msg.brief.mode !== "read-only")
+          throw new Error(
+            "Only read-only threads run again directly. For one that edits or runs commands, ask Conductor to redo it on that backend.",
+          )
+        const dir = assertDirectory(msg.workspace)
+        const id = `rerun-${randomUUID().slice(0, 8)}`
+        const brief = Brief.parse(msg.brief)
+        void (async () => {
+          try {
+            const session = await createSession({
+              workspace: chat?.runIn ?? dir,
+              permission: msg.permission,
+              selfProvider: "claude",
+              profile: msg.profile,
+            })
+            const result = await delegate(session, {
+              checkpointId: id,
+              taskClass: msg.taskClass,
+              brief,
+              route: { override: msg.provider },
+              onStart: (decision, agent) =>
+                broadcast({
+                  type: "delegation.started",
+                  id,
+                  taskClass: decision.taskClass,
+                  agent,
+                  task: brief.task,
+                  mode: brief.mode,
+                  provider: decision.provider,
+                  tier: decision.tier,
+                  model: decision.model,
+                  why: explainDecision(session.config, decision, session.profile),
+                  brief,
+                  rerunOf: msg.threadId,
+                }),
+              onEvent: (provider, event) => broadcast({ type: "delegation.event", id, provider, event: toWire(event) }),
+            })
+            broadcast({ type: "delegation.finished", id, summary: summarize(result) })
+          } catch (e) {
+            broadcast({ type: "delegation.failed", id, error: errorText(e) })
+          }
+          broadcastBudget()
+        })()
+        return
+      }
+      case "turn.restore":
+        Promise.resolve()
+          .then(() => {
+            const dir = assertDirectory(msg.workspace)
+            const r = restoreCheckpoint(
+              trustedCheckpoint(msg.workspace, { before: msg.before, cwd: dir }).cwd,
+              msg.before,
+              msg.label.replace(/[^\w.-]+/g, "_").slice(0, 40),
+            )
+            if (r.ok && r.files.length)
+              pendingNotes.push(
+                `The user restored the folder to how it was before an earlier turn (${r.files.join(", ")} changed back). Re-read files before relying on what you saw since.`,
+              )
+            reply(socket, { type: "turn.restored", requestId: msg.requestId, ...r })
+          })
+          .catch((e: unknown) =>
+            reply(socket, { type: "turn.restored", requestId: msg.requestId, ok: false, message: errorText(e), files: [] }),
+          )
+        return
+      case "budget.get":
+        reply(socket, { type: "budget", budget: budgetState() })
+        return
+      case "budget.set": {
+        const clean = (n: number | null) => (n === null || !Number.isFinite(n) || n <= 0 ? null : Math.round(n * 10_000) / 10_000)
+        const limits: BudgetLimits = {
+          chatUsd: clean(msg.limits.chatUsd),
+          dayUsd: clean(msg.limits.dayUsd),
+          warnAt: Math.min(0.99, Math.max(0.1, Number(msg.limits.warnAt) || 0.8)),
+        }
+        mkdirSync(dataRoot, { recursive: true })
+        writeFileSync(budgetFile, JSON.stringify(limits, null, 2))
+        broadcastBudget()
+        return
+      }
+      case "routing.get":
+        Promise.resolve()
+          .then(() => readRouting(assertDirectory(msg.workspace)))
+          .then((r) => reply(socket, { type: "routing", requestId: msg.requestId, routes: r.routes, profiles: r.profiles }))
+          .catch((e: unknown) =>
+            reply(socket, { type: "routing", requestId: msg.requestId, routes: [], profiles: [], error: errorText(e) }),
+          )
+        return
+      case "routing.save":
+        Promise.resolve()
+          .then(() => saveRouting(assertDirectory(msg.workspace), msg.scope, msg.routes))
+          .then((r) => reply(socket, { type: "routing.saved", requestId: msg.requestId, path: r.path }))
+          .catch((e: unknown) => reply(socket, { type: "routing.saved", requestId: msg.requestId, error: errorText(e) }))
+        return
+      case "route.test":
+        Promise.resolve()
+          .then(() => testRoute(assertDirectory(msg.workspace), msg.text, msg.taskClass, msg.profile))
+          .then((result) => reply(socket, { type: "route.tested", requestId: msg.requestId, result }))
+          .catch((e: unknown) =>
+            reply(socket, {
+              type: "route.tested",
+              requestId: msg.requestId,
+              result: { taskClass: msg.taskClass ?? "", why: [], error: errorText(e) },
+            }),
+          )
+        return
+      case "templates.list":
+        reply(socket, { type: "templates", items: listTemplates(assertDirectory(msg.workspace), dataRoot) })
+        return
+      case "template.save":
+      case "template.delete": {
+        const dir = assertDirectory(msg.workspace)
+        if (msg.type === "template.save") saveTemplate(dir, dataRoot, msg.scope, msg.name, msg.text)
+        else deleteTemplate(dir, dataRoot, msg.scope, msg.name)
+        broadcast({ type: "templates", items: listTemplates(dir, dataRoot) })
+        return
+      }
       case "ide.status":
         reply(socket, { type: "ide", ide: ideState() })
         return

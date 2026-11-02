@@ -92,7 +92,18 @@ export function setupAnnotator(o: AnnotatorOptions) {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !o.bar.hidden) hide()
   })
-  return { hide }
+  /** Offer the marks for something that is not a text selection (a shape in a drawing), next to `rect`. */
+  const offer = (source: NoteSource, quote: string, rect: DOMRect) => {
+    pending = { source, quote }
+    draw()
+    o.bar.hidden = false
+    const b = o.bar.getBoundingClientRect()
+    const top = rect.top - b.height - 8 > 8 ? rect.top - b.height - 8 : rect.bottom + 8
+    const left = Math.min(Math.max(8, rect.left + rect.width / 2 - b.width / 2), window.innerWidth - b.width - 8)
+    o.bar.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`
+    o.bar.querySelector<HTMLElement>("button")?.focus()
+  }
+  return { hide, offer }
 }
 
 /** The file lines a selection covers: file-viewer rows (data-line) or preview blocks (data-line to data-end). */

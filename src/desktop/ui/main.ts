@@ -5,15 +5,20 @@ import type { QuotaSnapshot, QuotaWindow } from "../../backends/events"
 import type { ProviderId } from "../../config/schema"
 import type {
   BackendStatus,
+  BudgetState,
   Card,
   ChatMeta,
   ClientMessage,
+  DelegationBrief,
   DelegationSummary,
   IdeState,
   ProfileInfo,
+  PromptTemplate,
   QueuedPrompt,
+  RouteRow,
   Schedule,
   ServerMessage,
+  ThreadCheckpoint,
   UsageSummary,
   WireEvent,
   WorktreeList,
@@ -25,11 +30,12 @@ import { setupAppearance } from "./appearance"
 import { setupBoard } from "./board"
 import { renderChart } from "./chart"
 import { closePopovers, flash, installTooltips, type MenuItem, openMenu, overlayScrollbar, popover } from "./chrome"
-import { type Command, PromptHistory } from "./composer"
+import { type Command, expandTemplate, PromptHistory } from "./composer"
 import { fileBase64, setupComposer } from "./composer-ui"
 import { type DiffFile, formatReview, parseUnifiedDiff, type ReviewComment } from "./diff"
 import { sortable } from "./drag"
 import { createEditor, type EditorHandle } from "./editor"
+import { parseDrawing, renderDrawing } from "./excalidraw"
 import { type FileContent, linkifyFileRefs, renderFileView } from "./fileview"
 import { setupFind } from "./find"
 import { agentLogoSvg } from "./icons"
@@ -59,6 +65,24 @@ const planSelect = $<HTMLSelectElement>("plan")
 const banner = $<HTMLDivElement>("banner")
 
 const PROVIDER_LABEL: Record<ProviderId, string> = { claude: "Claude", gemini: "Gemini", openai: "Codex" }
+/** The name a request uses to pin a backend (@codex, /route … codex). */
+const PROVIDER_KEYWORD: Record<ProviderId, string> = { claude: "claude", gemini: "gemini", openai: "codex" }
+
+/** A read-only thread's brief again, pinned to another backend, without Conductor; the two compare side by side. */
+function rerunThread(t: Thread, provider: ProviderId) {
+  if (!t.brief || !state.workspace) return
+  send({
+    type: "thread.rerun",
+    workspace: state.workspace,
+    threadId: t.id,
+    taskClass: t.taskClass,
+    brief: t.brief,
+    provider,
+    permission: permissionSelect.value as PermissionMode,
+    profile: profileSelect.value || undefined,
+  })
+  flash($("chat-title"), `Running it again on ${PROVIDER_LABEL[provider]}`)
+}
 
 /** Per-viewer conveniences only; with storage blocked (or full) they last until the window closes. */
 const memory = new Map<string, string>()
@@ -121,7 +145,13 @@ const state = {
   greeting: false,
   /** A file open in the side panel, in place of a thread. */
   file: undefined as
-    | { path: string; line?: number; endLine?: number; content?: FileContent & { image?: string }; view: "source" | "preview" | "image" }
+    | {
+        path: string
+        line?: number
+        endLine?: number
+        content?: FileContent & { image?: string }
+        view: "source" | "preview" | "image" | "drawing"
+      }
     | undefined,
   /** The sidebar row being renamed. */
   renaming: undefined as string | undefined,
@@ -147,6 +177,10 @@ const state = {
   view: "chat" as View,
   /** A board card started as a chat, waiting for that chat's id. */
   runningCard: undefined as string | undefined,
+  budget: undefined as BudgetState | undefined,
+  templates: [] as PromptTemplate[],
+  /** The last request sent, to send again past a budget ("Send anyway"). */
+  lastStart: undefined as Extract<ClientMessage, { type: "start" }> | undefined,
 }
 
 /** The folder the chat works in: its worktree when it runs in one, else the workspace. */
@@ -181,9 +215,19 @@ function send(message: ClientMessage) {
   else showBanner("Not connected to the agent-router core.")
 }
 
-function showBanner(text: string | undefined) {
+/** The banner above the composer, optionally with one action (such as Send anyway). */
+function showBanner(text: string | undefined, action?: { label: string; run: () => void }) {
   banner.hidden = !text
-  banner.textContent = text ?? ""
+  $("banner-text").textContent = text ?? ""
+  const b = $<HTMLButtonElement>("banner-action")
+  b.hidden = !action
+  b.textContent = action?.label ?? ""
+  b.onclick = action
+    ? () => {
+        showBanner(undefined)
+        action.run()
+      }
+    : null
 }
 
 const compact = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
@@ -316,6 +360,7 @@ function setWorkspace(dir: string) {
   }
   // On first connect too, not only when the folder changes.
   if (changed || !state.worktrees) loadWorktrees()
+  if (dir) send({ type: "templates.list", workspace: dir })
 }
 
 function showWorkspacePath(dir: string) {
@@ -918,6 +963,12 @@ function renderQuestionForm(form: QuestionForm): HTMLElement {
 
 interface Thread {
   id: string
+  /** Why the router sent it here, in plain lines. */
+  why?: string[]
+  /** Conductor's brief, for running it again elsewhere. */
+  brief?: DelegationBrief
+  /** The thread this one re-ran on another backend. */
+  rerunOf?: string
   agent: string
   taskClass: string
   mode: string
@@ -1081,6 +1132,23 @@ function threadMenu(t: Thread, row: HTMLElement): MenuItem[] {
         label: "Save report as Markdown…",
         run: () => void saveMarkdown(taskTitle(t.task), { text: `# ${taskTitle(t.task)}\n\n${sum.report}\n` }),
       },
+    )
+  const others = (Object.keys(PROVIDER_LABEL) as ProviderId[]).filter((p) => p !== t.provider)
+  if (t.brief?.mode === "read-only" && t.finishedAt)
+    items.push("separator", ...others.map((p): MenuItem => ({ label: `Run again on ${PROVIDER_LABEL[p]}`, run: () => rerunThread(t, p) })))
+  else if (t.brief && t.finishedAt)
+    items.push(
+      "separator",
+      ...others.map(
+        (p): MenuItem => ({
+          label: `Ask Conductor to redo it on ${PROVIDER_LABEL[p]}`,
+          run: () => {
+            promptBox.value = `/route ${t.taskClass} ${PROVIDER_KEYWORD[p]}\nRedo the thread "${taskTitle(t.task)}" on ${PROVIDER_LABEL[p]}, with the same brief, and compare its result with the first one.`
+            promptBox.focus()
+            updateSendButton()
+          },
+        }),
+      ),
     )
   const worktree = sum?.worktree
   if (worktree && !t.wt?.gone)
@@ -1448,7 +1516,8 @@ function renderAgentCard(t: Thread) {
     Object.assign(el("span", "card-time muted"), { textContent: clock(t.startedAt) }),
     pill,
   )
-  t.chatRow.title = statusText(t)
+  t.chatRow.title = `${statusText(t)}${t.why?.[0] ? `\n${t.why[0]}` : ""}`
+  if (t.rerunOf) t.chatRow.querySelector(".card-who .muted")?.append(document.createTextNode(", re-run"))
 }
 
 /** The Threads pill above the composer: the count, the most urgent state, and a menu of this chat's threads. */
@@ -1505,7 +1574,15 @@ function openFile(path: string, line?: number, endLine?: number, mode?: "preview
   if (!state.workspace) return
   if (!leaveEditor(() => openFile(path, line, endLine, mode))) return
   // Markdown and HTML open rendered unless a line was asked for; pictures always show as pictures.
-  const view = IMAGE_FILE.test(path) ? "image" : PREVIEWABLE.test(path) ? (mode ?? (line ? "source" : "preview")) : "source"
+  const view = IMAGE_FILE.test(path)
+    ? "image"
+    : /\.excalidraw$/i.test(path)
+      ? mode === "source"
+        ? "source"
+        : "drawing"
+      : PREVIEWABLE.test(path)
+        ? (mode ?? (line ? "source" : "preview"))
+        : "source"
   const file: NonNullable<typeof state.file> = { path, line, endLine, view }
   if (view === "image") {
     state.file = file
@@ -1748,7 +1825,8 @@ function renderChanges(t: Thread): HTMLElement {
   const revert = el("button", "ghost small danger") as HTMLButtonElement
   revert.hidden = worktreeGone
   revert.type = "button"
-  revert.textContent = t.revert === "confirm" ? "Confirm revert" : "Revert thread"
+  const noun = t.taskClass === "turn" ? "turn" : "thread"
+  revert.textContent = t.revert === "confirm" ? "Confirm revert" : `Revert ${noun}`
   revert.title = "Undo this thread's changes in its checkout. Refused if the files changed since."
   revert.disabled = typeof t.revert === "object" && t.revert.ok
   revert.addEventListener("click", () => {
@@ -1796,7 +1874,10 @@ function renderChanges(t: Thread): HTMLElement {
   else
     box.append(
       Object.assign(el("div", "muted hint-line"), {
-        textContent: "Click a line to comment on it. Comments go to Conductor, which hands them to this delegate.",
+        textContent:
+          t.taskClass === "turn"
+            ? "Click a line to comment on it. Comments go to Conductor."
+            : "Click a line to comment on it. Comments go to Conductor, which hands them to this delegate.",
       }),
     )
   t.diff.files.forEach((f, i) => {
@@ -1898,15 +1979,29 @@ function renderWorktree(t: Thread, worktree: string): HTMLElement {
   return box
 }
 
-type DetailTab = "overview" | "changes" | "route" | "activity"
-const TAB_LABELS: Record<DetailTab, string> = { overview: "Overview", changes: "Changes", route: "Route", activity: "Activity" }
+type DetailTab = "overview" | "changes" | "route" | "activity" | "compare"
+const TAB_LABELS: Record<DetailTab, string> = {
+  overview: "Overview",
+  changes: "Changes",
+  route: "Route",
+  activity: "Activity",
+  compare: "Compare",
+}
+
+/** The other side of a re-run: the original for a re-run, the latest re-run for an original. */
+function counterpart(t: Thread): Thread | undefined {
+  if (t.rerunOf) return state.threads.get(t.rerunOf)
+  return [...state.threads.values()].filter((x) => x.rerunOf === t.id).at(-1)
+}
 
 function threadTabs(t: Thread): DetailTab[] {
+  if (t.taskClass === "turn") return ["changes"]
   const sum = t.summary
   const tabs: DetailTab[] = ["overview"]
   if (sum?.worktree || sum?.checkpoint?.after || sum?.changedFiles.length) tabs.push("changes")
   if (sum) tabs.push("route")
   if (t.activity.length) tabs.push("activity")
+  if (counterpart(t)) tabs.push("compare")
   return tabs
 }
 
@@ -1985,12 +2080,13 @@ function fileBar(file: NonNullable<typeof state.file>, content: FileContent): HT
       )
     return bar
   }
-  if (PREVIEWABLE.test(file.path) && !content.error) {
+  if ((PREVIEWABLE.test(file.path) || /\.excalidraw$/i.test(file.path)) && !content.error) {
     const seg = el("div", "seg")
     seg.setAttribute("role", "radiogroup")
     seg.setAttribute("aria-label", "Show the file")
+    const rendered = /\.excalidraw$/i.test(file.path) ? ("drawing" as const) : ("preview" as const)
     for (const [v, label] of [
-      ["preview", "Preview"],
+      [rendered, rendered === "drawing" ? "Drawing" : "Preview"],
       ["source", "Source"],
     ] as const) {
       const b = el("button", "seg-btn") as HTMLButtonElement
@@ -2054,6 +2150,26 @@ function renderFilePanel(file: NonNullable<typeof state.file>) {
       editing.handle = h
       h.focus()
     })
+    return
+  }
+  if (file.view === "drawing" && !content.error) {
+    const els = parseDrawing(content.text)
+    const drawing = els ? renderDrawing(els) : undefined
+    if (!drawing?.svg) {
+      body.replaceChildren(bar, Object.assign(el("div", "muted"), { textContent: "This file is not a drawing this app can show." }))
+      return
+    }
+    const wrap = el("div", "drawing-wrap", drawing.svg)
+    wrap.append(Object.assign(el("p", "muted"), { textContent: "Click a shape to leave a note on it." }))
+    wrap.addEventListener("click", (e) => {
+      const g = (e.target as Element).closest<SVGGElement>("g.ex-el")
+      if (!g) return
+      for (const x of wrap.querySelectorAll(".ex-el.picked")) x.classList.remove("picked")
+      g.classList.add("picked")
+      const label = drawing.labels[g.dataset.id as string] ?? "shape"
+      annotator.offer({ kind: "drawing", path: file.path, shape: label }, label, g.getBoundingClientRect())
+    })
+    body.replaceChildren(bar, wrap)
     return
   }
   if (file.view === "image" && content.image) {
@@ -2177,6 +2293,96 @@ function renderPanelButtons() {
   $("toggle-browser").setAttribute("aria-pressed", String(onPanel && state.panel === "browser"))
 }
 
+/** A turn's own changes (Conductor's and its threads'), reviewed in the panel like a thread's. */
+const turnThreads = new Map<string, Thread>()
+const findThread = (id: string | undefined) => (id ? (state.threads.get(id) ?? turnThreads.get(id)) : undefined)
+
+function turnCheckpoint(turnId: string, checkpoint: ThreadCheckpoint) {
+  const turnEl = state.turnEl
+  if (!turnEl) return
+  const id = `turn:${turnId}:${checkpoint.before.slice(0, 8)}`
+  const t: Thread = {
+    id,
+    agent: "conductor",
+    taskClass: "turn",
+    mode: "edit",
+    task: "Changes in this turn",
+    provider: "claude",
+    tier: "",
+    status: "done",
+    startedAt: now(),
+    finishedAt: now(),
+    tokens: 0,
+    activity: [],
+    comments: [],
+    tab: "changes",
+    summary: {
+      status: "done",
+      provider: "claude",
+      tier: "deep",
+      attempts: [],
+      stopReason: "",
+      costUsd: 0,
+      tokens: { input: 0, output: 0 },
+      findings: [],
+      notes: [],
+      changedFiles: [],
+      taskClass: "turn",
+      report: "",
+      checkpoint,
+    },
+  }
+  turnThreads.set(id, t)
+  const bar = el("div", "turn-changes")
+  const label = Object.assign(el("span", "muted"), { textContent: "This turn changed files in the folder." })
+  const review = textButton("Review the changes", "ghost small", () => selectThread(id))
+  let asking = false
+  const back = textButton("Go back to before this turn", "ghost small", () => {
+    if (!asking) {
+      asking = true
+      back.textContent = "Confirm: restore the folder"
+      back.classList.add("danger")
+      return
+    }
+    asking = false
+    back.disabled = true
+    void request({
+      type: "turn.restore",
+      requestId: nextRequestId(),
+      workspace: runDir(),
+      before: checkpoint.before,
+      label: turnId,
+    }).then((m) => {
+      if (m.type !== "turn.restored") return
+      back.disabled = false
+      back.textContent = "Go back to before this turn"
+      back.classList.remove("danger")
+      label.textContent = m.message
+      label.className = m.ok ? "notice ok" : "error"
+      const undoSha = m.undo
+      if (m.ok && undoSha && m.files.length) {
+        const undo = textButton("Undo the restore", "ghost small", () => {
+          void request({
+            type: "turn.restore",
+            requestId: nextRequestId(),
+            workspace: runDir(),
+            before: undoSha,
+            label: `undo-${turnId}`,
+          }).then((u) => {
+            if (u.type !== "turn.restored") return
+            label.textContent = u.ok ? "Restore undone: the folder is as it was." : u.message
+            label.className = u.ok ? "notice ok" : "error"
+            undo.remove()
+          })
+        })
+        bar.append(undo)
+      }
+    })
+  })
+  bar.append(label, el("span", "spacer"), review, back)
+  turnEl.append(bar)
+}
+
 function renderDetail() {
   renderPanelButtons()
   if (state.file) {
@@ -2187,7 +2393,7 @@ function renderDetail() {
     renderSidePanel(state.panel)
     return
   }
-  const t = state.selected ? state.threads.get(state.selected) : undefined
+  const t = findThread(state.selected)
   if (!t) return
   const g = $("detail-glyph")
   g.className = `glyph ${t.provider}`
@@ -2246,6 +2452,29 @@ function renderDetail() {
     }
     return
   }
+  if (tab === "compare") {
+    const other = counterpart(t)
+    const [a, b] = t.rerunOf ? [other, t] : [t, other]
+    for (const x of [a, b]) {
+      if (!x) continue
+      const box = el("div", "compare-side")
+      const head = el("div", "compare-head")
+      head.append(
+        glyph(x.provider),
+        Object.assign(el("strong"), { textContent: `${PROVIDER_LABEL[x.provider]} ${x.summary?.model ?? x.model ?? ""}` }),
+      )
+      head.append(Object.assign(el("span", "muted"), { textContent: x === t ? "this thread" : x.rerunOf ? "the re-run" : "the original" }))
+      const facts = x.summary
+        ? `${x.summary.status}, ${compact(x.tokens)} tokens${x.summary.costUsd ? `, $${x.summary.costUsd.toFixed(4)}` : ""}, ${age(x.startedAt, x.finishedAt ?? Date.now())}`
+        : statusText(x)
+      box.append(head, Object.assign(el("div", "facts-row"), { textContent: facts }))
+      box.append(
+        x.summary ? mdBlock(x.summary.report || "(no output)") : Object.assign(el("div", "muted"), { textContent: "Still running…" }),
+      )
+      section(x === a ? "Original" : "Re-run", box)
+    }
+    return
+  }
   if (tab === "activity") {
     const list = el("ul", "activity mono")
     for (const line of t.activity) {
@@ -2283,6 +2512,11 @@ function renderDetail() {
   body.append(facts)
 
   section("Task", Object.assign(el("p", "task"), { textContent: t.task }))
+  if (t.why?.length) {
+    const why = el("ul", "why")
+    for (const line of t.why) why.append(Object.assign(el("li"), { textContent: line }))
+    section(t.rerunOf ? "Why this backend (a re-run you asked for)" : "Why this backend", why)
+  }
   if (t.error) section("Error", Object.assign(el("div", "error"), { textContent: t.error }))
   if (sum?.findings.length) {
     const list = el("ul", "findings")
@@ -2322,6 +2556,9 @@ function delegationStarted(msg: Extract<ServerMessage, { type: "delegation.start
     tokens: 0,
     activity: [],
     comments: [],
+    why: msg.why,
+    brief: msg.brief,
+    rerunOf: msg.rerunOf,
   }
   const row = el("button", "agent-card") as HTMLButtonElement
   row.type = "button"
@@ -2389,6 +2626,7 @@ const emptyState = ($("empty") as HTMLElement).cloneNode(true) as HTMLElement
 /** An empty transcript: no turn, no threads, no usage. The server's chat is left to the caller. */
 function resetView(withEmpty: boolean) {
   find.reset()
+  turnThreads.clear()
   quickCards.clear()
   clearThreads()
   state.fold = undefined
@@ -2642,7 +2880,11 @@ function onMessage(msg: ServerMessage) {
       approvalRequest(msg)
       return
     case "error":
-      showBanner(msg.message)
+      // A budget refusal can be overridden for this one request.
+      if (/^Budget reached/.test(msg.message) && state.lastStart) {
+        const again = { ...state.lastStart, overBudget: true }
+        showBanner(msg.message.replace(/ Raise or clear.*$/, ""), { label: "Send anyway", run: () => send(again) })
+      } else showBanner(msg.message)
       return
   }
 }
@@ -2675,7 +2917,7 @@ function startRequest(prompt: string): boolean {
   }
   showBanner(undefined)
   const run = state.newChatRun
-  send({
+  const start: Extract<ClientMessage, { type: "start" }> = {
     type: "start",
     prompt,
     workspace: state.workspace,
@@ -2685,7 +2927,9 @@ function startRequest(prompt: string): boolean {
     // Only a new chat picks where it runs.
     ...(!state.chat && run.mode === "new" ? { worktree: { base: run.base } } : {}),
     ...(!state.chat && run.mode === "existing" ? { worktree: { path: run.path } } : {}),
-  })
+  }
+  state.lastStart = start
+  send(start)
   return true
 }
 
@@ -2711,8 +2955,12 @@ function submit() {
     updateSendButton()
     return
   }
+  // "/name …" runs a prompt template of yours or the project's.
+  const tpl = /^\/([a-z0-9][a-z0-9-]*)(?:\s+([\s\S]*))?$/.exec(prompt)
+  const template = tpl ? state.templates.find((x) => x.name === tpl[1]) : undefined
+  const text = template ? expandTemplate(template.text, tpl?.[2] ?? "") : prompt
   // The bubble appears when the server starts the turn: now, or later if it queues it.
-  if (!startRequest(prompt)) return
+  if (!startRequest(text)) return
   history.push(prompt)
   prefs.set("history", JSON.stringify(history.all))
   promptBox.value = ""
@@ -2764,6 +3012,14 @@ function slashCommands(): Command[] {
     { name: "files", hint: "Browse the workspace's files", run: () => togglePanel("files") },
     { name: "browser", hint: "Preview a local web page", run: () => togglePanel("browser") },
     { name: "board", hint: "The workspace's Kanban board", run: () => setView("board") },
+    ...state.templates.map((t) => ({
+      name: t.name,
+      hint: `${t.scope === "project" ? "Project template" : "Your template"}: ${t.text.split("\n")[0]?.slice(0, 60) ?? ""}`,
+      insert: `/${t.name}`,
+    })),
+    { name: "templates", hint: "Make or edit prompt templates", run: () => openTemplates() },
+    { name: "memory", hint: "The project memory Conductor reads", run: () => void openMemory() },
+    { name: "routing", hint: "Which backend and tier each kind of task gets", run: () => void openRouting() },
     { name: "usage", hint: "Subscriptions and spend", run: () => void openUsage() },
     { name: "code", hint: "VS Code in the app", run: () => setView("code") },
     {
@@ -2897,6 +3153,9 @@ function paletteItems(): PaletteItem[] {
     { group: "Commands", label: "Continue in the Claude Code CLI", run: () => void dock.open("conductor") },
     { group: "Commands", label: "Catch me up", run: catchUp },
     { group: "Commands", label: "Usage", run: () => void openUsage() },
+    { group: "Commands", label: "Routing", run: () => void openRouting() },
+    { group: "Commands", label: "Prompt templates", run: () => openTemplates() },
+    { group: "Commands", label: "Project memory", run: () => void openMemory() },
     { group: "Commands", label: "Code: VS Code in the app", run: () => setView("code") },
   )
   if (state.chat) {
@@ -3099,7 +3358,9 @@ function renderNotes() {
     const where =
       n.source.kind === "file"
         ? `${n.source.path}:${n.source.start}${n.source.end !== n.source.start ? `-${n.source.end}` : ""}`
-        : `report of "${n.source.title}"`
+        : n.source.kind === "drawing"
+          ? `${n.source.path}: ${n.source.shape}`
+          : `report of "${n.source.title}"`
     li.append(
       Object.assign(el("span", `note-chip mark-${n.mark}`), { textContent: MARK_LABELS[n.mark] }),
       Object.assign(el("span", "note-where mono"), { textContent: where }),
@@ -3114,7 +3375,7 @@ function renderNotes() {
   box.append(head, list)
 }
 
-setupAnnotator({
+const annotator = setupAnnotator({
   root: $("detail-body"),
   bar: $("note-bar"),
   add: addNote,
@@ -3489,6 +3750,16 @@ function besideMessage(msg: ServerMessage): boolean {
     case "board":
       board.set(msg.workspace, msg.cards)
       return true
+    case "turn.checkpoint":
+      turnCheckpoint(msg.turnId, msg.checkpoint)
+      return true
+    case "budget":
+      renderBudget(msg.budget)
+      return true
+    case "templates":
+      state.templates = msg.items
+      if ($<HTMLDialogElement>("templates").open) renderTemplates()
+      return true
     case "ide":
       state.ide = msg.ide
       if (state.view === "code") renderIde()
@@ -3600,7 +3871,7 @@ async function openUsage() {
     table,
     Object.assign(el("p", "muted"), { textContent: "Conductor counts as Claude. Gemini and Codex report tokens but not cost." }),
   )
-  body.replaceChildren(subs, spend)
+  body.replaceChildren(budgetSection(), subs, spend)
 }
 $("open-usage").addEventListener("click", () => void openUsage())
 $("usage-close").addEventListener("click", () => $<HTMLDialogElement>("usage").close())
@@ -3758,6 +4029,302 @@ function trayStatus() {
   lastTray = text
   void invoke("tray_status", { text }).catch(() => {})
 }
+
+// ── Budgets: limits per chat and per day, enforced by the core ──────────
+
+let lastBudgetWarning = ""
+function renderBudget(b: BudgetState) {
+  state.budget = b
+  const item = $("budget")
+  const limit = b.limits.chatUsd ?? b.limits.dayUsd
+  item.hidden = limit === null
+  item.className = `status-item budget${b.over ? " bad" : b.near ? " warn" : ""}`
+  const usd = (n: number) => `$${n > 0 && n < 0.01 ? n.toFixed(4) : n.toFixed(2)}`
+  if (b.limits.chatUsd !== null) item.textContent = `${usd(b.chatUsd)} of ${usd(b.limits.chatUsd)}`
+  else if (b.limits.dayUsd !== null) item.textContent = `${usd(b.dayUsd)} of ${usd(b.limits.dayUsd)} today`
+  item.title = b.over ?? b.near ?? "Spending limits: set them in Usage"
+  const warning = b.over ?? b.near ?? ""
+  if (warning && warning !== lastBudgetWarning && !state.replaying) showBanner(warning, { label: "Limits", run: () => void openUsage() })
+  lastBudgetWarning = warning
+  // A subscription window past the warning share warns once, too.
+  for (const p of Object.keys(state.quota) as ProviderId[]) {
+    const full = currentWindows(p).find((w) => w.usedFraction >= b.limits.warnAt)
+    const key = full ? `${p}:${full.label}:${Math.round(full.usedFraction * 100)}` : ""
+    if (full && !quotaWarned.has(key)) {
+      quotaWarned.add(key)
+      showBanner(`${PROVIDER_LABEL[p]} ${describeWindow(full)}. The router prefers other backends now.`)
+    }
+  }
+}
+const quotaWarned = new Set<string>()
+
+/** The Limits section of the Usage dialog. */
+function budgetSection(): HTMLElement {
+  const box = el("section", "usage-section")
+  box.append(Object.assign(el("h3"), { textContent: "Limits" }))
+  const limits = state.budget?.limits ?? { chatUsd: null, dayUsd: null, warnAt: 0.8 }
+  const form = document.createElement("form")
+  form.className = "limits-form"
+  const field = (label: string, value: number | null, hint: string) => {
+    const wrap = el("label", "field")
+    const input = document.createElement("input")
+    input.type = "number"
+    input.className = "field-input"
+    input.min = "0"
+    input.step = "any"
+    input.placeholder = "no limit"
+    input.value = value === null ? "" : String(value)
+    wrap.append(Object.assign(el("span"), { textContent: label }), input, Object.assign(el("small", "muted"), { textContent: hint }))
+    form.append(wrap)
+    return input
+  }
+  const chat = field("Per chat, USD", limits.chatUsd, "A turn will not start past it, and stops when it gets there.")
+  const day = field("Per day, USD", limits.dayUsd, "All chats together, today.")
+  const warn = field("Warn at, %", Math.round(limits.warnAt * 100), "Of a limit, or of a subscription window.")
+  warn.step = "5"
+  warn.min = "10"
+  warn.max = "99"
+  const save = textButton("Save limits", "primary small", () => form.requestSubmit())
+  save.type = "submit"
+  const status = Object.assign(el("span", "muted"), { textContent: state.budget ? `This chat: $${state.budget.chatUsd.toFixed(2)}` : "" })
+  const row = el("div", "buttons")
+  row.append(save, status)
+  form.append(row)
+  form.addEventListener("submit", (e) => {
+    e.preventDefault()
+    const n = (i: HTMLInputElement) => (i.value.trim() === "" ? null : Number(i.value))
+    send({ type: "budget.set", limits: { chatUsd: n(chat), dayUsd: n(day), warnAt: (Number(warn.value) || 80) / 100 } })
+    status.textContent = "Saved."
+  })
+  box.append(
+    form,
+    Object.assign(el("p", "muted"), {
+      textContent: "Only Claude reports cost, so limits count Conductor and Claude threads; Gemini and Codex count tokens only.",
+    }),
+  )
+  return box
+}
+
+// ── Prompt templates ────────────────────────────────────────────────────
+
+function openTemplates() {
+  if (!state.workspace) {
+    showBanner("Choose a workspace folder first.")
+    return
+  }
+  renderTemplates()
+  const d = $<HTMLDialogElement>("templates")
+  if (!d.open) d.showModal()
+}
+
+function renderTemplates(edit?: PromptTemplate) {
+  const body = $("templates-body")
+  body.replaceChildren()
+  const form = document.createElement("form")
+  form.className = "template-form"
+  const name = document.createElement("input")
+  name.className = "field-input"
+  name.placeholder = "name, like review-pr"
+  name.setAttribute("aria-label", "Template name")
+  name.value = edit?.name ?? ""
+  const scope = document.createElement("select")
+  scope.className = "field-input"
+  scope.setAttribute("aria-label", "Save for")
+  scope.add(new Option("This project (.harness/prompts, shared through git)", "project"))
+  scope.add(new Option("Me, in every project", "user"))
+  scope.value = edit?.scope ?? "project"
+  const text = document.createElement("textarea")
+  text.className = "field-text"
+  text.rows = 6
+  text.placeholder = "The request. $ARGUMENTS is replaced by what you type after the command."
+  text.setAttribute("aria-label", "Template text")
+  text.value = edit?.text ?? promptBox.value.trim()
+  const save = textButton(edit ? "Save template" : "Add template", "primary small", () => form.requestSubmit())
+  save.type = "submit"
+  const status = el("span", "muted")
+  const row = el("div", "buttons")
+  row.append(save, status)
+  form.append(name, scope, text, row)
+  form.addEventListener("submit", (e) => {
+    e.preventDefault()
+    send({
+      type: "template.save",
+      workspace: state.workspace,
+      scope: scope.value as "project" | "user",
+      name: name.value.trim(),
+      text: text.value,
+    })
+    status.textContent = `Saved: type /${name.value.trim()} in the composer.`
+  })
+  body.append(form)
+  if (state.templates.length) {
+    const list = el("ul", "template-list")
+    for (const t of state.templates) {
+      const li = el("li")
+      li.append(
+        Object.assign(el("strong", "mono"), { textContent: `/${t.name}` }),
+        Object.assign(el("span", "muted"), { textContent: t.scope === "project" ? "project" : "yours" }),
+        Object.assign(el("span", "template-text"), { textContent: t.text.split("\n")[0] ?? "", title: t.text }),
+        textButton("Edit", "ghost small", () => renderTemplates(t)),
+        textButton("Delete", "ghost small danger", () =>
+          send({ type: "template.delete", workspace: state.workspace, scope: t.scope, name: t.name }),
+        ),
+      )
+      list.append(li)
+    }
+    body.append(list)
+  }
+  requestAnimationFrame(() => (edit ? text : name).focus())
+}
+$("templates-close").addEventListener("click", () => $<HTMLDialogElement>("templates").close())
+
+// ── Project memory: the notes Conductor reads at the start of each turn ──
+
+async function openMemory() {
+  if (!state.workspace) {
+    showBanner("Choose a workspace folder first.")
+    return
+  }
+  const path = ".harness/memory.md"
+  const read = await request({ type: "file.read", requestId: nextRequestId(), workspace: runDir(), path })
+  if (read.type === "file.content" && read.error && /No such file/.test(read.error))
+    await request({ type: "file.write", requestId: nextRequestId(), workspace: runDir(), path, text: "" })
+  openFile(path, undefined, undefined, "source")
+}
+
+// ── Routing: which backend and tier each kind of task gets ──────────────
+
+async function openRouting() {
+  if (!state.workspace) {
+    showBanner("Choose a workspace folder first.")
+    return
+  }
+  const dialog = $<HTMLDialogElement>("routing")
+  const body = $("routing-body")
+  body.replaceChildren(Object.assign(el("p", "muted"), { textContent: "Loading the routes…" }))
+  if ($<HTMLDialogElement>("settings").open) $<HTMLDialogElement>("settings").close()
+  if (!dialog.open) dialog.showModal()
+  const reply = await request({ type: "routing.get", requestId: nextRequestId(), workspace: state.workspace })
+  if (reply.type !== "routing") return
+  if (reply.error) {
+    body.replaceChildren(Object.assign(el("div", "error"), { textContent: reply.error }))
+    return
+  }
+  const rows: RouteRow[] = reply.routes.filter((r) => r.agent !== "conductor")
+  const providers = Object.keys(PROVIDER_LABEL) as ProviderId[]
+  const tiers = ["fast", "standard", "deep"] as const
+  const intro = Object.assign(el("p", "hint"), {
+    textContent:
+      "Each kind of task goes to its first backend, then the next ones if that cannot take it. A tier never goes below the task's floor. Changes apply from the next delegation.",
+  })
+  const table = el("table", "routing-table")
+  table.innerHTML = "<thead><tr><th>Task</th><th>First backend</th><th>Then</th><th>Tier</th></tr></thead>"
+  const tbody = document.createElement("tbody")
+  const edits = new Map<string, RouteRow>()
+  for (const r of rows) {
+    const row = { ...r, fallback: [...r.fallback] }
+    edits.set(r.taskClass, row)
+    const tr = document.createElement("tr")
+    const cls = Object.assign(document.createElement("td"), { textContent: r.taskClass })
+    cls.title = `Agent: ${r.agent}`
+    const primary = document.createElement("select")
+    primary.className = "field-input"
+    primary.setAttribute("aria-label", `${r.taskClass}: first backend`)
+    for (const p of providers) primary.add(new Option(PROVIDER_LABEL[p], p))
+    if (r.primary === "auto_not_author") primary.add(new Option("Not the author (reviews)", "auto_not_author"))
+    if (r.primary === "self") primary.add(new Option("Conductor itself", "self"))
+    primary.value = r.primary
+    primary.addEventListener("change", () => {
+      row.primary = primary.value as RouteRow["primary"]
+    })
+    const fallback = el("td", "routing-fallback")
+    for (const p of providers) {
+      const label = el("label", "check")
+      const box = document.createElement("input")
+      box.type = "checkbox"
+      box.checked = row.fallback.includes(p)
+      box.addEventListener("change", () => {
+        row.fallback = box.checked ? [...row.fallback, p] : row.fallback.filter((x) => x !== p)
+      })
+      label.append(box, document.createTextNode(` ${PROVIDER_LABEL[p]}`))
+      fallback.append(label)
+    }
+    const tier = document.createElement("select")
+    tier.className = "field-input"
+    tier.setAttribute("aria-label", `${r.taskClass}: tier`)
+    for (const t of tiers) if (tiers.indexOf(t) >= tiers.indexOf(r.minTier)) tier.add(new Option(t, t))
+    tier.value = r.tier
+    tier.addEventListener("change", () => {
+      row.tier = tier.value as RouteRow["tier"]
+    })
+    const td = (node: HTMLElement) => {
+      const c = document.createElement("td")
+      c.append(node)
+      return c
+    }
+    tr.append(cls, td(primary), fallback, td(tier))
+    tbody.append(tr)
+  }
+  table.append(tbody)
+  const scope = document.createElement("select")
+  scope.className = "field-input"
+  scope.setAttribute("aria-label", "Save to")
+  scope.add(new Option("This project", "project"))
+  scope.add(new Option("All projects", "user"))
+  const status = el("span", "muted")
+  const save = textButton("Save routing", "primary small", async () => {
+    const res = await request({
+      type: "routing.save",
+      requestId: nextRequestId(),
+      workspace: state.workspace,
+      scope: scope.value as "project" | "user",
+      routes: [...edits.values()].map((r) => ({ taskClass: r.taskClass, primary: r.primary, fallback: r.fallback, tier: r.tier })),
+    })
+    if (res.type !== "routing.saved") return
+    status.textContent = res.error ?? `Saved to ${res.path}`
+    status.className = res.error ? "error" : "muted"
+  })
+  const bar = el("div", "buttons")
+  bar.append(Object.assign(el("span", "muted"), { textContent: "Save to" }), scope, save, status)
+  // A dry run: where would this request go, and why?
+  const test = document.createElement("form")
+  test.className = "route-test"
+  const q = document.createElement("input")
+  q.className = "field-input"
+  q.placeholder = "Try a request, like: find where the login handler is defined"
+  q.setAttribute("aria-label", "A request to route")
+  const go = textButton("Where would it go?", "ghost small", () => test.requestSubmit())
+  go.type = "submit"
+  const out = el("div", "route-result")
+  test.append(q, go)
+  test.addEventListener("submit", async (e) => {
+    e.preventDefault()
+    if (!q.value.trim()) return
+    out.replaceChildren(Object.assign(el("span", "muted"), { textContent: "Asking the router…" }))
+    const r = await request({
+      type: "route.test",
+      requestId: nextRequestId(),
+      workspace: state.workspace,
+      text: q.value,
+      profile: profileSelect.value || undefined,
+    })
+    if (r.type !== "route.tested") return
+    const res = r.result
+    out.replaceChildren(
+      Object.assign(el("strong"), {
+        textContent: res.error
+          ? `${res.taskClass}: ${res.error}`
+          : `${res.taskClass} goes to ${PROVIDER_LABEL[res.provider as ProviderId]} (${res.tier}${res.model ? `, ${res.model}` : ""})`,
+      }),
+    )
+    const ul = el("ul", "why")
+    for (const line of res.why) ul.append(Object.assign(el("li"), { textContent: line }))
+    out.append(ul)
+  })
+  body.replaceChildren(intro, test, out, table, bar)
+}
+$("routing-close").addEventListener("click", () => $<HTMLDialogElement>("routing").close())
+$("open-routing").addEventListener("click", () => void openRouting())
 
 popover($<HTMLButtonElement>("threads-pill"), $("threads-menu"))
 popover($<HTMLButtonElement>("schedule-btn"), $("schedule-menu"), renderScheduleMenu)

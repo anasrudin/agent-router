@@ -117,7 +117,7 @@
         </section>
 
         <footer class="composer">
-          <div id="banner" class="banner" hidden></div>
+          <div id="banner" class="banner" role="status" hidden><span id="banner-text"></span><button id="banner-action" type="button" class="ghost small" hidden></button></div>
           <div class="pill-strip">
             <div id="strip" class="work-strip" aria-live="polite" hidden></div>
             <div class="threads-pill-wrap">
@@ -187,6 +187,7 @@
             <span id="quota" class="status-item"></span>
             <span id="cost" class="status-item cost" title="Reported spend and tokens this chat, Conductor and delegates together"></span>
             <span id="status-threads" class="status-item"></span>
+            <span id="budget" class="status-item budget" hidden></span>
             <span class="spacer"></span>
             <span id="git" class="status-item git"></span>
             <button id="open-usage" type="button" class="icon-btn status-btn" title="Usage: subscriptions and spend" aria-label="Usage">
@@ -214,6 +215,7 @@
       <form id="settings-form" method="dialog">
         <header class="settings-head">
           <h2 id="settings-title">Models</h2>
+          <button type="button" class="ghost small" id="open-routing" title="Which backend and tier each kind of task gets">Routing…</button>
           <button type="button" class="ghost icon" id="settings-close" aria-label="Close">✕</button>
         </header>
         <p class="hint">Each task class runs at a tier (fast, standard or deep) from <code>routing.yaml</code>. Pick the model and reasoning effort each tier uses. <strong>Test</strong> makes one tiny real call to check a model works on your account.</p>
@@ -255,6 +257,26 @@
         </button>
       </header>
       <div id="usage-body" class="usage-body"></div>
+    </dialog>
+
+    <dialog id="routing" class="settings routing-dialog" aria-labelledby="routing-title">
+      <header class="settings-head">
+        <h2 id="routing-title">Routing</h2>
+        <button type="button" class="icon-btn" id="routing-close" title="Close" aria-label="Close routing">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
+      </header>
+      <div id="routing-body" class="routing-body"></div>
+    </dialog>
+
+    <dialog id="templates" class="settings templates-dialog" aria-labelledby="templates-title">
+      <header class="settings-head">
+        <h2 id="templates-title">Prompt templates</h2>
+        <button type="button" class="icon-btn" id="templates-close" title="Close" aria-label="Close templates">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
+      </header>
+      <div id="templates-body" class="templates-body"></div>
     </dialog>
 
     <div id="note-bar" class="note-bar" role="toolbar" aria-label="Mark the selection" hidden></div>

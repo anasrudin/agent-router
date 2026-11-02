@@ -47,7 +47,10 @@ export function snapshot(cwd: string, label: string): string | undefined {
   const env = { GIT_INDEX_FILE: path.join(dir, "index") }
   try {
     git(cwd, ["read-tree", head], env)
-    git(cwd, ["add", "-A", "--", ".", EXCLUDE], env)
+    // Harness state stays out. Git refuses the exclude pathspec when .harness is gitignored, and an
+    // ignored .harness is left out by `add -A` anyway.
+    const ignored = spawnSync("git", ["check-ignore", "-q", ".harness"], { cwd }).status === 0
+    git(cwd, ["add", "-A", "--", ".", ...(ignored ? [] : [EXCLUDE])], env)
     const tree = git(cwd, ["write-tree"], env)
     const commit = git(cwd, ["commit-tree", tree, "-p", head, "-m", `agent-router checkpoint: ${label}`], {
       GIT_AUTHOR_NAME: "agent-router",
@@ -123,4 +126,34 @@ export function revertCheckpoint(c: Checkpoint): { ok: boolean; message: string;
   const apply = spawnSync("git", ["apply", "-R", "--whitespace=nowarn"], { cwd: root, input: `${patch}\n`, encoding: "utf8" })
   if (apply.status !== 0) return { ok: false, message: `git apply failed: ${apply.stderr.trim().slice(0, 2000)}`, files }
   return { ok: true, message: `Reverted ${files.length} file${files.length > 1 ? "s" : ""}.`, files }
+}
+
+/**
+ * Put the working tree back to how it was at `target` (an earlier checkpoint): files changed
+ * since are restored, files added since are removed. The index and branch are left alone. The
+ * state just before is snapshotted first, so the restore itself can be undone (`undo`).
+ */
+export function restoreCheckpoint(
+  cwd: string,
+  target: string,
+  label: string,
+): { ok: boolean; message: string; files: string[]; undo?: string } {
+  if (!SHA.test(target)) throw new Error("Not a checkpoint.")
+  const undo = snapshot(cwd, `before-restore-${label}`)
+  if (!undo) return { ok: false, message: "Could not snapshot the current state first, so nothing was changed.", files: [] }
+  const root = git(cwd, ["rev-parse", "--show-toplevel"])
+  const lines = git(root, ["diff", "--name-status", "--no-renames", target, undo, "--", ".", EXCLUDE]).split("\n").filter(Boolean)
+  const files: string[] = []
+  for (const line of lines) {
+    const [status, file] = line.split("\t") as [string, string]
+    files.push(file)
+    if (status === "A") rmSync(path.join(root, file), { force: true })
+    else git(root, ["restore", `--source=${target}`, "--worktree", "--", file])
+  }
+  return {
+    ok: true,
+    message: files.length ? `Restored ${files.length} file${files.length > 1 ? "s" : ""}.` : "Nothing had changed since then.",
+    files,
+    undo,
+  }
 }

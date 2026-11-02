@@ -1,4 +1,4 @@
-import type { ChatEvent, ChatMeta, UsageSummary } from "./protocol"
+import type { BudgetLimits, ChatEvent, ChatMeta, UsageSummary } from "./protocol"
 
 const DAY = 86_400_000
 const dayKey = (at: number) => new Date(at).toISOString().slice(0, 10)
@@ -56,4 +56,37 @@ export function usageSummary(chats: { meta: ChatMeta; events: ChatEvent[] }[], n
     costUsd,
     tokens,
   }
+}
+
+/** What a chat has cost so far: Conductor's reported cost and every finished thread's. */
+export function chatCost(events: ChatEvent[]): number {
+  let usd = 0
+  for (const { msg } of events) {
+    if (msg.type === "conductor" && msg.event.type === "usage") usd += msg.event.costUsd ?? 0
+    else if (msg.type === "delegation.finished") usd += msg.summary.costUsd
+  }
+  return usd
+}
+
+export interface BudgetCheck {
+  over?: string
+  /** Near a limit (at or past `warnAt` of it), for a warning. */
+  near?: string
+}
+
+/** Dollars as people read them; amounts under a cent keep four decimals. */
+export const usd = (n: number) => `$${n > 0 && n < 0.01 ? n.toFixed(4) : n.toFixed(2)}`
+
+/** Whether a chat or today's spend is over (or near) the limits; undefined limits never trip. */
+export function checkBudget(limits: BudgetLimits, chatUsd: number, dayUsd: number): BudgetCheck {
+  const check: BudgetCheck = {}
+  for (const [limit, spent, what] of [
+    [limits.chatUsd, chatUsd, "this chat"],
+    [limits.dayUsd, dayUsd, "today"],
+  ] as const) {
+    if (limit === null || limit === undefined || limit <= 0) continue
+    if (spent >= limit) check.over ??= `Budget reached: ${usd(spent)} of ${usd(limit)} for ${what}.`
+    else if (spent >= limit * limits.warnAt) check.near ??= `Near the budget: ${usd(spent)} of ${usd(limit)} for ${what}.`
+  }
+  return check
 }

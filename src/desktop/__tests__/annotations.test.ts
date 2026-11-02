@@ -13,11 +13,13 @@ describe("formatAnnotations", () => {
       },
       { id: "b", source: { kind: "report", title: "Find greet", agent: "scout" }, quote: "x".repeat(400), mark: "clarify" },
       { id: "c", source: { kind: "file", path: "README.md", start: 1, end: 1 }, quote: "Title", mark: "good" },
+      { id: "d", source: { kind: "drawing", path: "arch.excalidraw", shape: "API" }, quote: "API", mark: "clarify", note: "which API?" },
     ])
     const lines = text.split("\n")
     expect(lines[2]).toBe('1. [Needs tests] src/a.ts lines 3-5, "const x = 1": cover the empty case')
     expect(lines[3]).toStartWith('2. [Clarify] the report of thread "Find greet" (scout), "xxx')
     expect(lines[3]?.length).toBeLessThan(380)
     expect(lines[4]).toBe('3. [Looks good] README.md line 1, "Title"')
+    expect(lines[5]).toBe('4. [Clarify] the drawing arch.excalidraw, shape "API", "API": which API?')
   })
 })

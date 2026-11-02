@@ -15,6 +15,9 @@ afterAll(() => {
   rmSync(data, { recursive: true, force: true })
 })
 
+/** What every connection is sent besides hello; covered by chat-flow.test.ts. */
+const GREETING = new Set(["chats", "chat.current", "schedules", "terminals", "queue", "budget"])
+
 /** A UI client that queues every server message for awaiting in order. */
 async function uiClient() {
   const socket = new WebSocket(`${base}/ui?token=${token}`)
@@ -23,8 +26,7 @@ async function uiClient() {
   socket.addEventListener("message", (e) => {
     const msg = JSON.parse(String(e.data)) as ServerMessage
     // Saved chats have their own tests (chat-flow.test.ts).
-    if (msg.type === "chats" || msg.type === "chat.current" || msg.type === "schedules" || msg.type === "terminals" || msg.type === "queue")
-      return
+    if (GREETING.has(msg.type)) return
     const waiter = waiters.shift()
     if (waiter) waiter(msg)
     else inbox.push(msg)

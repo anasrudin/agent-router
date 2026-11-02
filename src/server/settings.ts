@@ -44,7 +44,7 @@ function checkValues(values: SettingsValues): void {
 }
 
 /** Remove maps an edit left empty, so an override file never carries `tiers: {}` noise. */
-function prune(doc: Document, keys: (string | number)[]): void {
+export function prune(doc: Document, keys: (string | number)[]): void {
   for (let depth = keys.length; depth > 0; depth--) {
     const node = doc.getIn(keys.slice(0, depth))
     if (isMap(node) && node.items.length === 0) doc.deleteIn(keys.slice(0, depth))
@@ -106,7 +106,7 @@ export function saveSettings(workspace: string, scope: SettingsScope, values: Se
   return { path: file, shadowed, snapshot }
 }
 
-function layerRank(file: string, workspace: string): number {
+export function layerRank(file: string, workspace: string): number {
   if (file === projectConfigPath(workspace)) return 2
   if (file === userConfigPath()) return 1
   return 0

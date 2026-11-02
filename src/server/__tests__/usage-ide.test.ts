@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { findIde, ideCommand, pickAsset } from "../ide"
 import type { ChatEvent, ChatMeta } from "../protocol"
-import { usageSummary } from "../usage"
+import { chatCost, checkBudget, usageSummary } from "../usage"
 
 const DAY = 86_400_000
 const meta = (id: string): ChatMeta => ({ id, workspace: "/w", title: id, createdAt: 0, updatedAt: 0, pinned: false, turns: 1 })
@@ -76,5 +76,23 @@ describe("ide", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe("budgets", () => {
+  test("chat cost adds Conductor's and the threads' reported cost", () => {
+    const events: ChatEvent[] = [
+      { at: 0, msg: { type: "conductor", turnId: "t", event: { type: "usage", inputTokens: 1, outputTokens: 1, costUsd: 0.5 } } },
+      { at: 0, msg: { type: "delegation.finished", id: "d", summary: summary("claude", 0.25, 1) } },
+    ]
+    expect(chatCost(events)).toBe(0.75)
+  })
+  test("over a limit stops; near it warns; no limit never trips", () => {
+    expect(checkBudget({ chatUsd: 1, dayUsd: null, warnAt: 0.8 }, 1.2, 9)).toEqual({
+      over: "Budget reached: $1.20 of $1.00 for this chat.",
+    })
+    expect(checkBudget({ chatUsd: 1, dayUsd: 5, warnAt: 0.8 }, 0.85, 1)).toEqual({ near: "Near the budget: $0.85 of $1.00 for this chat." })
+    expect(checkBudget({ chatUsd: null, dayUsd: 5, warnAt: 0.8 }, 100, 5)).toEqual({ over: "Budget reached: $5.00 of $5.00 for today." })
+    expect(checkBudget({ chatUsd: null, dayUsd: null, warnAt: 0.8 }, 100, 100)).toEqual({})
   })
 })

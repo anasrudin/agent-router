@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { ChatMeta, ServerMessage } from "../protocol"
@@ -21,6 +21,8 @@ writeFileSync(
   fake,
   `#!/bin/sh
 echo "$@" >> "${argsLog}"
+# Each turn leaves a mark in the folder, so a git folder gets a turn checkpoint.
+date +%s%N > touched.txt
 cat > /dev/null
 echo '{"type":"system","subtype":"init","session_id":"sess-1"}'
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Read","input":{"file_path":"notes.txt"}}]}}'
@@ -67,6 +69,8 @@ async function uiClient() {
   const currentAtConnect = (await until("chat.current")).chat
   await until("schedules")
   await until("terminals")
+  await until("queue")
+  await until("budget")
   return { socket, until, chatsAtConnect, currentAtConnect, send: (m: unknown) => socket.send(JSON.stringify(m)) }
 }
 
@@ -250,11 +254,95 @@ describe.skipIf(process.platform === "win32")("a chat in its own worktree", () =
     const chat = (await ui.until("chat.current")).chat as ChatMeta
     expect(chat.runIn).toContain(path.join(".harness", "worktrees", "chat-try-it-in-a-worktree"))
     expect(readFileSync(path.join(chat.runIn as string, ".harness", "routing.yaml"), "utf8")).toContain(fake)
+    // The turn changed the folder: its checkpoint pair arrives for review, revert and restore.
+    const cp = await ui.until("turn.checkpoint")
+    expect(cp.checkpoint.cwd).toBe(chat.runIn as string)
+    expect(cp.checkpoint.before).toMatch(/^[0-9a-f]{40}$/)
     expect(await ui.until("turn.finished")).toMatchObject({ ok: true })
+    ui.send({ type: "turn.restore", requestId: "rs", workspace: chat.runIn, before: cp.checkpoint.before, label: "t" })
+    const restored = await ui.until("turn.restored")
+    expect(restored).toMatchObject({ ok: true, files: ["touched.txt"] })
+    expect(existsSync(path.join(chat.runIn as string, "touched.txt"))).toBe(false)
     ui.send({ type: "worktrees.list", requestId: "w2", workspace: repo })
     expect((await ui.until("worktrees")).list?.worktrees).toHaveLength(1)
     ui.socket.close()
   }, 30_000)
+})
+
+describe.skipIf(process.platform === "win32")("limits, re-runs, templates", () => {
+  test("a chat over its budget does not start another turn, unless sent anyway", async () => {
+    const ui = await uiClient()
+    ui.send({ type: "reset" })
+    ui.send(start("Spend a little"))
+    await ui.until("turn.finished")
+    // The turn's end reports the chat's spend ($0.001 from the stand-in CLI).
+    expect((await ui.until("budget")).budget.chatUsd).toBeCloseTo(0.001, 6)
+    ui.send({ type: "budget.set", limits: { chatUsd: 0.01, dayUsd: null, warnAt: 0.8 } })
+    expect((await ui.until("budget")).budget).toMatchObject({ limits: { chatUsd: 0.01 } })
+    ui.send({ type: "budget.set", limits: { chatUsd: 0.001, dayUsd: null, warnAt: 0.8 } })
+    expect((await ui.until("budget")).budget.over).toBe("Budget reached: $0.0010 of $0.0010 for this chat.")
+    ui.send(start("One more"))
+    expect((await ui.until("error")).message).toMatch(/^Budget reached: .* for this chat/)
+    ui.send({ ...start("One more"), overBudget: true })
+    expect(await ui.until("turn.finished")).toMatchObject({ ok: true })
+    await ui.until("budget") // the end of that turn reports it, still over
+    ui.send({ type: "budget.set", limits: { chatUsd: null, dayUsd: null, warnAt: 0.8 } })
+    expect((await ui.until("budget")).budget.over).toBeUndefined()
+    ui.socket.close()
+  }, 30_000)
+
+  test("a read-only thread runs again on a pinned backend, with the reasons, linked to the original", async () => {
+    const ui = await uiClient()
+    const brief = {
+      task: "Find where line one is.",
+      why: "test",
+      relevant_files: [],
+      facts: [],
+      excerpts: [],
+      scope: "",
+      mode: "read-only" as const,
+      project_rules: [],
+      do_not: [],
+      acceptance: ["file:line"],
+      return_extra: "",
+    }
+    ui.send({
+      type: "thread.rerun",
+      workspace,
+      threadId: "d-orig",
+      taskClass: "search.codebase",
+      brief,
+      provider: "claude",
+      permission: "default",
+    })
+    const started = await ui.until("delegation.started")
+    expect(started).toMatchObject({ rerunOf: "d-orig", provider: "claude", taskClass: "search.codebase" })
+    expect(started.why?.[0]).toBe("Claude: pinned by you for this request.")
+    for (;;) {
+      const m = await ui.until("delegation.finished").catch(() => undefined)
+      if (m?.id === started.id) break
+    }
+    ui.send({
+      type: "thread.rerun",
+      workspace,
+      threadId: "x",
+      taskClass: "code.edit",
+      brief: { ...brief, mode: "edit" },
+      provider: "claude",
+      permission: "default",
+    })
+    expect((await ui.until("error")).message).toMatch(/Only read-only threads/)
+    ui.socket.close()
+  }, 60_000)
+
+  test("prompt templates: save, list to every window, delete", async () => {
+    const ui = await uiClient()
+    ui.send({ type: "template.save", workspace, scope: "project", name: "review-pr", text: "Review $ARGUMENTS" })
+    expect((await ui.until("templates")).items).toEqual([{ name: "review-pr", scope: "project", text: "Review $ARGUMENTS" }])
+    ui.send({ type: "template.delete", workspace, scope: "project", name: "review-pr" })
+    expect((await ui.until("templates")).items).toEqual([])
+    ui.socket.close()
+  })
 })
 
 test("chatTitle: the first sentence of the first line, kept short", () => {

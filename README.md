@@ -39,7 +39,7 @@ Config is layered, later files winning key by key: the shipped `routing.yaml`, t
 
 ## Desktop app (Tauri)
 
-![The desktop app after a real run: Conductor read a file and delegated a lookup to a Claude Haiku scout; the turn folded into "Worked for 17s", the answer links to greet.js:10, and the thread is open on its Overview tab](docs/screenshots/threads-detail.png)
+![The desktop app after a real run: Conductor read a file and delegated a lookup to a Claude Haiku scout; the turn folded into "Worked for …", the answer links to greet.js:10, and the thread's Overview says why it went where it did](docs/screenshots/threads-detail.png)
 
 The layout follows [Ghostex](https://github.com/maddada/Ghostex) (MIT): workspaces and their chats on the left, Conductor's conversation in the middle, a thread or a file beside it. Every delegation is a **thread**: a row under its chat in the sidebar (agent logo, task, status dot, age), a one-line card in the turn (role, backend, task, time, status), and on click a panel with tabs: **Overview** (task, findings, the delegate's report), **Changes** (its diff, where you can comment on lines and send the comments back to that delegate, or revert it; a worktree thread can preview, apply and remove its worktree), **Route** (each attempt and why it stopped) and **Activity**. When Conductor needs a decision, it asks with a form in the chat; a letter key picks a choice and Ctrl/Cmd+Enter sends.
 
@@ -89,7 +89,25 @@ The layout follows [Ghostex](https://github.com/maddada/Ghostex) (MIT): workspac
 
 **Code** is VS Code in the app, as Ghostex ships an IDE that loads on demand: it runs a local `openvscode-server` or `code-server` (on PATH, or openvscode-server downloaded into the app's data folder with one click on Linux; nothing is installed system-wide) for the chat's folder, bound to 127.0.0.1 with a token, and stops with the app.
 
-![A thread's context menu in the sidebar after a real run: open the thread, ask Conductor about it, copy its task or report](docs/screenshots/sidebar-menu.png)
+**Routing you can see and change.** Every thread's Overview says *why* it went where it did: the backend that is first for its kind of task (or the fallback and why), the tier and its floor, the profile, and every note the router made (skips, quota, escalation). A read-only thread's menu can **run it again on another backend** with the same brief, without Conductor, and its **Compare** tab shows the two reports side by side; for a thread that edits, the menu asks Conductor to redo it there. **Routing** (in the Models dialog, the palette or `/routing`) edits which backend is first, which come after it and the tier for each kind of task, saved to the project or for you, never below a task's floor, with a dry run that says where a request would go and why.
+
+| | |
+|---|---|
+| ![A thread re-run on Claude, its Compare tab showing the original Gemini report above the re-run](docs/screenshots/compare.png) | ![Routing: each task's first backend, the ones after it and its tier, with a dry run explaining where "find where greet is exported" would go](docs/screenshots/routing.png) |
+
+**A turn's changes, and going back.** When a turn changes files, a bar under it opens the whole turn's diff (Conductor's edits and its threads' together) in the side panel, where you can comment on lines or revert it, and **Go back to before this turn** restores the folder to how it was then, across later turns too, with **Undo**. **Limits** (in Usage) set a spend per chat and per day: a turn does not start past them, stops when it gets there, and the status line and a banner warn at 80% (of a limit or of a subscription window); **Send anyway** runs one request over the limit.
+
+| | |
+|---|---|
+| ![A turn's changes: the bar under the turn and the turn's diff in the side panel](docs/screenshots/turn-changes.png) | ![A request refused at the chat's limit, with Send anyway, and the limit in the status line](docs/screenshots/budget.png) |
+
+**Your own commands and the project's memory.** **Prompt templates** (`/templates`) are /commands of your own, saved in the project (`.harness/prompts/<name>.md`, shared through git) or for you everywhere; `$ARGUMENTS` takes what you type after the command (`/review-pr #12`). `/memory` opens `.harness/memory.md`, the notes Conductor reads at the start of every turn, in the editor.
+
+![An Excalidraw drawing in the side panel, a note on its CLIs shape above the composer and the marks offered on another shape](docs/screenshots/drawing.png)
+
+**Drawings**: an `.excalidraw` file opens as a drawing (no Excalidraw app needed); click a shape to leave a note on it, and the notes go to Conductor with the rest.
+
+![A thread's context menu in the sidebar after a real run: open it, ask Conductor about it, copy or save its report, run it again on another backend](docs/screenshots/sidebar-menu.png)
 
 Hovering a sidebar row (or tabbing to it) swaps its age for a More button; the open chat's row also gets Stop while Conductor works. Right-click, the menu key or Shift+F10 open the same actions as a menu. **Ctrl/Cmd+K** searches every chat (titles and messages; filter to this folder or pinned chats), this chat's threads, scheduled requests and the commands; **Ctrl/Cmd+F** finds text in the chat (Enter and Shift+Enter step through matches, folded work opens to show them); Ctrl/Cmd+B hides the sidebar, Ctrl/Cmd+N starts a new chat, Escape closes a menu or the side panel. Status is a small dot with its word beside it (orange working, blue done, pink needs you, red failed), every icon-only control has a tooltip and a label, and the chat, sidebar and side panel draw thin overlay scrollbars. A thread that needs you, a question, an approval and a finished request notify you when the window is in the background. Inter, DM Sans (chat prose) and JetBrains Mono ship with the app. Light and dark follow the system.
 

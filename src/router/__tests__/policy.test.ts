@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { ProviderId } from "../../config/schema"
 import { testConfig } from "../../test-support"
 import { HealthTracker } from "../health"
-import { decide, type PolicyContext, type RouteDecision, type RouteRequest, RoutingError } from "../policy"
+import { decide, explainDecision, type PolicyContext, type RouteDecision, type RouteRequest, RoutingError } from "../policy"
 
 function ctx(opts: { unhealthy?: ProviderId[]; patch?: unknown; spentUsd?: number } = {}): PolicyContext {
   const config = testConfig(opts.patch)
@@ -223,4 +223,22 @@ describe("decide() refusals", () => {
       }
     })
   }
+})
+
+describe("explainDecision", () => {
+  test("first choice, tier with its floor, profile", () => {
+    const c = ctx()
+    const lines = explainDecision(c.config, decide(c, { taskClass: "search.codebase" }), "economy")
+    expect(lines[0]).toBe("Gemini: first choice for search.codebase (Gemini, then Claude).")
+    expect(lines[1]).toStartWith("Tier fast: search.codebase runs at fast, never below fast")
+    expect(lines).toContain("Profile: economy.")
+  })
+  test("a fallback says why, and a pin says it is yours", () => {
+    const c = ctx({ unhealthy: ["gemini"] })
+    const fallback = explainDecision(c.config, decide(c, { taskClass: "search.codebase" }))
+    expect(fallback[0]).toBe("Claude: Gemini is first for search.codebase, but could not take it (Gemini, then Claude).")
+    expect(fallback.some((l) => l.startsWith("Skip gemini"))).toBe(true)
+    const pinned = explainDecision(ctx().config, decide(ctx(), { taskClass: "plan", override: "openai" }))
+    expect(pinned[0]).toBe("Codex: pinned by you for this request.")
+  })
 })

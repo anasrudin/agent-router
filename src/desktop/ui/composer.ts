@@ -85,3 +85,10 @@ export interface Command {
   insert?: string
   run?: () => void
 }
+
+/** A prompt template with its arguments filled in: in place of `$ARGUMENTS`, or after the text. */
+export function expandTemplate(text: string, args: string): string {
+  const a = args.trim()
+  if (text.includes("$ARGUMENTS")) return text.replaceAll("$ARGUMENTS", a)
+  return a ? `${text}\n\n${a}` : text
+}
