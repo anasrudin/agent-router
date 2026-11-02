@@ -87,7 +87,7 @@ export class ChatStore {
 
   update(
     id: string,
-    patch: Partial<Pick<ChatMeta, "title" | "pinned" | "sessionId" | "updatedAt" | "turns" | "runIn">>,
+    patch: Partial<Pick<ChatMeta, "title" | "pinned" | "sessionId" | "updatedAt" | "turns" | "runIn" | "profile">>,
   ): ChatMeta | undefined {
     const meta = this.get(id)
     if (!meta) return undefined

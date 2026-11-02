@@ -15,14 +15,17 @@ import { applyWorktree, previewMerge, removeDelegateWorktree } from "../coordina
 import { Brief } from "../coordinator/protocol"
 import { Session } from "../coordinator/session"
 import { createWorktree, isDelegateWorktree, samePath } from "../coordinator/worktrees"
+import { latestVersions, runDoctor } from "../doctor"
 import { describePreview, summarize } from "../mcp/server"
 import { type Overrides, parseOverrides, ULTRAWORK_NOTE } from "../router/classify"
-import { explainDecision } from "../router/policy"
+import { explainDecision, matchesAny } from "../router/policy"
 import { QuotaTracker } from "../router/quota"
 import { readAdvanced, saveAdvanced } from "./advanced"
 import { BoardStore } from "./boards"
 import { toWire } from "./bridge"
 import { ChatStore, dataDir } from "./chats"
+import { historyDiff, listHistory, restoreHistory } from "./confighistory"
+import { dataStats, exportChats, pruneChats } from "./datastore"
 import { chatMarkdown } from "./export"
 import {
   editorCommand,
@@ -37,7 +40,7 @@ import {
   writeWorkspaceFile,
 } from "./files"
 import { findIde, freePort, ideCommand, installIde } from "./ide"
-import { deleteProfile, readProfiles, saveProfile, setDefaultProfile } from "./profiles"
+import { deleteProfile, exportProfiles, importProfiles, readProfiles, saveProfile, setDefaultProfile } from "./profiles"
 import type {
   BackendStatus,
   BridgeMessage,
@@ -57,7 +60,7 @@ import { ScheduleStore } from "./schedules"
 import { backendOptions, readSettings, saveSettings, testModel } from "./settings"
 import { deleteTemplate, listTemplates, saveTemplate } from "./templates"
 import { Terminals } from "./terminals"
-import { chatCost, checkBudget, usageSummary } from "./usage"
+import { chatCost, checkBudget, profileCosts, usageSummary } from "./usage"
 
 type Role = "ui" | "bridge"
 type Socket = ServerWebSocket<{ role: Role }>
@@ -359,6 +362,7 @@ export function startServer(opts: ServeOptions) {
     }
   }
   const broadcastChats = () => broadcast({ type: "chats", items: chats.list() })
+  const savedChats = () => chats.list().map((meta) => ({ meta, events: chats.events(meta.id) }))
   const reply = (socket: Socket, message: ServerMessage) => {
     socket.send(JSON.stringify(message))
   }
@@ -421,7 +425,10 @@ export function startServer(opts: ServeOptions) {
         prompt: msg.prompt,
         resumed: resume !== undefined,
         mode: modeLine(overrides),
+        profile,
       })
+      // The chat remembers the menu's profile; a keyword (@economy, ultrawork) is for this request only.
+      if (msg.profile && current.profile !== msg.profile) chat = chats.update(current.id, { profile: msg.profile }) ?? chat
       prepared = await prepareConductor({
         workspace: runDir,
         permission: msg.permission,
@@ -637,7 +644,7 @@ export function startServer(opts: ServeOptions) {
         reply(socket, {
           type: "usage",
           requestId: msg.requestId,
-          summary: usageSummary(chats.list().map((meta) => ({ meta, events: chats.events(meta.id) }))),
+          summary: usageSummary(savedChats()),
         })
         return
       case "thread.rerun": {
@@ -755,7 +762,7 @@ export function startServer(opts: ServeOptions) {
       case "profiles.get":
         Promise.resolve()
           .then(() => readProfiles(assertDirectory(msg.workspace)))
-          .then((r) => reply(socket, { type: "profiles", requestId: msg.requestId, ...r }))
+          .then((r) => reply(socket, { type: "profiles", requestId: msg.requestId, ...r, costs: profileCosts(savedChats()) }))
           .catch((e: unknown) =>
             reply(socket, { type: "profiles", requestId: msg.requestId, profiles: [], classes: [], error: errorText(e) }),
           )
@@ -774,6 +781,89 @@ export function startServer(opts: ServeOptions) {
           })
           .then((r) => reply(socket, { type: "config.saved", requestId: msg.requestId, path: r.path }))
           .catch((e: unknown) => reply(socket, { type: "config.saved", requestId: msg.requestId, error: errorText(e) }))
+        return
+      case "config.preview":
+        Promise.resolve()
+          .then(() => {
+            const dir = assertDirectory(msg.workspace)
+            const c = msg.change
+            const preview = { preview: true }
+            if (c.kind === "advanced") return saveAdvanced(dir, msg.scope, c.values, preview)
+            if (c.kind === "profile") return saveProfile(dir, msg.scope, c.profile, preview)
+            if (c.kind === "profiles.import") return importProfiles(dir, msg.scope, c.text, preview)
+            if (c.kind === "routing") return saveRouting(dir, msg.scope, c.routes, preview)
+            return saveSettings(dir, msg.scope, c.values, preview)
+          })
+          .then((r) => reply(socket, { type: "config.diff", requestId: msg.requestId, path: r.path, diff: r.diff }))
+          .catch((e: unknown) => reply(socket, { type: "config.diff", requestId: msg.requestId, diff: [], error: errorText(e) }))
+        return
+      case "config.history.get":
+        Promise.resolve()
+          .then(() => listHistory(assertDirectory(msg.workspace)))
+          .then((items) => reply(socket, { type: "config.history", requestId: msg.requestId, items }))
+          .catch((e: unknown) => reply(socket, { type: "config.history", requestId: msg.requestId, items: [], error: errorText(e) }))
+        return
+      case "config.change.get":
+        Promise.resolve()
+          .then(() => historyDiff(msg.id))
+          .then((diff) => reply(socket, { type: "config.diff", requestId: msg.requestId, diff }))
+          .catch((e: unknown) => reply(socket, { type: "config.diff", requestId: msg.requestId, diff: [], error: errorText(e) }))
+        return
+      case "config.restore":
+      case "profiles.import":
+        Promise.resolve()
+          .then(() => {
+            const dir = assertDirectory(msg.workspace)
+            return msg.type === "config.restore" ? restoreHistory(dir, msg.id) : importProfiles(dir, msg.scope, msg.text)
+          })
+          .then((r) => reply(socket, { type: "config.saved", requestId: msg.requestId, path: r.path }))
+          .catch((e: unknown) => reply(socket, { type: "config.saved", requestId: msg.requestId, error: errorText(e) }))
+        return
+      case "profiles.export":
+        Promise.resolve()
+          .then(() => exportProfiles(assertDirectory(msg.workspace), msg.names))
+          .then((text) => reply(socket, { type: "profiles.exported", requestId: msg.requestId, text }))
+          .catch((e: unknown) => reply(socket, { type: "profiles.exported", requestId: msg.requestId, text: "", error: errorText(e) }))
+        return
+      case "doctor.run":
+        Promise.resolve()
+          .then(() => runDoctor(assertDirectory(msg.workspace)))
+          .then((report) => reply(socket, { type: "doctor", requestId: msg.requestId, report }))
+          .catch((e: unknown) => reply(socket, { type: "doctor", requestId: msg.requestId, error: errorText(e) }))
+        return
+      case "doctor.latest":
+        void latestVersions().then((versions) => reply(socket, { type: "doctor.latest", requestId: msg.requestId, versions }))
+        return
+      case "privacy.test":
+        Promise.resolve()
+          .then(() => {
+            const { config } = loadConfig(assertDirectory(msg.workspace), null)
+            const rel = path.isAbsolute(msg.path) ? path.relative(msg.workspace, msg.path) : msg.path
+            return { pattern: matchesAny(rel.split(path.sep).join("/"), config.privacy.never_send), patterns: config.privacy.never_send }
+          })
+          .then((r) => reply(socket, { type: "privacy.tested", requestId: msg.requestId, ...r }))
+          .catch((e: unknown) => reply(socket, { type: "privacy.tested", requestId: msg.requestId, patterns: [], error: errorText(e) }))
+        return
+      case "data.stats":
+        Promise.resolve()
+          .then(() => dataStats(dataRoot, chats))
+          .then((stats) => reply(socket, { type: "data.stats", requestId: msg.requestId, stats }))
+          .catch((e: unknown) => reply(socket, { type: "data.stats", requestId: msg.requestId, error: errorText(e) }))
+        return
+      case "data.prune":
+      case "data.export":
+        Promise.resolve()
+          .then(() => {
+            if (msg.type === "data.export") {
+              const r = exportChats(dataRoot, chats, msg.workspace ? assertDirectory(msg.workspace) : undefined)
+              return { message: `Saved ${r.count} chat${r.count === 1 ? "" : "s"} as Markdown.`, path: r.dir }
+            }
+            const n = pruneChats(dataRoot, chats, msg.days, msg.mode, Date.now(), chat?.id)
+            if (n) broadcastChats()
+            return { message: `${msg.mode === "archive" ? "Archived" : "Deleted"} ${n} chat${n === 1 ? "" : "s"}.` }
+          })
+          .then((r) => reply(socket, { type: "data.done", requestId: msg.requestId, ...r }))
+          .catch((e: unknown) => reply(socket, { type: "data.done", requestId: msg.requestId, message: "", error: errorText(e) }))
         return
       case "templates.list":
         reply(socket, { type: "templates", items: listTemplates(assertDirectory(msg.workspace), dataRoot) })

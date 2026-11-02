@@ -200,6 +200,22 @@ export type ClientMessage =
   | { type: "profile.save"; requestId: string; workspace: string; scope: SettingsScope; profile: ProfileRow }
   | { type: "profile.delete"; requestId: string; workspace: string; scope: SettingsScope; name: string }
   | { type: "profile.default"; requestId: string; workspace: string; scope: SettingsScope; name: string }
+  /** What a save would change in the file, without writing it. */
+  | { type: "config.preview"; requestId: string; workspace: string; scope: SettingsScope; change: ConfigEdit }
+  | { type: "config.history.get"; requestId: string; workspace: string }
+  | { type: "config.change.get"; requestId: string; id: string }
+  /** Put a config file back to how it was before one change. */
+  | { type: "config.restore"; requestId: string; workspace: string; id: string }
+  | { type: "profiles.export"; requestId: string; workspace: string; names: string[] }
+  | { type: "profiles.import"; requestId: string; workspace: string; scope: SettingsScope; text: string }
+  | { type: "doctor.run"; requestId: string; workspace: string }
+  /** The newest published version of each CLI (asks the npm registry). */
+  | { type: "doctor.latest"; requestId: string }
+  /** Whether a path may be sent to a backend under privacy.never_send. */
+  | { type: "privacy.test"; requestId: string; workspace: string; path: string }
+  | { type: "data.stats"; requestId: string }
+  | { type: "data.prune"; requestId: string; days: number; mode: "archive" | "delete" }
+  | { type: "data.export"; requestId: string; workspace?: string }
   | { type: "templates.list"; workspace: string }
   | { type: "template.save"; workspace: string; scope: SettingsScope; name: string; text: string }
   | { type: "template.delete"; workspace: string; scope: SettingsScope; name: string }
@@ -258,6 +274,56 @@ export interface QueuedPrompt {
   prompt: string
 }
 
+/** What `agent-router doctor` finds, for the CLI and Settings → Doctor. */
+export interface DoctorReport {
+  sources: string[]
+  plan?: string
+  profiles: { name: string; tier: string; isDefault: boolean }[]
+  backends: {
+    provider: ProviderId
+    executable: string
+    installed: boolean
+    version?: string
+    reason?: string
+    testedVersion?: string
+    updateCommand: string
+  }[]
+  findings: {
+    level: "warn" | "error"
+    provider?: ProviderId
+    text: string
+    /** Where to fix it: a Settings tab, and/or a hint. */
+    fix?: { tab?: string; hint?: string }
+  }[]
+  /** Conductor can run (Claude is there). */
+  ok: boolean
+}
+
+/** A settings change, for a preview: the same payload its save message carries. */
+export type ConfigEdit =
+  | { kind: "advanced"; values: Record<string, unknown> }
+  | { kind: "profile"; profile: ProfileRow }
+  | { kind: "profiles.import"; text: string }
+  | { kind: "routing"; routes: RouteEdit[] }
+  | { kind: "models"; values: SettingsValues }
+
+/** One line of a diff: kept, added, removed, or "…" for unchanged lines left out. */
+export interface DiffLine {
+  k: " " | "+" | "-" | "…"
+  t: string
+}
+
+/** One change the app made to a config file, for Settings → History. */
+export interface ConfigChange {
+  id: string
+  at: number
+  what: string
+  path: string
+  scope: SettingsScope
+  added: number
+  removed: number
+}
+
 export interface ChatMeta {
   id: string
   workspace: string
@@ -270,6 +336,20 @@ export interface ChatMeta {
   sessionId?: string
   /** The worktree the chat runs in, when it was started in one. */
   runIn?: string
+  /** The profile its last request ran with; the composer picks it again when the chat is opened. */
+  profile?: string
+}
+
+/** The app's data folder at a glance, for Settings → Data. */
+export interface DataStats {
+  dir: string
+  bytes: number
+  chatBytes: number
+  chats: number
+  archived: number
+  /** Unpinned chats not used for 30 days. */
+  olderThan30: number
+  oldest?: number
 }
 
 /** One message the UI was sent, with when (epoch ms). */
@@ -461,6 +541,8 @@ export type ServerMessage =
       prompt: string
       resumed: boolean /** Keywords in the message that changed routing, e.g. "economy profile". */
       mode?: string
+      /** The profile this turn runs with (the menu's, or a keyword's). */
+      profile?: string
     }
   | { type: "thread.diff"; requestId: string; patch: string; truncated: boolean; error?: string }
   | { type: "thread.reverted"; requestId: string; ok: boolean; message: string; files: string[] }
@@ -505,7 +587,24 @@ export type ServerMessage =
   | { type: "route.tested"; requestId: string; result: RouteTest }
   | { type: "templates"; items: PromptTemplate[] }
   | { type: "advanced"; requestId: string; fields: AdvancedField[]; error?: string }
-  | { type: "profiles"; requestId: string; profiles: ProfileRow[]; defaultProfile?: string; classes: string[]; error?: string }
+  | {
+      type: "profiles"
+      requestId: string
+      profiles: ProfileRow[]
+      defaultProfile?: string
+      classes: string[]
+      /** Spend per profile across saved chats, for an estimate per request. */
+      costs?: Record<string, { turns: number; usd: number }>
+      error?: string
+    }
+  | { type: "config.diff"; requestId: string; path?: string; diff: DiffLine[]; error?: string }
+  | { type: "config.history"; requestId: string; items: ConfigChange[]; error?: string }
+  | { type: "profiles.exported"; requestId: string; text: string; error?: string }
+  | { type: "doctor"; requestId: string; report?: DoctorReport; error?: string }
+  | { type: "doctor.latest"; requestId: string; versions: Partial<Record<ProviderId, string>> }
+  | { type: "privacy.tested"; requestId: string; pattern?: string; patterns: string[]; error?: string }
+  | { type: "data.stats"; requestId: string; stats?: DataStats; error?: string }
+  | { type: "data.done"; requestId: string; message: string; path?: string; error?: string }
   /** A settings write (advanced, profiles): where it went, or why not. */
   | { type: "config.saved"; requestId: string; path?: string; error?: string }
   | { type: "attachment.saved"; requestId: string; path: string; error?: string }

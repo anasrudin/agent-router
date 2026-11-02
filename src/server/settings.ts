@@ -1,12 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import path from "node:path"
-import { Document, isMap, parseDocument } from "yaml"
 import type { BackendOptions } from "../backends/Backend"
 import { createBackends } from "../backends/registry"
-import { configLayers, loadConfig, mergeLayers, projectConfigPath, userConfigPath, validateConfig } from "../config/load"
+import { loadConfig, projectConfigPath, userConfigPath } from "../config/load"
 import { PROVIDERS, type ProviderId, type RoutingConfig, TIERS, type Tier } from "../config/schema"
-import type { ModelTest, SettingsScope, SettingsSnapshot, SettingsValues } from "./protocol"
+import { editLayer } from "./layers"
+import type { DiffLine, ModelTest, SettingsScope, SettingsSnapshot, SettingsValues } from "./protocol"
 
+export { layerRank, prune } from "./layers"
 export type { SettingsScope, SettingsValues } from "./protocol"
 
 function toSettings(config: RoutingConfig): SettingsValues {
@@ -44,72 +43,53 @@ function checkValues(values: SettingsValues): void {
 }
 
 /** Remove maps an edit left empty, so an override file never carries `tiers: {}` noise. */
-export function prune(doc: Document, keys: (string | number)[]): void {
-  for (let depth = keys.length; depth > 0; depth--) {
-    const node = doc.getIn(keys.slice(0, depth))
-    if (isMap(node) && node.items.length === 0) doc.deleteIn(keys.slice(0, depth))
-  }
-}
 
 export interface SaveResult {
   path: string
   /** Settings that a higher-priority file overrides, so the saved value does not take effect. */
   shadowed: string[]
   snapshot: SettingsSnapshot
+  diff: DiffLine[]
 }
 
 /**
  * Write the model settings to one config layer. Only values that differ from the layers below
  * are written, so the file keeps inheriting everything else; comments in the file survive.
+ * With `preview`, nothing is written: the result's diff says what would change.
  */
-export function saveSettings(workspace: string, scope: SettingsScope, values: SettingsValues): SaveResult {
+export function saveSettings(
+  workspace: string,
+  scope: SettingsScope,
+  values: SettingsValues,
+  opts: { preview?: boolean } = {},
+): SaveResult {
   checkValues(values)
-  const file = scope === "user" ? userConfigPath() : projectConfigPath(workspace)
-  const all = [...new Set([...configLayers(workspace), file])].sort((a, b) => layerRank(a, workspace) - layerRank(b, workspace))
-  const below = all.slice(0, all.indexOf(file))
-  const inherited = toSettings(validateConfig(mergeLayers(below), below))
-
-  const doc = existsSync(file) ? parseDocument(readFileSync(file, "utf8")) : new Document({})
-  if (doc.errors.length) throw new Error(`${file} is not valid YAML: ${doc.errors[0]?.message}`)
-  if (doc.contents === null) doc.contents = doc.createNode({}) as never
-  const setOrInherit = (keys: string[], value: unknown, inheritedValue: unknown) => {
-    if (value !== inheritedValue) doc.setIn(keys, value)
-    else if (doc.hasIn(keys)) doc.deleteIn(keys)
-  }
-  for (const p of PROVIDERS) {
-    for (const t of TIERS) {
-      setOrInherit(["backends", p, "tiers", t], values[p].tiers[t].trim(), inherited[p].tiers[t])
-      setOrInherit(["backends", p, "reasoning", t], values[p].reasoning[t].trim(), inherited[p].reasoning[t])
-    }
-    setOrInherit(["backends", p, "trust_workspace"], values[p].trustWorkspace, inherited[p].trustWorkspace)
-    prune(doc, ["backends", p, "tiers"])
-    prune(doc, ["backends", p, "reasoning"])
-  }
-  prune(doc, ["backends"])
-
-  // Refuse to write anything that would leave the merged config invalid.
-  validateConfig(mergeLayers(all, { file, raw: doc.toJS() ?? {} }), all)
-  mkdirSync(path.dirname(file), { recursive: true })
-  const tmp = `${file}.${process.pid}.tmp`
-  writeFileSync(tmp, String(doc), "utf8")
-  renameSync(tmp, file)
-
+  const { path: file, diff } = editLayer(
+    workspace,
+    scope,
+    (_doc, inheritedConfig, { set }) => {
+      const inherited = toSettings(inheritedConfig)
+      for (const p of PROVIDERS) {
+        for (const t of TIERS) {
+          set(["backends", p, "tiers", t], values[p].tiers[t].trim(), inherited[p].tiers[t])
+          set(["backends", p, "reasoning", t], values[p].reasoning[t].trim(), inherited[p].reasoning[t])
+        }
+        set(["backends", p, "trust_workspace"], values[p].trustWorkspace, inherited[p].trustWorkspace)
+      }
+    },
+    { preview: opts.preview, what: "Models" },
+  )
   const snapshot = readSettings(workspace)
   const shadowed: string[] = []
-  for (const p of PROVIDERS) {
-    for (const t of TIERS) {
-      if (snapshot.values[p].tiers[t] !== values[p].tiers[t].trim()) shadowed.push(`${p} ${t} model`)
-      if (snapshot.values[p].reasoning[t] !== values[p].reasoning[t].trim()) shadowed.push(`${p} ${t} reasoning`)
+  if (!opts.preview)
+    for (const p of PROVIDERS) {
+      for (const t of TIERS) {
+        if (snapshot.values[p].tiers[t] !== values[p].tiers[t].trim()) shadowed.push(`${p} ${t} model`)
+        if (snapshot.values[p].reasoning[t] !== values[p].reasoning[t].trim()) shadowed.push(`${p} ${t} reasoning`)
+      }
+      if (snapshot.values[p].trustWorkspace !== values[p].trustWorkspace) shadowed.push(`${p} trust`)
     }
-    if (snapshot.values[p].trustWorkspace !== values[p].trustWorkspace) shadowed.push(`${p} trust`)
-  }
-  return { path: file, shadowed, snapshot }
-}
-
-export function layerRank(file: string, workspace: string): number {
-  if (file === projectConfigPath(workspace)) return 2
-  if (file === userConfigPath()) return 1
-  return 0
+  return { path: file, shadowed, snapshot, diff }
 }
 
 const optionsCache = new Map<string, Promise<BackendOptions>>()

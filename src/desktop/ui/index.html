@@ -199,6 +199,10 @@
       <header class="settings-head">
         <h2 id="settings-title">Settings</h2>
         <span id="settings-workspace" class="mono muted settings-where"></span>
+        <div class="settings-search">
+          <input id="settings-search" class="field-input" type="search" role="combobox" aria-expanded="false" aria-controls="settings-search-results" aria-autocomplete="list" placeholder="Search settings" aria-label="Search settings" autocomplete="off" />
+          <div id="settings-search-results" class="settings-search-results" role="listbox" aria-label="Matching settings" hidden></div>
+        </div>
         <button type="button" class="icon-btn" id="settings-close" title="Close (Escape)" aria-label="Close settings">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
         </button>
@@ -212,7 +216,12 @@
           <button id="stab-advanced" type="button" role="tab" class="settings-tab" data-tab="advanced" aria-controls="spanel-advanced" aria-selected="false" tabindex="-1">Advanced</button>
           <button id="stab-limits" type="button" role="tab" class="settings-tab" data-tab="limits" aria-controls="spanel-limits" aria-selected="false" tabindex="-1">Limits</button>
           <button id="stab-appearance" type="button" role="tab" class="settings-tab" data-tab="appearance" aria-controls="spanel-appearance" aria-selected="false" tabindex="-1">Appearance</button>
+          <button id="stab-notifications" type="button" role="tab" class="settings-tab" data-tab="notifications" aria-controls="spanel-notifications" aria-selected="false" tabindex="-1">Notifications</button>
+          <button id="stab-keys" type="button" role="tab" class="settings-tab" data-tab="keys" aria-controls="spanel-keys" aria-selected="false" tabindex="-1">Keys</button>
           <button id="stab-templates" type="button" role="tab" class="settings-tab" data-tab="templates" aria-controls="spanel-templates" aria-selected="false" tabindex="-1">Templates</button>
+          <button id="stab-doctor" type="button" role="tab" class="settings-tab" data-tab="doctor" aria-controls="spanel-doctor" aria-selected="false" tabindex="-1">Doctor</button>
+          <button id="stab-history" type="button" role="tab" class="settings-tab" data-tab="history" aria-controls="spanel-history" aria-selected="false" tabindex="-1">History</button>
+          <button id="stab-data" type="button" role="tab" class="settings-tab" data-tab="data" aria-controls="spanel-data" aria-selected="false" tabindex="-1">Data</button>
           <button id="stab-about" type="button" role="tab" class="settings-tab" data-tab="about" aria-controls="spanel-about" aria-selected="false" tabindex="-1">About</button>
         </div>
         <div class="settings-panels">
@@ -227,7 +236,7 @@
             <label><input type="radio" name="scope" value="user" /> All projects <span class="mono muted" id="scope-user"></span></label>
           </fieldset>
           <div id="settings-body" class="settings-body"><p class="muted">Loading models…</p></div>
-          <footer class="settings-foot">
+          <footer id="settings-foot-bar" class="settings-foot">
             <span id="settings-status" class="muted" role="status">Changes apply from the next request.</span>
             <button type="button" class="ghost" id="settings-cancel">Reload</button>
             <button type="submit" class="primary" id="settings-save" disabled>Save models</button>
@@ -239,7 +248,6 @@
         <section id="spanel-limits" class="settings-panel" role="tabpanel" aria-labelledby="stab-limits" hidden></section>
         <section id="spanel-appearance" class="settings-panel appearance-panel" role="tabpanel" aria-labelledby="stab-appearance" hidden>
           <label class="switch-row"><input id="glass-toggle" type="checkbox" /> <span>Glass</span></label>
-              <label class="switch-row"><input id="sound-toggle" type="checkbox" /> <span>Sound when a turn ends</span></label>
               <fieldset class="swatch-set">
                 <legend class="field-label">Backdrop</legend>
                 <div id="backdrop-swatches" class="swatches"></div>
@@ -251,10 +259,36 @@
               <label class="field"><span>Panel tint</span><input id="glass-dim" type="range" min="20" max="90" step="5" /></label>
               <input id="backdrop-file" type="file" accept="image/*" hidden />
         </section>
+        <section id="spanel-notifications" class="settings-panel" role="tabpanel" aria-labelledby="stab-notifications" hidden>
+          <h3 class="panel-title">Notifications</h3>
+          <p class="hint">What tells you, and how. Notifications show only while the window is in the background; sounds play either way.</p>
+          <label class="switch-row"><input id="sound-toggle" type="checkbox" /> <span>Play sounds</span></label>
+          <div id="notify-table"></div>
+        </section>
+        <section id="spanel-keys" class="settings-panel" role="tabpanel" aria-labelledby="stab-keys" hidden></section>
         <section id="spanel-templates" class="settings-panel" role="tabpanel" aria-labelledby="stab-templates" hidden></section>
+        <section id="spanel-doctor" class="settings-panel" role="tabpanel" aria-labelledby="stab-doctor" hidden></section>
+        <section id="spanel-history" class="settings-panel" role="tabpanel" aria-labelledby="stab-history" hidden></section>
+        <section id="spanel-data" class="settings-panel" role="tabpanel" aria-labelledby="stab-data" hidden></section>
         <section id="spanel-about" class="settings-panel" role="tabpanel" aria-labelledby="stab-about" hidden></section>
         </div>
       </div>
+    </dialog>
+
+    <dialog id="welcome" class="settings welcome" aria-labelledby="welcome-title">
+      <header class="settings-head">
+        <h2 id="welcome-title">Welcome to agent-router</h2>
+        <button type="button" class="icon-btn" id="welcome-close" title="Close (Escape)" aria-label="Close">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
+      </header>
+      <ol id="welcome-steps" class="welcome-steps" aria-label="Steps"></ol>
+      <div id="welcome-body" class="welcome-body"></div>
+      <footer class="settings-foot">
+        <span id="welcome-note" class="muted"></span>
+        <button id="welcome-back" type="button" class="ghost small">Back</button>
+        <button id="welcome-next" type="button" class="primary small">Next</button>
+      </footer>
     </dialog>
 
     <dialog id="palette" class="palette" aria-label="Search chats and commands">

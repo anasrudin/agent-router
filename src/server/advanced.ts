@@ -1,6 +1,6 @@
 import { loadConfig } from "../config/load"
 import { PROVIDERS, type RoutingConfig } from "../config/schema"
-import { editLayer } from "./layers"
+import { editLayer, type LayerResult, type LayerWrite } from "./layers"
 import type { AdvancedField, SettingsScope } from "./protocol"
 
 type Spec = Omit<AdvancedField, "value">
@@ -168,12 +168,18 @@ export function coerce(f: Spec, value: unknown): unknown {
   }
 }
 
-export function saveAdvanced(workspace: string, scope: SettingsScope, values: Record<string, unknown>): { path: string } {
-  return editLayer(workspace, scope, (_doc, inherited: RoutingConfig, { set }) => {
-    for (const [key, raw] of Object.entries(values)) {
-      const f = ADVANCED.find((x) => x.key === key)
-      if (!f) throw new Error(`Unknown setting ${key}`)
-      set(key.split("."), coerce(f, raw), at(inherited, key))
-    }
-  })
+export function saveAdvanced(workspace: string, scope: SettingsScope, values: Record<string, unknown>, opts: LayerWrite = {}): LayerResult {
+  const count = Object.keys(values).length
+  return editLayer(
+    workspace,
+    scope,
+    (_doc, inherited: RoutingConfig, { set }) => {
+      for (const [key, raw] of Object.entries(values)) {
+        const f = ADVANCED.find((x) => x.key === key)
+        if (!f) throw new Error(`Unknown setting ${key}`)
+        set(key.split("."), coerce(f, raw), at(inherited, key))
+      }
+    },
+    { ...opts, what: `Advanced: ${count} setting${count === 1 ? "" : "s"}` },
+  )
 }

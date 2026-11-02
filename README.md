@@ -61,7 +61,7 @@ The layout follows [Ghostex](https://github.com/maddada/Ghostex) (MIT): workspac
 
 ![Requests queued behind a running turn, with Edit, Play (run now) and drag handles, and the working strip above them](docs/screenshots/queue-strip.png)
 
-**While Conductor works**, a strip above the composer says what it is doing and what each running thread is on; a thread opens on click. Requests you send meanwhile **queue**: drag them (or Alt+arrow keys) to reorder, Edit takes one back into the composer, and Play stops the turn and runs it now. A long chat shows its last 20 turns with a button for the earlier ones, and a **minimap** rail beside it marks each request and anything that needs you. `/btw <question>` asks a fast model a side question with the chat as context, without interrupting Conductor; **Catch me up** (the list button in the composer) summarizes where the chat stands. Both answers stay with the chat. Replies have a Read aloud button where the system has a voice, and Appearance can play a sound when a turn ends. A chat or a thread's report saves as Markdown from its menu.
+**While Conductor works**, a strip above the composer says what it is doing and what each running thread is on; a thread opens on click. Requests you send meanwhile **queue**: drag them (or Alt+arrow keys) to reorder, Edit takes one back into the composer, and Play stops the turn and runs it now. A long chat shows its last 20 turns with a button for the earlier ones, and a **minimap** rail beside it marks each request and anything that needs you. `/btw <question>` asks a fast model a side question with the chat as context, without interrupting Conductor; **Catch me up** (the list button in the composer) summarizes where the chat stands. Both answers stay with the chat. Replies have a Read aloud button where the system has a voice, and Settings → Notifications can play a sound when a turn ends or something needs you. A chat or a thread's report saves as Markdown from its menu.
 
 ![PLAN.md rendered in the side panel: a step marked Needs tests waits above the composer as a note on PLAN.md:7-8, and the mark toolbar is open on another selection](docs/screenshots/notes.png)
 
@@ -95,7 +95,25 @@ The layout follows [Ghostex](https://github.com/maddada/Ghostex) (MIT): workspac
 |---|---|
 | ![A thread re-run on Claude, its Compare tab showing the original Gemini report above the re-run](docs/screenshots/compare.png) | ![Routing: each task's first backend, the ones after it and its tier, with a dry run explaining where "find where greet is exported" would go](docs/screenshots/routing.png) |
 
-**Settings** (the gear, or **Ctrl/Cmd+,**) holds everything in one place, on tabs: General (default profile and permission), Models, Routing, Profiles, Advanced, Limits, Appearance, Templates and About (version, where each file lives, the keys). **Advanced** edits what used to need `routing.yaml` by hand: escalation, delegate limits and watchdogs, never-send paths, project checks and worktree setup, telemetry and LSP, and each backend's command and extra arguments. Each section saves to this project's `.harness/routing.yaml` or to yours for every project; only what you change is written (setting a value back to the inherited one removes it), comments in the file are kept, and the whole config is checked before anything is saved.
+**Settings** (the gear, or **Ctrl/Cmd+,**) holds everything in one place, on tabs: General (default profile and permission), Models, Routing, Profiles, Advanced, Limits, Appearance, Notifications, Keys, Templates, Doctor, History, Data and About (version, where each file lives, the keys). A search box at the top finds any setting, down to each Advanced field, and takes you to it. **Advanced** edits what used to need `routing.yaml` by hand: escalation, delegate limits and watchdogs, never-send paths (with a box to test a path against them), project checks and worktree setup, telemetry and LSP, and each backend's command and extra arguments. Each section saves to this project's `.harness/routing.yaml` or to yours for every project; only what you change is written (setting a value back to the inherited one removes it), comments in the file are kept, and the whole config is checked before anything is saved.
+
+**Every save shows its diff first**: the lines it adds and removes in the file, with Write it or Cancel (Models, Routing, Profiles, Advanced and imports alike). **History** lists every change the app wrote to a config file, newest first, each with its diff and **Go back to before this** (which is itself recorded, so it can be undone too); the history sits beside your own `routing.yaml`.
+
+| | |
+|---|---|
+| ![A change in Advanced previewed before it is written: two added lines under limits in the project's routing.yaml, with Write it and Cancel](docs/screenshots/settings-preview.png) | ![Settings, History tab: the change that set two delegate limits, opened to show its diff, with Go back to before this](docs/screenshots/settings-history.png) |
+
+**Profiles** shows what each one has cost per request so far (each turn's spend counts against the profile it ran with), copies any profile as YAML to share, and imports profiles pasted as YAML (checked and previewed like any change). A chat remembers the profile its last request ran with, and opening it picks that profile again. **Doctor** is `agent-router doctor` in the app: each CLI, its command and version, the update command to copy, anything in the settings that will not work as written with a button to the tab that fixes it, and on request the newest version of each CLI from the npm registry (nothing is installed for you). The first time the app opens without a folder, **Welcome** walks through the three CLIs, a profile and a folder (the palette's "Welcome and setup" opens it again).
+
+| | |
+|---|---|
+| ![Settings, Doctor tab with the real CLIs: Claude 2.1.316, Gemini 0.66.0 and Codex 0.165.0 with 0.166.0 available, update commands, and one note about the adapter's tested version](docs/screenshots/settings-doctor.png) | ![The Welcome dialog's first step: Claude, Gemini and Codex found with their versions](docs/screenshots/welcome.png) |
+
+**Notifications** chooses, for each moment (an approval, Conductor's questions, a thread that needs you, a request done or failed), whether it shows a notification and whether it plays a sound. **Keys** changes any app shortcut: press the new keys, and a combo already taken, plain typing, or one the webview needs (copy, paste and the like) is refused. **Data** shows the app's data folder and its size, exports every chat (or this folder's) as Markdown files, and archives or deletes chats not used for a number of days (pinned ones stay).
+
+| | |
+|---|---|
+| ![Settings, Keys tab: each shortcut with Change, and Reset all](docs/screenshots/settings-keys.png) | ![Settings, Data tab: the data folder, its size, Markdown export and clearing out old chats](docs/screenshots/settings-data.png) |
 
 | | |
 |---|---|
@@ -115,7 +133,7 @@ The layout follows [Ghostex](https://github.com/maddada/Ghostex) (MIT): workspac
 
 ![A thread's context menu in the sidebar after a real run: open it, ask Conductor about it, copy or save its report, run it again on another backend](docs/screenshots/sidebar-menu.png)
 
-Hovering a sidebar row (or tabbing to it) swaps its age for a More button; the open chat's row also gets Stop while Conductor works. Right-click, the menu key or Shift+F10 open the same actions as a menu. **Ctrl/Cmd+K** searches every chat (titles and messages; filter to this folder or pinned chats), this chat's threads, scheduled requests and the commands; **Ctrl/Cmd+F** finds text in the chat (Enter and Shift+Enter step through matches, folded work opens to show them); Ctrl/Cmd+B hides the sidebar, Ctrl/Cmd+N starts a new chat, Escape closes a menu or the side panel. Status is a small dot with its word beside it (orange working, blue done, pink needs you, red failed), every icon-only control has a tooltip and a label, and the chat, sidebar and side panel draw thin overlay scrollbars. A thread that needs you, a question, an approval and a finished request notify you when the window is in the background. Inter, DM Sans (chat prose) and JetBrains Mono ship with the app. Light and dark follow the system.
+Hovering a sidebar row (or tabbing to it) swaps its age for a More button; the open chat's row also gets Stop while Conductor works. Right-click, the menu key or Shift+F10 open the same actions as a menu. **Ctrl/Cmd+K** searches every chat (titles and messages; filter to this folder or pinned chats), this chat's threads, scheduled requests and the commands; **Ctrl/Cmd+F** finds text in the chat (Enter and Shift+Enter step through matches, folded work opens to show them); Ctrl/Cmd+B hides the sidebar, Ctrl/Cmd+N starts a new chat (these are the defaults; Settings → Keys changes them), Escape closes a menu or the side panel. Status is a small dot with its word beside it (orange working, blue done, pink needs you, red failed), every icon-only control has a tooltip and a label, and the chat, sidebar and side panel draw thin overlay scrollbars. A thread that needs you, a question, an approval and a finished request notify you when the window is in the background (Settings → Notifications chooses which, and which play a sound). Inter, DM Sans (chat prose) and JetBrains Mono ship with the app. Light and dark follow the system.
 
 | | |
 |---|---|
@@ -159,7 +177,7 @@ Choose them in the desktop app under **Models**, which saves to this project or 
 | Gemini | The Gemini API's model list when `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set, plus the catalog; otherwise the catalog |
 | Claude | The catalog (Claude Code has no list command; `haiku`, `sonnet`, `opus` and `fable` always mean the latest) |
 
-`agent-router models` prints every list with the tier each model is set to and flags problems: a model your account does not offer, an effort the model does not accept, a tier left on the CLI default. `doctor` reports the same problems. Settings → Models says where each list came from and which tier the catalog suggests for each model.
+`agent-router models` prints every list with the tier each model is set to and flags problems: a model your account does not offer, an effort the model does not accept, a tier left on the CLI default. `doctor` (and Settings → Doctor) reports the same problems. Settings → Models says where each list came from and which tier the catalog suggests for each model.
 
 Gemini only runs headless in folders it trusts. Trust the folder in Gemini once, or tick the trust checkbox under Gemini in **Models** (`trust_workspace: true`).
 

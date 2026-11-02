@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -19,6 +19,9 @@ function setup() {
   const at = (root: string, f: string) => path.join(root, f)
   return { dir, wt, git, at, read: (root: string, f: string) => readFileSync(at(root, f), "utf8") }
 }
+
+// Each test makes real git repositories and worktrees; Windows runners can take longer than bun's 5 s.
+setDefaultTimeout(30_000)
 
 describe("worktree merge", () => {
   test("preview, apply as uncommitted changes, then remove the worktree and its branch", () => {

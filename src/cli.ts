@@ -10,6 +10,7 @@ import { loadConfig } from "./config/load"
 import { isPlaceholderModel, PROVIDERS, type ProviderId, ProviderId as ProviderSchema, TIERS } from "./config/schema"
 import { delegate } from "./coordinator/delegate"
 import { Brief } from "./coordinator/protocol"
+import { runDoctor } from "./doctor"
 import { formatResult, type Pins, serveStdio } from "./mcp/server"
 import { guessTaskClass, type Overrides, parseOverrides, ULTRAWORK_NOTE } from "./router/classify"
 import { Bridge } from "./server/bridge"
@@ -17,7 +18,6 @@ import { startServer } from "./server/serve"
 
 const VERSION = "0.1.0"
 
-import { describePlan } from "./config/plans"
 import { ledgerContext, newLedgerPath, readLedger } from "./coordinator/ledger"
 import { reportGate } from "./hooks/report-gate"
 import { serveLspStdio } from "./lsp/mcp"
@@ -117,52 +117,24 @@ program
   .addOption(workspaceOption())
   .addOption(planOption())
   .action(async (opts: { workspace: string; plan?: string }) => {
-    const workspace = path.resolve(opts.workspace)
-    const { sources } = loadConfig(workspace, undefined, undefined, opts.plan)
-    process.stdout.write(`config: ${sources.join(" + ")} — valid\n`)
-    const session = await createSession({ workspace, permission: "default", selfProvider: "claude", plan: opts.plan })
-    const plan = session.config.active_plan
-    process.stdout.write(
-      plan
-        ? `plan: ${describePlan(plan)}; Conductor runs on ${conductorTier(session).tier}\n`
-        : "plan: none set (`plan:` in routing.yaml or --plan claude-heavy|chatgpt-heavy|split)\n",
-    )
-    const snap = session.health.snapshot()
-    let ok = true
-    for (const p of PROVIDERS) {
-      const s = snap[p]
-      const detection = await session.backends[p].detect()
-      const placeholders = TIERS.filter((t) => isPlaceholderModel(session.config.backends[p].tiers[t]))
-      const mark = s.installed ? "ok  " : "MISS"
-      process.stdout.write(`${mark} ${p.padEnd(7)} ${session.config.backends[p].executable}: ${s.installed ? s.version : s.reason}\n`)
-      if (s.installed && detection.testedVersion && !detection.version?.includes(detection.testedVersion)) {
-        process.stdout.write(`     warn: adapter tested against ${detection.testedVersion}; installed ${detection.version}\n`)
-      }
-      if (s.installed && !detection.testedVersion)
-        process.stdout.write("     warn: no recorded fixtures for this CLI yet; adapter flags are unverified\n")
-      if (s.installed) {
-        const options = await session.backends[p].options()
-        const cfg = session.config.backends[p]
-        for (const c of checkTiers(cfg.tiers, cfg.reasoning, options, options.authoritative ?? false)) {
-          process.stdout.write(`     warn: tiers.${c.tier} ${c.model}: ${c.problem}${c.suggestion ? ` (try ${c.suggestion})` : ""}\n`)
-        }
-      } else if (placeholders.length) {
-        process.stdout.write(`     warn: placeholder model for tiers ${placeholders.join(", ")} — CLI default model runs\n`)
-      }
-      if (p === "claude" && !s.installed) ok = false
+    const report = await runDoctor(path.resolve(opts.workspace), opts.plan)
+    const out = (line: string) => process.stdout.write(`${line}\n`)
+    out(`config: ${report.sources.join(" + ")} — valid`)
+    out(report.plan ? `plan: ${report.plan}` : "plan: none set (`plan:` in routing.yaml or --plan claude-heavy|chatgpt-heavy|split)")
+    for (const b of report.backends) {
+      out(`${b.installed ? "ok  " : "MISS"} ${b.provider.padEnd(7)} ${b.executable}: ${b.installed ? b.version : b.reason}`)
+      for (const f of report.findings.filter((x) => x.provider === b.provider)) out(`     ${f.level}: ${f.text}`)
     }
-    const prompt = conductorSystemPrompt(session, conductorModel(session))
-    const profiles = Object.entries(session.config.profiles)
-    process.stdout.write(
-      profiles.length
-        ? `profiles: ${profiles.map(([n, p]) => `${n}${n === session.config.default_profile ? " (default)" : ""} — Conductor on ${p.conductor.tier}`).join("; ")}\n`
-        : "profiles: none defined\n",
+    out(
+      report.profiles.length
+        ? `profiles: ${report.profiles.map((p) => `${p.name}${p.isDefault ? " (default)" : ""} — Conductor on ${p.tier}`).join("; ")}`
+        : "profiles: none defined",
     )
-    process.stdout.write(
-      prompt.missing.length ? `warn: unfilled prompt variables ${prompt.missing.join(", ")}\n` : "prompts: all variables filled\n",
-    )
-    if (!ok) {
-      process.stdout.write("Conductor needs the claude backend.\n")
+    const general = report.findings.filter((f) => !f.provider)
+    if (!general.length) out("prompts: all variables filled")
+    for (const f of general) out(`${f.level}: ${f.text}`)
+    if (!report.ok) {
+      out("Conductor needs the claude backend.")
       process.exitCode = 1
     }
   })

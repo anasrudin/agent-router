@@ -1,8 +1,8 @@
-import { DEFAULT_CONFIG_PATH, loadConfig, mergeLayers, validateConfig } from "../config/load"
+import { parse, stringify } from "yaml"
+import { configLayers, DEFAULT_CONFIG_PATH, loadConfig, mergeLayers, validateConfig } from "../config/load"
 import { PROVIDERS, type ProviderId, TIERS, type Tier } from "../config/schema"
-import { editLayer } from "./layers"
+import { editLayer, type LayerResult, type LayerWrite, prune } from "./layers"
 import type { ProfileRow, SettingsScope } from "./protocol"
-import { prune } from "./settings"
 
 export const PROFILE_NAME = /^[a-z][a-z0-9-]{0,30}$/
 
@@ -32,48 +32,110 @@ export function readProfiles(workspace: string): { profiles: ProfileRow[]; defau
 }
 
 /** Write a profile's fields to one layer: only what differs from the layers below; other overlay keys are kept. */
-export function saveProfile(workspace: string, scope: SettingsScope, row: ProfileRow): { path: string } {
+export function saveProfile(workspace: string, scope: SettingsScope, row: ProfileRow, opts: LayerWrite = {}): LayerResult {
   if (!PROFILE_NAME.test(row.name)) throw new Error("A profile name is lowercase letters, digits and dashes, starting with a letter.")
   if (!row.label.trim()) throw new Error("A profile needs a label.")
   if (!TIERS.includes(row.tier)) throw new Error(`"${row.tier}" is not a tier`)
-  return editLayer(workspace, scope, (_doc, inherited, { set }) => {
-    const was = inherited.profiles[row.name]
-    const base = ["profiles", row.name]
-    set([...base, "label"], row.label.trim(), was?.label)
-    set([...base, "description"], row.description.trim(), was?.description)
-    set([...base, "conductor", "tier"], row.tier, was?.conductor.tier)
-    set([...base, "conductor", "reasoning"], row.reasoning.trim() || undefined, was?.conductor.reasoning)
-    set([...base, "guidance"], row.guidance, was?.guidance ?? "")
-    const classes = new Set([...Object.keys(row.routeTiers), ...Object.keys(row.routePrimary), ...Object.keys(was?.overlay.routes ?? {})])
-    for (const c of classes) {
-      if (!inherited.routes[c]) throw new Error(`Unknown task class ${c}`)
-      const old = was?.overlay.routes?.[c]
-      const tier = row.routeTiers[c]
-      if (tier && !TIERS.includes(tier)) throw new Error(`${c}: "${tier}" is not a tier`)
-      const floor = inherited.routes[c]?.min_tier as Tier
-      if (tier && TIERS.indexOf(tier) < TIERS.indexOf(floor)) throw new Error(`${c}: a profile cannot go below the ${floor} floor`)
-      const primary = row.routePrimary[c]
-      if (primary && !PROVIDERS.includes(primary)) throw new Error(`${c}: "${primary}" is not a backend`)
-      set([...base, "overlay", "routes", c, "tier"], tier, old?.tier)
-      set([...base, "overlay", "routes", c, "primary"], primary, old?.primary)
-    }
-  })
+  return editLayer(
+    workspace,
+    scope,
+    (_doc, inherited, { set }) => {
+      const was = inherited.profiles[row.name]
+      const base = ["profiles", row.name]
+      set([...base, "label"], row.label.trim(), was?.label)
+      set([...base, "description"], row.description.trim(), was?.description)
+      set([...base, "conductor", "tier"], row.tier, was?.conductor.tier)
+      set([...base, "conductor", "reasoning"], row.reasoning.trim() || undefined, was?.conductor.reasoning)
+      set([...base, "guidance"], row.guidance, was?.guidance ?? "")
+      const classes = new Set([...Object.keys(row.routeTiers), ...Object.keys(row.routePrimary), ...Object.keys(was?.overlay.routes ?? {})])
+      for (const c of classes) {
+        if (!inherited.routes[c]) throw new Error(`Unknown task class ${c}`)
+        const old = was?.overlay.routes?.[c]
+        const tier = row.routeTiers[c]
+        if (tier && !TIERS.includes(tier)) throw new Error(`${c}: "${tier}" is not a tier`)
+        const floor = inherited.routes[c]?.min_tier as Tier
+        if (tier && TIERS.indexOf(tier) < TIERS.indexOf(floor)) throw new Error(`${c}: a profile cannot go below the ${floor} floor`)
+        const primary = row.routePrimary[c]
+        if (primary && !PROVIDERS.includes(primary)) throw new Error(`${c}: "${primary}" is not a backend`)
+        set([...base, "overlay", "routes", c, "tier"], tier, old?.tier)
+        set([...base, "overlay", "routes", c, "primary"], primary, old?.primary)
+      }
+    },
+    { ...opts, what: `Profile ${row.name}` },
+  )
 }
 
 /** Remove a profile you added in this layer. Built-in profiles cannot be deleted, only changed. */
-export function deleteProfile(workspace: string, scope: SettingsScope, name: string): { path: string } {
-  return editLayer(workspace, scope, (doc, inherited) => {
-    if (!doc.hasIn(["profiles", name])) throw new Error(`${name} is not defined in this ${scope === "user" ? "user" : "project"} file.`)
-    doc.deleteIn(["profiles", name])
-    prune(doc, ["profiles"])
-    if (inherited.default_profile === name || doc.getIn(["default_profile"]) === name) doc.deleteIn(["default_profile"])
-  })
+export function deleteProfile(workspace: string, scope: SettingsScope, name: string, opts: LayerWrite = {}): LayerResult {
+  return editLayer(
+    workspace,
+    scope,
+    (doc, inherited) => {
+      if (!doc.hasIn(["profiles", name])) throw new Error(`${name} is not defined in this ${scope === "user" ? "user" : "project"} file.`)
+      doc.deleteIn(["profiles", name])
+      prune(doc, ["profiles"])
+      if (inherited.default_profile === name || doc.getIn(["default_profile"]) === name) doc.deleteIn(["default_profile"])
+    },
+    { ...opts, what: `Deleted profile ${name}` },
+  )
 }
 
-export function setDefaultProfile(workspace: string, scope: SettingsScope, name: string): { path: string } {
-  return editLayer(workspace, scope, (_doc, inherited, { set }) => {
-    const { config } = loadConfig(workspace, null)
-    if (!config.profiles[name]) throw new Error(`No profile named ${name}`)
-    set(["default_profile"], name, inherited.default_profile)
-  })
+export function setDefaultProfile(workspace: string, scope: SettingsScope, name: string, opts: LayerWrite = {}): LayerResult {
+  return editLayer(
+    workspace,
+    scope,
+    (_doc, inherited, { set }) => {
+      const { config } = loadConfig(workspace, null)
+      if (!config.profiles[name]) throw new Error(`No profile named ${name}`)
+      set(["default_profile"], name, inherited.default_profile)
+    },
+    { ...opts, what: `Default profile ${name}` },
+  )
+}
+
+/** Profiles as YAML to share: their raw definitions from every layer (yours and the project's included). */
+export function exportProfiles(workspace: string, names: string[]): string {
+  const raw = (mergeLayers(configLayers(workspace)) ?? {}) as { profiles?: Record<string, unknown> }
+  const picked: Record<string, unknown> = {}
+  for (const n of names) {
+    const p = raw.profiles?.[n]
+    if (!p) throw new Error(`No profile named ${n}`)
+    picked[n] = p
+  }
+  return stringify({ profiles: picked })
+}
+
+/**
+ * Add profiles from shared YAML (`profiles: {name: {...}}`, or the map alone). Each replaces a
+ * profile of that name in this layer; the result is checked like any other change.
+ */
+export function importProfiles(
+  workspace: string,
+  scope: SettingsScope,
+  text: string,
+  opts: LayerWrite = {},
+): LayerResult & { names: string[] } {
+  let parsed: unknown
+  try {
+    parsed = parse(text)
+  } catch (e) {
+    throw new Error(`Not valid YAML: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v)
+  const map = isObject(parsed) && isObject(parsed.profiles) ? parsed.profiles : parsed
+  if (!isObject(map) || !Object.keys(map).length) throw new Error("Paste profiles: a map of names to profiles, or a profiles: key.")
+  const names = Object.keys(map)
+  for (const n of names) {
+    if (!PROFILE_NAME.test(n)) throw new Error(`"${n}" is not a profile name (lowercase letters, digits and dashes).`)
+    if (!isObject(map[n])) throw new Error(`${n} is not a profile.`)
+  }
+  const result = editLayer(
+    workspace,
+    scope,
+    (doc) => {
+      for (const n of names) doc.setIn(["profiles", n], doc.createNode(map[n]))
+    },
+    { ...opts, what: `Imported profile${names.length > 1 ? "s" : ""} ${names.join(", ")}` },
+  )
+  return { ...result, names }
 }

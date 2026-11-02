@@ -9,8 +9,10 @@ import type {
   Card,
   ChatMeta,
   ClientMessage,
+  ConfigEdit,
   DelegationBrief,
   DelegationSummary,
+  DiffLine,
   IdeState,
   ProfileInfo,
   ProfileRow,
@@ -19,12 +21,14 @@ import type {
   RouteRow,
   Schedule,
   ServerMessage,
+  SettingsScope,
   ThreadCheckpoint,
   UsageSummary,
   WireEvent,
   WorktreeList,
   WorktreePreview,
 } from "../../server/protocol"
+import { olderThan, semver } from "../../server/versions"
 import { fileLines, setupAnnotator } from "./annotate"
 import { type Annotation, formatAnnotations, MARK_LABELS } from "./annotations"
 import { setupAppearance } from "./appearance"
@@ -40,6 +44,7 @@ import { parseDrawing, renderDrawing } from "./excalidraw"
 import { type FileContent, linkifyFileRefs, renderFileView } from "./fileview"
 import { setupFind } from "./find"
 import { agentLogoSvg } from "./icons"
+import { bindings, comboOf, conflicts, KEY_ACTIONS, parseOverrides, RESERVED, showCombo, usableCombo } from "./keys"
 import { escapeHtml, renderMarkdown, renderMarkdownBlocks, resultLine } from "./markdown"
 import { setupMinimap } from "./minimap"
 import { notifyIfAway } from "./notify"
@@ -193,9 +198,6 @@ const top = () => state.earlier ?? log
 
 /** Now, or the recorded time of the message being replayed. */
 const now = () => state.replayAt ?? Date.now()
-const notify = (title: string, body: string) => {
-  if (!state.replaying) notifyIfAway(title, body)
-}
 const savedChat = prefs.get("chat")
 
 function el(tag: string, className?: string, html?: string): HTMLElement {
@@ -372,8 +374,18 @@ function showWorkspacePath(dir: string) {
   $("crumb-workspace").title = dir
 }
 
+/** Opening a chat picks the profile it last ran with; a new chat goes back to the menu's last choice. */
+function applyChatProfile(chat: ChatMeta | undefined) {
+  const want = chat?.profile ?? prefs.get("profile")
+  if (!want || ![...profileSelect.options].some((o) => o.value === want) || profileSelect.value === want) return
+  profileSelect.value = want
+  profileSelect.title = profileSelect.selectedOptions[0]?.title ?? ""
+  renderModeSummary()
+}
+
 function renderProfiles(profiles: ProfileInfo[], defaultProfile: string | undefined) {
-  const saved = prefs.get("profile")
+  // An open chat keeps the profile it last ran with; otherwise the menu's last choice.
+  const saved = state.chat?.profile ?? prefs.get("profile")
   profileSelect.replaceChildren()
   for (const p of profiles) {
     const option = new Option(p.name === defaultProfile ? `${p.label} (default)` : p.label, p.name)
@@ -607,11 +619,6 @@ function speakButton(text: () => string): HTMLElement[] {
   return [b]
 }
 
-/** A sound for the moments that want you (Ghostex's sound notifications), when turned on. */
-function sound(kind: "done" | "attention") {
-  if (!state.replaying && prefs.get("sound") === "on") chime(kind)
-}
-
 /**
  * The pinned working strip above the composer (Ghostex's): what Conductor is doing now and each
  * running thread's latest step, in view however far the chat is scrolled. A thread opens on click.
@@ -830,7 +837,7 @@ function conductorEvent(event: WireEvent) {
           }
         } else {
           append(renderQuestionForm(seg.form))
-          notify("agent-router: Conductor has questions", seg.form.title ?? seg.form.questions[0]?.question ?? "")
+          tell("question", "agent-router: Conductor has questions", seg.form.title ?? seg.form.questions[0]?.question ?? "")
         }
       }
       return
@@ -2600,8 +2607,7 @@ function delegationFinished(id: string, summary: DelegationSummary) {
   Object.assign(t, { summary, provider: summary.provider, tokens: summary.tokens.input + summary.tokens.output, finishedAt: now() })
   refreshThread(t)
   if (summary.status === "blocked") {
-    notify("agent-router: a thread needs you", `${taskTitle(t.task)}: ${resultLine(summary.report)}`)
-    sound("attention")
+    tell("blocked", "agent-router: a thread needs you", `${taskTitle(t.task)}: ${resultLine(summary.report)}`)
   }
 }
 
@@ -2665,6 +2671,7 @@ const KEEP_TURNS = 20
 function replayChat(msg: Extract<ServerMessage, { type: "chat.replay" }>) {
   resetView(false)
   state.chat = msg.chat
+  applyChatProfile(msg.chat)
   prefs.set("chat", msg.chat.id)
   if (!samePath(msg.chat.workspace, state.workspace)) setWorkspace(msg.chat.workspace)
   // A long chat shows its last turns; the older ones are drawn folded, behind one button.
@@ -2755,8 +2762,7 @@ function approvalRequest(msg: Extract<ServerMessage, { type: "approval.request" 
   }
   append(card)
   ;(card.querySelector("button") as HTMLButtonElement).focus()
-  notify("agent-router: approval needed", title)
-  sound("attention")
+  tell("approval", "agent-router: approval needed", title)
 }
 
 // ── Server connection ───────────────────────────────────────────────────
@@ -2794,8 +2800,10 @@ function onMessage(msg: ServerMessage) {
       }
       // A scheduled request can start a new chat on its own: clear what was on screen.
       if (!msg.chat && state.chat && !state.running) resetView(true)
+      const switched = state.chat?.id !== msg.chat?.id
       state.chat = msg.chat
       if (msg.chat) prefs.set("chat", msg.chat.id)
+      if (switched) applyChatProfile(msg.chat)
       if (msg.chat && state.runningCard) {
         send({ type: "board.upsert", workspace: state.workspace, card: { id: state.runningCard, column: "doing", chatId: msg.chat.id } })
         state.runningCard = undefined
@@ -2814,11 +2822,14 @@ function onMessage(msg: ServerMessage) {
       // Backend health does not depend on the folder, so show it before one is chosen.
       if (state.workspace) setWorkspace(state.workspace)
       else send({ type: "status", workspace: msg.cwd })
+      // The first run (no folder chosen yet, never welcomed): the CLIs, a profile, a folder.
+      if (!state.workspace && !prefs.get("welcomed")) openWelcome()
       return
     case "status":
       renderBackends(msg.backends)
       renderProfiles(msg.backends.profiles, msg.backends.defaultProfile)
       renderPlans(msg.backends.plans, msg.backends.configuredPlan)
+      if (welcome.open && welcomeStep === 0) renderWelcome()
       return
     case "turn.started": {
       append(userMessage(msg.prompt, now()), top())
@@ -2846,8 +2857,11 @@ function onMessage(msg: ServerMessage) {
       state.turnEl?.querySelector(".status-line")?.remove()
       closeFold()
       if (!msg.ok && msg.error) append(el("div", "error", escapeHtml(msg.error)))
-      notify("agent-router", msg.ok ? "Your request is done." : `Stopped: ${(msg.error ?? "error").slice(0, 160)}`)
-      sound("done")
+      tell(
+        msg.ok ? "done" : "failed",
+        "agent-router",
+        msg.ok ? "Your request is done." : `Stopped: ${(msg.error ?? "error").slice(0, 160)}`,
+      )
       state.turnEl = undefined
       if (state.replaying) return
       // Delegates stop with the turn (Stop, an interrupt, a crash): their threads end here too.
@@ -2910,7 +2924,12 @@ function reportStartupError(error: unknown) {
 
 // ── Controls ────────────────────────────────────────────────────────────
 
-const settings = createSettings(send, () => state.workspace, showBanner)
+const settings = createSettings(
+  send,
+  () => state.workspace,
+  showBanner,
+  (bar, scope, values) => previewChange(bar, scope, { kind: "models", values }),
+)
 
 /** Send a request to Conductor (queued by the server if a turn is running). False if it cannot be sent. */
 function startRequest(prompt: string): boolean {
@@ -3157,6 +3176,9 @@ function paletteItems(): PaletteItem[] {
     { group: "Commands", label: "Catch me up", run: catchUp },
     { group: "Commands", label: "Usage", run: () => void openUsage() },
     { group: "Commands", label: "Routing", run: () => openRouting() },
+    { group: "Commands", label: "Doctor: check the CLIs and settings", run: () => openSettings("doctor") },
+    { group: "Commands", label: "Settings history", run: () => openSettings("history") },
+    { group: "Commands", label: "Welcome and setup", run: () => openWelcome() },
     { group: "Commands", label: "Prompt templates", run: () => openTemplates() },
     { group: "Commands", label: "Project memory", run: () => void openMemory() },
     { group: "Commands", label: "Code: VS Code in the app", run: () => setView("code") },
@@ -3729,6 +3751,7 @@ soundToggle.checked = prefs.get("sound") === "on"
 soundToggle.addEventListener("change", () => {
   prefs.set("sound", soundToggle.checked ? "on" : "off")
   if (soundToggle.checked) chime("done")
+  if (settingsTab() === "notifications") renderNotifications()
 })
 
 /** Messages for the views beside the chat; true when handled. */
@@ -4269,13 +4292,11 @@ async function renderRouting() {
   scope.add(new Option("All projects", "user"))
   const status = el("span", "muted")
   const save = textButton("Save routing", "primary small", async () => {
-    const res = await request({
-      type: "routing.save",
-      requestId: nextRequestId(),
-      workspace: state.workspace,
-      scope: scope.value as "project" | "user",
-      routes: [...edits.values()].map((r) => ({ taskClass: r.taskClass, primary: r.primary, fallback: r.fallback, tier: r.tier })),
-    })
+    const where = scope.value as SettingsScope
+    const routes = [...edits.values()].map((r) => ({ taskClass: r.taskClass, primary: r.primary, fallback: r.fallback, tier: r.tier }))
+    status.textContent = ""
+    if (!(await previewChange(bar, where, { kind: "routing", routes }))) return
+    const res = await request({ type: "routing.save", requestId: nextRequestId(), workspace: state.workspace, scope: where, routes })
     if (res.type !== "routing.saved") return
     status.textContent = res.error ?? `Saved to ${res.path}`
     status.className = res.error ? "error" : "muted"
@@ -4322,8 +4343,24 @@ async function renderRouting() {
 
 // ── Settings: every setting in one place (Ctrl+,) ────────────────────────
 
-type SettingsTab = "general" | "models" | "routing" | "profiles" | "advanced" | "limits" | "appearance" | "templates" | "about"
-const SETTINGS_TABS: SettingsTab[] = ["general", "models", "routing", "profiles", "advanced", "limits", "appearance", "templates", "about"]
+const SETTINGS_TAB_LABEL = {
+  general: "General",
+  models: "Models",
+  routing: "Routing",
+  profiles: "Profiles",
+  advanced: "Advanced",
+  limits: "Limits",
+  appearance: "Appearance",
+  notifications: "Notifications",
+  keys: "Keys",
+  templates: "Templates",
+  doctor: "Doctor",
+  history: "History",
+  data: "Data",
+  about: "About",
+} as const
+type SettingsTab = keyof typeof SETTINGS_TAB_LABEL
+const SETTINGS_TABS = Object.keys(SETTINGS_TAB_LABEL) as SettingsTab[]
 const settingsDialog = $<HTMLDialogElement>("settings")
 let currentSettingsTab: SettingsTab = "general"
 const settingsTab = () => (settingsDialog.open ? currentSettingsTab : undefined)
@@ -4337,7 +4374,7 @@ function beginRender(tab: SettingsTab): () => boolean {
 const panelOf = (tab: SettingsTab) => (tab === "models" ? $("settings-form") : $(`spanel-${tab}`))
 
 function openSettings(tab: SettingsTab = currentSettingsTab) {
-  const needsFolder: SettingsTab[] = ["general", "models", "routing", "profiles", "advanced", "templates"]
+  const needsFolder: SettingsTab[] = ["general", "models", "routing", "profiles", "advanced", "templates", "doctor", "history"]
   const chosen = !state.workspace && needsFolder.includes(tab) ? "appearance" : tab
   const opening = !settingsDialog.open
   if (opening) settingsDialog.showModal()
@@ -4347,6 +4384,8 @@ function openSettings(tab: SettingsTab = currentSettingsTab) {
 }
 
 function selectSettingsTab(tab: SettingsTab, focus = false) {
+  cancelPreviews()
+  capturing = undefined
   currentSettingsTab = tab
   for (const t of SETTINGS_TABS) {
     const b = $(`stab-${t}`)
@@ -4363,6 +4402,11 @@ function selectSettingsTab(tab: SettingsTab, focus = false) {
   else if (tab === "limits") $("spanel-limits").replaceChildren(budgetSection())
   else if (tab === "templates") renderTemplates()
   else if (tab === "about") renderAbout()
+  else if (tab === "doctor") void renderDoctor()
+  else if (tab === "history") void renderHistory()
+  else if (tab === "data") void renderData()
+  else if (tab === "notifications") renderNotifications()
+  else if (tab === "keys") renderKeys()
 }
 
 for (const t of SETTINGS_TABS) {
@@ -4381,6 +4425,12 @@ for (const t of SETTINGS_TABS) {
   })
 }
 $("settings-close").addEventListener("click", () => settingsDialog.close())
+settingsDialog.addEventListener("close", () => {
+  cancelPreviews()
+  capturing = undefined
+})
+// Reload in Models throws away edits, and so any preview of them.
+$("settings-cancel").addEventListener("click", cancelPreviews)
 $("open-settings").addEventListener("click", () => openSettings("general"))
 $("appearance-btn").addEventListener("click", () => openSettings("appearance"))
 
@@ -4420,7 +4470,9 @@ async function renderGeneral() {
   profile.value = reply.defaultProfile ?? reply.profiles[0]?.name ?? ""
   const about = el("small", "muted settings-note")
   const describe = () => {
-    about.textContent = reply.profiles.find((p) => p.name === profile.value)?.description ?? ""
+    const c = reply.costs?.[profile.value]
+    const desc = reply.profiles.find((p) => p.name === profile.value)?.description ?? ""
+    about.textContent = c?.turns ? `${desc} About ${money(c.usd / c.turns)} a request so far (${c.turns}).` : desc
   }
   describe()
   profile.addEventListener("change", describe)
@@ -4464,6 +4516,38 @@ async function renderGeneral() {
   body.append(form)
 }
 
+/** Paste profiles someone shared (Copy YAML gives them), see what they add, then write them. */
+function importForm(): HTMLElement {
+  const details = document.createElement("details")
+  details.className = "profile-import"
+  const summary = Object.assign(document.createElement("summary"), { textContent: "Import profiles from YAML" })
+  const text = document.createElement("textarea")
+  text.className = "field-text mono"
+  text.rows = 6
+  text.placeholder = "profiles:\n  night-runs:\n    label: Night runs\n    conductor:\n      tier: deep"
+  text.setAttribute("aria-label", "Profiles as YAML")
+  const scope = scopePicker()
+  const status = el("span", "muted")
+  const go = textButton("Import", "primary small", async () => {
+    const where = scope.value as SettingsScope
+    const yaml = text.value
+    status.textContent = ""
+    if (!yaml.trim()) {
+      status.textContent = "Paste profiles first."
+      return
+    }
+    if (!(await previewChange(bar, where, { kind: "profiles.import", text: yaml }))) return
+    const r = await request({ type: "profiles.import", requestId: nextRequestId(), workspace: state.workspace, scope: where, text: yaml })
+    if (savedStatus(status, r, "Imported; saved")) {
+      send({ type: "status", workspace: state.workspace })
+      void renderProfilesTab()
+    }
+  })
+  const bar = buttonRow(Object.assign(el("span", "muted"), { textContent: "Save to" }), scope, go, status)
+  details.append(summary, text, bar)
+  return details
+}
+
 // Profiles: make, change and delete them, with Conductor's tier and per-task overrides.
 async function renderProfilesTab(editing?: ProfileRow) {
   const current = beginRender("profiles")
@@ -4489,7 +4573,21 @@ async function renderProfilesTab(editing?: ProfileRow) {
       Object.assign(el("span", "muted profile-desc"), {
         textContent: `${p.description}${p.name === reply.defaultProfile ? " (default)" : ""}`,
       }),
+    )
+    const c = reply.costs?.[p.name]
+    if (c?.turns) {
+      const cost = Object.assign(el("span", "mono profile-cost"), { textContent: `~${money(c.usd / c.turns)}` })
+      cost.title = `About ${money(c.usd / c.turns)} a request across ${c.turns} request${c.turns === 1 ? "" : "s"} in saved chats (${money(c.usd)} in all).`
+      li.append(cost)
+    }
+    const copy = textButton("Copy YAML", "ghost small", async () => {
+      const r = await request({ type: "profiles.export", requestId: nextRequestId(), workspace: state.workspace, names: [p.name] })
+      if (r.type === "profiles.exported") r.error ? flash(copy, r.error) : copyText(r.text, copy)
+    })
+    copy.setAttribute("aria-label", `Copy ${p.label} as YAML`)
+    li.append(
       textButton("Edit", "ghost small", () => void renderProfilesTab(p)),
+      copy,
     )
     if (!p.builtIn)
       li.append(
@@ -4645,16 +4743,46 @@ async function renderProfilesTab(editing?: ProfileRow) {
   form.append(grid, guidance, table, buttons)
   form.addEventListener("submit", async (e) => {
     e.preventDefault()
-    const r = await request({
-      type: "profile.save",
-      requestId: nextRequestId(),
-      workspace: state.workspace,
-      scope: scope.value as "project" | "user",
-      profile: draft,
-    })
+    const where = scope.value as SettingsScope
+    // What was previewed is what is written, even if the form changes while the preview is open.
+    const profile: ProfileRow = structuredClone(draft)
+    status.textContent = ""
+    if (!(await previewChange(buttons, where, { kind: "profile", profile }))) return
+    const r = await request({ type: "profile.save", requestId: nextRequestId(), workspace: state.workspace, scope: where, profile })
     if (savedStatus(status, r)) send({ type: "status", workspace: state.workspace })
   })
-  body.append(form)
+  body.append(form, importForm())
+}
+
+/** Type a path and see whether never_send keeps it on this machine (as saved; save changes first). */
+function privacyTest(): HTMLElement {
+  const row = el("div", "privacy-test")
+  const input = document.createElement("input")
+  input.className = "field-input"
+  input.placeholder = "A path to try, like config/prod.env"
+  input.setAttribute("aria-label", "Path to test against never-send")
+  const out = el("span", "muted")
+  out.setAttribute("role", "status")
+  const run = async () => {
+    if (!input.value.trim()) return
+    const r = await request({ type: "privacy.test", requestId: nextRequestId(), workspace: state.workspace, path: input.value.trim() })
+    if (r.type !== "privacy.tested") return
+    out.className = r.error ? "error" : r.pattern ? "warn-text" : "muted"
+    out.textContent =
+      r.error ?? (r.pattern ? `Kept on this machine: matches ${r.pattern}` : "May be sent to a backend: no pattern matches.")
+  }
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault()
+      void run()
+    }
+  })
+  row.append(
+    input,
+    textButton("Test", "ghost small", () => void run()),
+    out,
+  )
+  return row
 }
 
 // Advanced: the settings that used to need routing.yaml, grouped, each checked before saving.
@@ -4725,6 +4853,8 @@ async function renderAdvanced() {
     if (f.help) row.append(Object.assign(el("small", "muted"), { textContent: f.help }))
     fieldset?.append(row)
   }
+  const privacy = [...form.querySelectorAll("fieldset")].find((f) => f.querySelector("legend")?.textContent === "Privacy")
+  if (privacy) privacy.append(privacyTest())
   const scope = scopePicker()
   const status = el("span", "muted")
   const save = textButton("Save changes", "primary small", () => form.requestSubmit())
@@ -4739,13 +4869,11 @@ async function renderAdvanced() {
       return
     }
     const count = changed.size
-    const r = await request({
-      type: "advanced.save",
-      requestId: nextRequestId(),
-      workspace: state.workspace,
-      scope: scope.value as "project" | "user",
-      values: Object.fromEntries(changed),
-    })
+    const where = scope.value as SettingsScope
+    const values = Object.fromEntries(changed)
+    status.textContent = ""
+    if (!(await previewChange(buttons, where, { kind: "advanced", values }))) return
+    const r = await request({ type: "advanced.save", requestId: nextRequestId(), workspace: state.workspace, scope: where, values })
     if (savedStatus(status, r, `Saved ${count} setting${count > 1 ? "s" : ""}`)) changed.clear()
   })
   body.append(form)
@@ -4763,14 +4891,9 @@ function renderAbout() {
   ]
   const dl = el("dl", "about-list")
   for (const [k, v] of facts) dl.append(Object.assign(el("dt"), { textContent: k }), Object.assign(el("dd", "mono"), { textContent: v }))
+  const bound = bindings(keyOverrides)
   const keys: [string, string][] = [
-    ["Ctrl+,", "Settings"],
-    ["Ctrl+K", "Search chats and commands"],
-    ["Ctrl+F", "Find in this chat"],
-    ["Ctrl+N", "New chat"],
-    ["Ctrl+B", "Hide the sidebar"],
-    ["Ctrl+P", "Files"],
-    ["Ctrl+`", "Terminal"],
+    ...KEY_ACTIONS.filter((a) => bound[a.id]).map((a): [string, string] => [showCombo(bound[a.id] ?? "", IS_MAC), a.label]),
     ["Escape", "Close a menu or the side panel"],
     ["@ /", "Mention a file; commands and your templates"],
     ["Tab", "Queue a request while Conductor works"],
@@ -4778,7 +4901,7 @@ function renderAbout() {
   const kl = el("dl", "about-list keys")
   for (const [k, v] of keys) {
     const dt = el("dt")
-    for (const part of k.split(/[+ ]/)) dt.append(Object.assign(document.createElement("kbd"), { textContent: part }))
+    for (const part of k.split(/(?<=.)[+ ]/)) dt.append(Object.assign(document.createElement("kbd"), { textContent: part }))
     kl.append(dt, Object.assign(el("dd"), { textContent: v }))
   }
   body.replaceChildren(
@@ -4789,36 +4912,801 @@ function renderAbout() {
   )
 }
 
+// ── Settings: previews before saving, search, Doctor, History, Data, Notifications, Keys ──
+
+const buttonRow = (...nodes: (HTMLElement | string)[]) => {
+  const bar = el("div", "buttons")
+  bar.append(...nodes)
+  return bar
+}
+const money = (n: number) => `$${n > 0 && n < 0.01 ? n.toFixed(4) : n.toFixed(2)}`
+const SCOPE_LABEL: Record<SettingsScope, string> = { project: "This project", user: "All projects" }
+
+/** Previews waiting for Write it or Cancel; closing Settings, another tab or Reload cancels them. */
+const openPreviews = new Set<() => void>()
+function cancelPreviews() {
+  for (const cancel of [...openPreviews]) cancel()
+  for (const box of document.querySelectorAll("#settings .diff-preview")) box.remove()
+}
+
+/** A diff of a config file, one line each: added, removed, kept, or a cut. */
+function diffLines(diff: DiffLine[]): HTMLElement {
+  const pre = el("pre", "config-diff")
+  for (const d of diff) {
+    const line = el("span", d.k === "+" ? "add" : d.k === "-" ? "del" : d.k === "…" ? "gap" : "ctx")
+    line.textContent = d.k === "…" ? "…" : `${d.k} ${d.t}`
+    pre.append(line)
+  }
+  return pre
+}
+
+/**
+ * Show what a save would write, above `bar`, with Write it and Cancel: true when the user writes.
+ * Nothing to change, or a change the config refuses, says so and resolves false.
+ */
+async function previewChange(bar: HTMLElement, scope: SettingsScope, change: ConfigEdit): Promise<boolean> {
+  cancelPreviews()
+  const box = el("div", "diff-preview")
+  box.setAttribute("role", "group")
+  box.setAttribute("aria-label", "Changes to write")
+  bar.before(box)
+  const r = await request({ type: "config.preview", requestId: nextRequestId(), workspace: state.workspace, scope, change })
+  if (r.type !== "config.diff") return false
+  if (r.error) {
+    box.append(Object.assign(el("div", "error"), { textContent: r.error }))
+    return false
+  }
+  if (!r.diff.some((d) => d.k === "+" || d.k === "-")) {
+    box.append(Object.assign(el("p", "muted"), { textContent: "Nothing to change: the file already says this." }))
+    return false
+  }
+  if (!box.isConnected) return false
+  return new Promise<boolean>((resolve) => {
+    const done = (ok: boolean) => {
+      openPreviews.delete(cancel)
+      box.remove()
+      resolve(ok)
+    }
+    const cancel = () => done(false)
+    openPreviews.add(cancel)
+    const write = textButton("Write it", "primary small", () => done(true))
+    box.append(
+      Object.assign(el("p", "diff-preview-title"), { textContent: `This changes ${r.path}:` }),
+      diffLines(r.diff),
+      buttonRow(
+        write,
+        textButton("Cancel", "ghost small", () => done(false)),
+      ),
+    )
+    write.focus()
+  })
+}
+
+/** A button that asks for a second click before it acts, for things that are hard to undo. */
+function confirmButton(label: string, confirm: string, cls: string, run: () => void): HTMLButtonElement {
+  let armed: ReturnType<typeof setTimeout> | undefined
+  const b = textButton(label, cls, () => {
+    if (!armed) {
+      b.textContent = confirm
+      armed = setTimeout(() => {
+        armed = undefined
+        b.textContent = label
+      }, 4000)
+      return
+    }
+    clearTimeout(armed)
+    armed = undefined
+    b.textContent = label
+    run()
+  })
+  return b
+}
+
+// Search: every tab, plus each Advanced setting by name.
+interface SearchEntry {
+  tab: SettingsTab
+  label: string
+  words: string
+  /** An aria-label in the tab to scroll to. */
+  target?: string
+}
+const STATIC_SEARCH: SearchEntry[] = [
+  { tab: "general", label: "Default profile", words: "profile default", target: "Default profile" },
+  { tab: "general", label: "Permission", words: "permission ask approve bypass plan", target: "Default permission" },
+  {
+    tab: "models",
+    label: "Models and reasoning effort per tier",
+    words: "model tier reasoning effort haiku sonnet opus gemini codex test trust",
+  },
+  {
+    tab: "routing",
+    label: "Routing: first backend, the ones after it, tier",
+    words: "route routing backend fallback tier dry run where would it go",
+  },
+  { tab: "profiles", label: "Profiles", words: "profile new edit delete import export share yaml cost estimate" },
+  { tab: "limits", label: "Spend limits per chat and per day", words: "budget limit spend cost dollar day chat" },
+  { tab: "appearance", label: "Glass, backdrop and panel tint", words: "glass blur backdrop picture tint theme appearance" },
+  { tab: "notifications", label: "Notifications and sounds", words: "notification notify sound chime approval done failed question" },
+  { tab: "keys", label: "Keyboard shortcuts", words: "key keys shortcut keyboard binding hotkey" },
+  { tab: "templates", label: "Prompt templates", words: "template prompt command slash arguments" },
+  {
+    tab: "doctor",
+    label: "Doctor: each CLI, its version and problems",
+    words: "doctor health version update install cli claude gemini codex check",
+  },
+  { tab: "history", label: "History: go back to before a settings change", words: "history undo restore revert change back" },
+  { tab: "data", label: "Data: chats on disk, archive, export", words: "data storage disk size archive delete export markdown chats" },
+  { tab: "about", label: "About: version and where files are", words: "about version path file memory" },
+]
+let advancedIndex: SearchEntry[] | undefined
+const searchInput = $<HTMLInputElement>("settings-search")
+const searchResults = $("settings-search-results")
+let searchHits: SearchEntry[] = []
+let searchActive = 0
+
+async function loadSearchIndex() {
+  if (advancedIndex || !state.workspace) return
+  const r = await request({ type: "advanced.get", requestId: nextRequestId(), workspace: state.workspace })
+  if (r.type !== "advanced") return
+  advancedIndex = r.fields.map((f) => ({
+    tab: "advanced",
+    label: `${f.group}: ${f.label}`,
+    words: `${f.key.replace(/[._]/g, " ")} ${f.help ?? ""}`,
+    target: f.label,
+  }))
+  if (searchInput.value) renderSearch()
+}
+
+function renderSearch() {
+  const words = searchInput.value.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  searchHits = words.length
+    ? [...STATIC_SEARCH, ...(advancedIndex ?? [])].filter((e) => {
+        const text = `${e.label} ${e.words}`.toLowerCase()
+        return words.every((w) => text.includes(w))
+      })
+    : []
+  searchHits = searchHits.slice(0, 8)
+  searchActive = Math.min(searchActive, Math.max(0, searchHits.length - 1))
+  searchResults.replaceChildren()
+  searchHits.forEach((hit, i) => {
+    const li = el("div", "settings-search-hit")
+    li.id = `settings-hit-${i}`
+    li.setAttribute("role", "option")
+    li.setAttribute("aria-selected", String(i === searchActive))
+    li.append(
+      Object.assign(el("span"), { textContent: hit.label }),
+      Object.assign(el("span", "muted"), { textContent: SETTINGS_TAB_LABEL[hit.tab] }),
+    )
+    li.addEventListener("mousedown", (e) => {
+      e.preventDefault()
+      goToSetting(hit)
+    })
+    searchResults.append(li)
+  })
+  if (words.length && !searchHits.length)
+    searchResults.append(Object.assign(el("div", "settings-search-none muted"), { textContent: "No setting matches." }))
+  const open = words.length > 0
+  searchResults.hidden = !open
+  searchInput.setAttribute("aria-expanded", String(open))
+  if (searchHits.length) searchInput.setAttribute("aria-activedescendant", `settings-hit-${searchActive}`)
+  else searchInput.removeAttribute("aria-activedescendant")
+}
+
+/** Open the setting's tab and, once it has rendered, bring the setting into view and focus it. */
+function goToSetting(hit: SearchEntry) {
+  searchInput.value = ""
+  renderSearch()
+  openSettings(hit.tab)
+  if (!hit.target) {
+    $(`stab-${hit.tab}`).focus()
+    return
+  }
+  let tries = 0
+  const find = () => {
+    const node = [...panelOf(hit.tab).querySelectorAll<HTMLElement>("[aria-label]")].find(
+      (n) => n.getAttribute("aria-label") === hit.target,
+    )
+    if (!node) {
+      if (++tries < 60) setTimeout(find, 50)
+      return
+    }
+    const row = node.closest<HTMLElement>(".advanced-row, .settings-row") ?? node
+    row.scrollIntoView({ block: "center" })
+    node.focus()
+    row.classList.add("found")
+    setTimeout(() => row.classList.remove("found"), 1600)
+  }
+  find()
+}
+
+searchInput.addEventListener("focus", () => void loadSearchIndex())
+searchInput.addEventListener("input", () => {
+  searchActive = 0
+  renderSearch()
+})
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    if (!searchHits.length) return
+    e.preventDefault()
+    searchActive = (searchActive + (e.key === "ArrowDown" ? 1 : searchHits.length - 1)) % searchHits.length
+    renderSearch()
+  } else if (e.key === "Enter") {
+    const hit = searchHits[searchActive]
+    if (hit) {
+      e.preventDefault()
+      goToSetting(hit)
+    }
+  } else if (e.key === "Escape" && searchInput.value) {
+    // Clear the search first; a second Escape closes Settings.
+    e.preventDefault()
+    searchInput.value = ""
+    renderSearch()
+  }
+})
+searchInput.addEventListener("blur", () => {
+  searchResults.hidden = true
+  searchInput.setAttribute("aria-expanded", "false")
+})
+
+// Doctor: each CLI, its version and how to update it, and what will not work as configured.
+async function renderDoctor() {
+  const current = beginRender("doctor")
+  const body = $("spanel-doctor")
+  const checking = Object.assign(el("p", "muted"), { textContent: "Checking each CLI and the settings…" })
+  body.replaceChildren(
+    ...panelHead("Doctor", "Each CLI, its version and how to update it, and anything in the settings that will not work as written."),
+    checking,
+  )
+  const r = await request({ type: "doctor.run", requestId: nextRequestId(), workspace: state.workspace })
+  if (r.type !== "doctor" || !current()) return
+  checking.remove()
+  if (r.error || !r.report) {
+    body.append(Object.assign(el("div", "error"), { textContent: r.error ?? "The check failed." }))
+    return
+  }
+  const report = r.report
+  const problems = report.findings
+  body.append(
+    Object.assign(el("p", problems.some((f) => f.level === "error") ? "error" : "doctor-summary"), {
+      textContent: problems.length
+        ? `${problems.length} thing${problems.length === 1 ? "" : "s"} to look at.`
+        : "Everything checks out: each CLI answers and every tier names a model it offers.",
+    }),
+  )
+  const table = el("table", "routing-table doctor-table")
+  table.innerHTML = "<thead><tr><th>Backend</th><th>Command</th><th>Installed</th><th>Latest</th><th>Update with</th></tr></thead>"
+  const tb = document.createElement("tbody")
+  const latestCells = new Map<ProviderId, HTMLElement>()
+  for (const b of report.backends) {
+    const tr = document.createElement("tr")
+    const td = (...nodes: (HTMLElement | string)[]) => {
+      const c = document.createElement("td")
+      c.append(...nodes)
+      tr.append(c)
+      return c
+    }
+    td(Object.assign(el("strong"), { textContent: PROVIDER_LABEL[b.provider] }))
+    td(Object.assign(el("span", "mono"), { textContent: b.executable }))
+    td(
+      b.installed
+        ? Object.assign(el("span", "mono"), { textContent: semver(b.version) ?? b.version ?? "yes" })
+        : Object.assign(el("span", "error"), { textContent: b.reason ?? "not found" }),
+    )
+    latestCells.set(b.provider, td(Object.assign(el("span", "muted"), { textContent: "not checked" })))
+    const code = Object.assign(el("code", "update-cmd"), { textContent: b.updateCommand })
+    const copy = textButton("Copy", "ghost small", () => copyText(b.updateCommand, copy))
+    td(code, " ", copy)
+    tr.dataset.installed = semver(b.version) ?? ""
+    tb.append(tr)
+  }
+  table.append(tb)
+  body.append(table)
+  if (problems.length) {
+    const ul = el("ul", "doctor-findings")
+    for (const f of problems) {
+      const li = el("li", f.level)
+      li.append(Object.assign(el("span"), { textContent: f.text }))
+      const tab = f.fix?.tab as SettingsTab | undefined
+      if (tab && SETTINGS_TABS.includes(tab))
+        li.append(
+          " ",
+          textButton(`Open ${SETTINGS_TAB_LABEL[tab]}`, "ghost small", () => selectSettingsTab(tab)),
+        )
+      if (f.fix?.hint) li.append(Object.assign(el("small", "muted finding-hint"), { textContent: f.fix.hint }))
+      ul.append(li)
+    }
+    body.append(ul)
+  }
+  const status = el("span", "muted")
+  const latest = textButton("Check for newer versions", "ghost small", async () => {
+    latest.disabled = true
+    status.textContent = "Asking the npm registry…"
+    const v = await request({ type: "doctor.latest", requestId: nextRequestId() })
+    latest.disabled = false
+    if (v.type !== "doctor.latest") return
+    let older = 0
+    for (const b of report.backends) {
+      const cell = latestCells.get(b.provider)
+      const newest = v.versions[b.provider]
+      const have = semver(b.version)
+      if (!cell) continue
+      if (!newest) cell.replaceChildren(Object.assign(el("span", "muted"), { textContent: "unknown" }))
+      else if (have && olderThan(have, newest)) {
+        older++
+        cell.replaceChildren(Object.assign(el("span", "warn-text"), { textContent: `${newest} available` }))
+      } else cell.replaceChildren(Object.assign(el("span", "mono"), { textContent: newest }))
+    }
+    status.textContent = older
+      ? `${older} CLI${older === 1 ? " has" : "s have"} a newer version. Nothing is installed for you.`
+      : "Checked."
+  })
+  body.append(
+    buttonRow(
+      textButton("Check again", "ghost small", () => void renderDoctor()),
+      latest,
+      status,
+    ),
+    Object.assign(el("p", "muted small-print"), {
+      textContent: `Settings read from ${report.sources.join(", then ")}.${report.plan ? ` Plan: ${report.plan}.` : ""}`,
+    }),
+  )
+}
+
+// History: every change the app wrote to a config file, and going back to before one.
+async function renderHistory() {
+  const current = beginRender("history")
+  const body = $("spanel-history")
+  body.replaceChildren(
+    ...panelHead(
+      "History",
+      "Every change the app wrote to routing.yaml, newest first. Going back puts that whole file as it was before the change, so later changes to the same file go too (and can be undone the same way).",
+    ),
+  )
+  const r = await request({ type: "config.history.get", requestId: nextRequestId(), workspace: state.workspace })
+  if (r.type !== "config.history" || !current()) return
+  if (r.error) {
+    body.append(Object.assign(el("div", "error"), { textContent: r.error }))
+    return
+  }
+  if (!r.items.length) {
+    body.append(Object.assign(el("p", "muted"), { textContent: "No changes yet. Saving anything in Settings adds it here." }))
+    return
+  }
+  const status = el("p", "muted")
+  const ul = el("ul", "history-list")
+  for (const item of r.items) {
+    const li = el("li")
+    const when = Object.assign(el("time", "muted"), { textContent: new Date(item.at).toLocaleString() })
+    when.setAttribute("datetime", new Date(item.at).toISOString())
+    const counts = Object.assign(el("span", "mono history-counts"), { textContent: `+${item.added} −${item.removed}` })
+    counts.setAttribute("aria-label", `${item.added} lines added, ${item.removed} removed`)
+    const head = el("div", "history-head")
+    let shown: HTMLElement | undefined
+    const show = textButton("Show", "ghost small", async () => {
+      if (shown) {
+        shown.remove()
+        shown = undefined
+        show.textContent = "Show"
+        show.setAttribute("aria-expanded", "false")
+        return
+      }
+      const d = await request({ type: "config.change.get", requestId: nextRequestId(), id: item.id })
+      if (d.type !== "config.diff") return
+      shown = d.error ? Object.assign(el("div", "error"), { textContent: d.error }) : diffLines(d.diff)
+      li.append(shown)
+      show.textContent = "Hide"
+      show.setAttribute("aria-expanded", "true")
+    })
+    show.setAttribute("aria-expanded", "false")
+    const back = confirmButton("Go back to before this", "Click again to go back", "ghost small", async () => {
+      const res = await request({ type: "config.restore", requestId: nextRequestId(), workspace: state.workspace, id: item.id })
+      if (savedStatus(status, res, "Went back; saved")) {
+        send({ type: "status", workspace: state.workspace })
+        void renderHistory()
+      }
+    })
+    head.append(
+      Object.assign(el("strong"), { textContent: item.what }),
+      Object.assign(el("span", "muted"), { textContent: SCOPE_LABEL[item.scope] }),
+      counts,
+      when,
+      show,
+      back,
+    )
+    head.title = item.path
+    li.append(head)
+    ul.append(li)
+  }
+  body.append(status, ul)
+}
+
+// Data: the chats on disk, exporting them, and clearing out old ones.
+const bytes = (n: number) =>
+  n < 1024
+    ? `${n} B`
+    : n < 1024 ** 2
+      ? `${(n / 1024).toFixed(1)} KB`
+      : n < 1024 ** 3
+        ? `${(n / 1024 ** 2).toFixed(1)} MB`
+        : `${(n / 1024 ** 3).toFixed(2)} GB`
+
+async function renderData(message?: ServerMessage) {
+  const current = beginRender("data")
+  const body = $("spanel-data")
+  body.replaceChildren(
+    ...panelHead("Data", "Chats, boards and schedules are kept in the app's data folder on this machine; nothing leaves it."),
+  )
+  const r = await request({ type: "data.stats", requestId: nextRequestId() })
+  if (r.type !== "data.stats" || !current()) return
+  if (r.error || !r.stats) {
+    body.append(Object.assign(el("div", "error"), { textContent: r.error ?? "Could not read the data folder." }))
+    return
+  }
+  const s = r.stats
+  const facts: [string, string][] = [
+    ["Folder", s.dir],
+    ["Size", `${bytes(s.bytes)} in all, ${bytes(s.chatBytes)} of it chats`],
+    ["Chats", `${s.chats} in the sidebar${s.archived ? `, ${s.archived} archived` : ""}`],
+    ["Oldest chat", s.oldest ? new Date(s.oldest).toLocaleDateString() : "none"],
+  ]
+  const dl = el("dl", "about-list")
+  for (const [k, v] of facts)
+    dl.append(Object.assign(el("dt"), { textContent: k }), Object.assign(el("dd", k === "Folder" ? "mono" : ""), { textContent: v }))
+  const status = el("p", "muted")
+  status.setAttribute("role", "status")
+  const done = (res: ServerMessage) => {
+    if (res.type !== "data.done") return
+    status.className = res.error ? "error" : "muted"
+    status.replaceChildren(res.error ?? res.message)
+    if (res.path) {
+      const copy = textButton("Copy folder path", "ghost small", () => copyText(res.path as string, copy))
+      status.append(" ", Object.assign(el("span", "mono"), { textContent: res.path }), " ", copy)
+    }
+  }
+  const exportHere = textButton("Export this folder's chats", "ghost small", async () =>
+    done(await request({ type: "data.export", requestId: nextRequestId(), workspace: state.workspace })),
+  )
+  exportHere.disabled = !state.workspace
+  const exportAll = textButton("Export all chats", "ghost small", async () =>
+    done(await request({ type: "data.export", requestId: nextRequestId() })),
+  )
+
+  const days = document.createElement("input")
+  days.type = "number"
+  days.min = "1"
+  days.value = "30"
+  days.className = "field-input days-input"
+  days.setAttribute("aria-label", "Days not used")
+  const mode = document.createElement("select")
+  mode.className = "field-input"
+  mode.setAttribute("aria-label", "What to do with them")
+  mode.add(new Option("Archive them (kept on disk, out of the sidebar)", "archive"))
+  mode.add(new Option("Delete them", "delete"))
+  const clean = confirmButton("Clear out", "Click again to clear out", "ghost small danger", async () => {
+    // Redraw the counts, keeping the result line.
+    void renderData(
+      await request({ type: "data.prune", requestId: nextRequestId(), days: Number(days.value), mode: mode.value as "archive" | "delete" }),
+    )
+  })
+  const cleanRow = el("div", "settings-controls")
+  cleanRow.append("Chats not used for", days, "days, pinned ones kept:", mode, clean)
+  body.append(
+    dl,
+    Object.assign(el("h4"), { textContent: "Export as Markdown" }),
+    Object.assign(el("p", "hint"), {
+      textContent: "Each chat becomes one .md file in a new folder under exports, as Save to Markdown writes it.",
+    }),
+    buttonRow(exportHere, exportAll),
+    Object.assign(el("h4"), { textContent: "Clear out old chats" }),
+    Object.assign(el("p", "hint"), {
+      textContent: `${s.olderThan30} unpinned chat${s.olderThan30 === 1 ? " has" : "s have"} not been used for 30 days.`,
+    }),
+    cleanRow,
+    status,
+  )
+  if (message) done(message)
+}
+
+// Notifications: which moments tell you, by notification and by sound.
+type NotifyKind = "question" | "blocked" | "approval" | "done" | "failed"
+const NOTIFY_KINDS: { kind: NotifyKind; label: string; chime: "done" | "attention" }[] = [
+  { kind: "approval", label: "An approval is needed", chime: "attention" },
+  { kind: "question", label: "Conductor has questions", chime: "attention" },
+  { kind: "blocked", label: "A thread needs you", chime: "attention" },
+  { kind: "done", label: "A request is done", chime: "done" },
+  { kind: "failed", label: "A request stopped with an error", chime: "attention" },
+]
+const wantsNotify = (kind: NotifyKind) => prefs.get(`notify.${kind}`) !== "off"
+const wantsSound = (kind: NotifyKind) => prefs.get("sound") === "on" && prefs.get(`sound.${kind}`) !== "off"
+
+function tell(kind: NotifyKind, title: string, body: string) {
+  if (state.replaying) return
+  if (wantsNotify(kind)) notifyIfAway(title, body)
+  if (wantsSound(kind)) chime(NOTIFY_KINDS.find((k) => k.kind === kind)?.chime ?? "attention")
+}
+
+function renderNotifications() {
+  const table = el("table", "routing-table notify-table")
+  table.innerHTML = "<thead><tr><th>When</th><th>Notification</th><th>Sound</th><th></th></tr></thead>"
+  const tb = document.createElement("tbody")
+  const soundsOn = prefs.get("sound") === "on"
+  for (const k of NOTIFY_KINDS) {
+    const tr = document.createElement("tr")
+    const box = (what: "notify" | "sound", on: boolean, disabled = false) => {
+      const c = document.createElement("td")
+      const i = document.createElement("input")
+      i.type = "checkbox"
+      i.className = "notify-check"
+      i.checked = on
+      i.disabled = disabled
+      i.setAttribute("aria-label", `${what === "notify" ? "Notification" : "Sound"}: ${k.label}`)
+      i.addEventListener("change", () => prefs.set(`${what}.${k.kind}`, i.checked ? "on" : "off"))
+      c.append(i)
+      return c
+    }
+    const tryIt = document.createElement("td")
+    tryIt.append(textButton("Play", "ghost small", () => chime(k.chime)))
+    tr.append(
+      Object.assign(document.createElement("td"), { textContent: k.label }),
+      box("notify", prefs.get(`notify.${k.kind}`) !== "off"),
+      box("sound", prefs.get(`sound.${k.kind}`) !== "off", !soundsOn),
+      tryIt,
+    )
+    tb.append(tr)
+  }
+  table.append(tb)
+  $("notify-table").replaceChildren(table)
+}
+
+// Keys: change any app shortcut; a clash or a key the webview needs is refused.
+let keyOverrides = parseOverrides(prefs.get("keys") ?? undefined)
+let capturing: ((combo: string | undefined) => void) | undefined
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform)
+
+function saveKeys(next: Record<string, string>) {
+  keyOverrides = next
+  if (Object.keys(next).length) prefs.set("keys", JSON.stringify(next))
+  else prefs.remove("keys")
+}
+
+function renderKeys(message?: { text: string; error?: boolean }) {
+  const body = $("spanel-keys")
+  const bound = bindings(keyOverrides)
+  const clash = conflicts(bound)
+  const table = el("table", "routing-table keys-table")
+  table.innerHTML = "<thead><tr><th>Action</th><th>Keys</th><th></th></tr></thead>"
+  const tb = document.createElement("tbody")
+  for (const a of KEY_ACTIONS) {
+    const combo = bound[a.id] ?? ""
+    const tr = document.createElement("tr")
+    const keysCell = document.createElement("td")
+    keysCell.append(Object.assign(el("kbd"), { textContent: showCombo(combo, IS_MAC) }))
+    const others = (clash.get(combo) ?? []).filter((id) => id !== a.id)
+    if (others.length)
+      keysCell.append(
+        Object.assign(el("small", "error"), {
+          textContent: ` also ${others.map((id) => KEY_ACTIONS.find((x) => x.id === id)?.label ?? id).join(", ")}`,
+        }),
+      )
+    const actions = document.createElement("td")
+    const change = textButton("Change", "ghost small", () => {
+      change.textContent = "Press the new keys…"
+      change.setAttribute("aria-live", "polite")
+      capturing = (next) => {
+        capturing = undefined
+        if (!next) return renderKeys()
+        if (!usableCombo(next))
+          return renderKeys({ text: `${showCombo(next, IS_MAC)} is typing, not a shortcut: hold Ctrl, ⌘ or Alt.`, error: true })
+        if (RESERVED.has(next)) return renderKeys({ text: `${showCombo(next, IS_MAC)} is kept for copy, paste and the like.`, error: true })
+        const taken = KEY_ACTIONS.find((x) => x.id !== a.id && bound[x.id] === next)
+        if (taken)
+          return renderKeys({ text: `${showCombo(next, IS_MAC)} already opens ${taken.label}. Change that one first.`, error: true })
+        // A key set back to the shipped one is no longer an override.
+        const { [a.id]: _gone, ...rest } = keyOverrides
+        saveKeys(next === a.key ? rest : { ...rest, [a.id]: next })
+        renderKeys({ text: `${a.label}: ${showCombo(next, IS_MAC)}.` })
+      }
+    })
+    change.setAttribute("aria-label", `Change the keys for ${a.label}`)
+    actions.append(change)
+    if (a.id in keyOverrides)
+      actions.append(
+        " ",
+        textButton("Reset", "ghost small", () => {
+          const taken = KEY_ACTIONS.find((x) => x.id !== a.id && bound[x.id] === a.key)
+          if (taken)
+            return renderKeys({ text: `${showCombo(a.key, IS_MAC)} now opens ${taken.label}. Change that one first.`, error: true })
+          const { [a.id]: _gone, ...rest } = keyOverrides
+          saveKeys(rest)
+          renderKeys({ text: `${a.label}: back to ${showCombo(a.key, IS_MAC)}.` })
+        }),
+      )
+    tr.append(Object.assign(document.createElement("td"), { textContent: a.label }), keysCell, actions)
+    tb.append(tr)
+  }
+  table.append(tb)
+  const status = Object.assign(el("p", message?.error ? "error" : "muted"), { textContent: message?.text ?? "" })
+  status.setAttribute("role", "status")
+  body.replaceChildren(
+    ...panelHead("Keys", "Shortcuts for the whole app, on this machine. Change one, then press the new keys; Escape cancels."),
+    table,
+    status,
+    buttonRow(
+      textButton("Reset all", "ghost small", () => {
+        capturing = undefined
+        saveKeys({})
+        renderKeys({ text: "Every shortcut is back to its default." })
+      }),
+    ),
+    Object.assign(el("p", "hint"), {
+      textContent:
+        "Fixed: Escape closes a menu or the side panel; Tab queues a request while Conductor works; @ mentions a file and / lists commands.",
+    }),
+  )
+}
+
+const KEY_RUN: Record<string, () => void> = {
+  settings: () => openSettings(),
+  palette: () => palette.open(),
+  find: () => {
+    if (!document.querySelector("dialog[open]")) find.open()
+  },
+  "new-chat": () => newChat(),
+  sidebar: () => document.querySelector(".app")?.classList.toggle("no-sidebar"),
+  files: () => togglePanel("files"),
+  terminal: () => dock.toggle(),
+}
+
+// While a shortcut is being changed, the next key press is the new combo, before anything else sees it.
+document.addEventListener(
+  "keydown",
+  (e) => {
+    if (!capturing) return
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.key === "Escape") capturing(undefined)
+    else {
+      const combo = comboOf(e)
+      if (combo) capturing(combo)
+    }
+  },
+  true,
+)
+
+// Welcome: on the first run, the CLIs, a profile and a folder.
+const welcome = $<HTMLDialogElement>("welcome")
+const WELCOME_STEPS = ["Your CLIs", "A profile", "A folder"]
+let welcomeStep = 0
+
+function openWelcome() {
+  welcomeStep = 0
+  if (!welcome.open) welcome.showModal()
+  renderWelcome()
+  $("welcome-next").focus()
+}
+
+function renderWelcome() {
+  const steps = $("welcome-steps")
+  steps.replaceChildren(
+    ...WELCOME_STEPS.map((label, i) => {
+      const li = Object.assign(el("li", i === welcomeStep ? "current" : i < welcomeStep ? "done" : ""), { textContent: label })
+      if (i === welcomeStep) li.setAttribute("aria-current", "step")
+      return li
+    }),
+  )
+  const body = $("welcome-body")
+  body.replaceChildren()
+  if (welcomeStep === 0) {
+    body.append(
+      Object.assign(el("p"), {
+        textContent:
+          "Conductor runs on Claude Code and hands work to Gemini CLI and Codex CLI when they suit it better. Only Claude Code is required.",
+      }),
+    )
+    const health = state.backends?.health
+    if (!health) body.append(Object.assign(el("p", "muted"), { textContent: "Looking for the CLIs…" }))
+    else {
+      const ul = el("ul", "welcome-clis")
+      for (const p of Object.keys(PROVIDER_LABEL) as ProviderId[]) {
+        const h = health[p]
+        const li = el("li", h?.installed ? "ok" : p === "claude" ? "bad" : "missing")
+        li.append(
+          Object.assign(el("strong"), { textContent: PROVIDER_LABEL[p] }),
+          Object.assign(el("span", h?.installed ? "mono" : "muted"), {
+            textContent: h?.installed
+              ? (semver(h.version) ?? h.version ?? "found")
+              : `not found${p === "claude" ? ": required" : ", optional"}`,
+          }),
+        )
+        ul.append(li)
+      }
+      body.append(
+        ul,
+        Object.assign(el("p", "hint"), {
+          textContent:
+            "Sign in to each CLI once in a terminal (run it and follow its login). Settings → Doctor checks them again any time.",
+        }),
+      )
+    }
+  } else if (welcomeStep === 1) {
+    body.append(
+      Object.assign(el("p"), { textContent: "A profile trades cost for depth. You can change it for any request from the mode pill." }),
+    )
+    const group = el("div", "welcome-profiles")
+    group.setAttribute("role", "radiogroup")
+    group.setAttribute("aria-label", "Profile")
+    for (const o of profileSelect.options) {
+      const label = el("label", "welcome-profile")
+      const radio = document.createElement("input")
+      radio.type = "radio"
+      radio.className = "welcome-radio"
+      radio.name = "welcome-profile"
+      radio.value = o.value
+      radio.checked = o.value === profileSelect.value
+      radio.addEventListener("change", () => {
+        profileSelect.value = o.value
+        prefs.set("profile", o.value)
+        renderModeSummary()
+      })
+      label.append(
+        radio,
+        Object.assign(el("strong"), { textContent: (o.textContent ?? o.value).replace(/ \(default\)$/, "") }),
+        Object.assign(el("span", "muted"), { textContent: o.title }),
+      )
+      group.append(label)
+    }
+    body.append(group)
+  } else {
+    body.append(
+      Object.assign(el("p"), { textContent: "Pick the project folder Conductor works in. Each folder keeps its own chats and settings." }),
+      Object.assign(el("p", "mono"), { textContent: state.workspace || "No folder yet." }),
+      buttonRow(
+        textButton(state.workspace ? "Choose another folder…" : "Choose a folder…", "ghost small", async () => {
+          const dir = await open({ directory: true, multiple: false, defaultPath: state.workspace || undefined })
+          if (typeof dir === "string" && !samePath(dir, state.workspace)) newChat(dir)
+          renderWelcome()
+        }),
+      ),
+      Object.assign(el("p", "hint"), {
+        textContent: `Settings: ${showCombo(bindings(keyOverrides).settings ?? "", IS_MAC)}. Search: ${showCombo(bindings(keyOverrides).palette ?? "", IS_MAC)}.`,
+      }),
+    )
+  }
+  $("welcome-back").hidden = welcomeStep === 0
+  $("welcome-next").textContent = welcomeStep === WELCOME_STEPS.length - 1 ? "Done" : "Next"
+  $("welcome-note").textContent = `Step ${welcomeStep + 1} of ${WELCOME_STEPS.length}`
+}
+
+$("welcome-next").addEventListener("click", () => {
+  if (welcomeStep < WELCOME_STEPS.length - 1) {
+    welcomeStep++
+    renderWelcome()
+    $("welcome-next").focus()
+  } else welcome.close()
+})
+$("welcome-back").addEventListener("click", () => {
+  welcomeStep = Math.max(0, welcomeStep - 1)
+  renderWelcome()
+})
+$("welcome-close").addEventListener("click", () => welcome.close())
+welcome.addEventListener("close", () => {
+  prefs.set("welcomed", "1")
+  promptBox.focus()
+})
+
 popover($<HTMLButtonElement>("threads-pill"), $("threads-menu"))
 popover($<HTMLButtonElement>("schedule-btn"), $("schedule-menu"), renderScheduleMenu)
 installTooltips($("tooltip"))
 for (const id of ["log", "threads", "detail-body"]) overlayScrollbar($(id))
 
-// Ghostex's keys: Mod+B the sidebar, Mod+N a new chat, Mod+K search, Mod+F find, Escape closes the side panel.
+// App shortcuts (Settings → Keys can change them); Escape closes the side panel.
 document.addEventListener("keydown", (e) => {
-  const mod = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey
-  const key = e.key.toLowerCase()
-  if (mod && key === "b") {
+  const combo = comboOf(e)
+  const bound = bindings(keyOverrides)
+  const action = combo ? KEY_ACTIONS.find((a) => bound[a.id] === combo) : undefined
+  if (action) {
     e.preventDefault()
-    document.querySelector(".app")?.classList.toggle("no-sidebar")
-  } else if (mod && key === "n") {
-    e.preventDefault()
-    newChat()
-  } else if (mod && key === "k") {
-    e.preventDefault()
-    palette.open()
-  } else if (mod && key === "f" && !document.querySelector("dialog[open]")) {
-    e.preventDefault()
-    find.open()
-  } else if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "`" || e.code === "Backquote")) {
-    e.preventDefault()
-    dock.toggle()
-  } else if (mod && e.key === ",") {
-    e.preventDefault()
-    openSettings()
-  } else if (mod && key === "p") {
-    e.preventDefault()
-    togglePanel("files")
+    KEY_RUN[action.id]?.()
   } else if (e.key === "Escape" && !e.defaultPrevented && (state.selected || state.file) && !document.querySelector("dialog[open]")) {
     closeDetail()
   }

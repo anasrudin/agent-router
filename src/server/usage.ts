@@ -90,3 +90,26 @@ export function checkBudget(limits: BudgetLimits, chatUsd: number, dayUsd: numbe
   }
   return check
 }
+
+/**
+ * What requests cost under each profile, across saved chats: each turn's Conductor and thread
+ * spend counted against the profile it ran with (older turns that did not record one are left out).
+ */
+export function profileCosts(chats: { meta: ChatMeta; events: ChatEvent[] }[]): Record<string, { turns: number; usd: number }> {
+  const out: Record<string, { turns: number; usd: number }> = {}
+  for (const { events } of chats) {
+    let current: { turns: number; usd: number } | undefined
+    for (const { msg } of events) {
+      if (msg.type === "turn.started") {
+        current = undefined
+        if (msg.profile) {
+          current = out[msg.profile] ?? { turns: 0, usd: 0 }
+          out[msg.profile] = current
+          current.turns++
+        }
+      } else if (current && msg.type === "conductor" && msg.event.type === "usage") current.usd += msg.event.costUsd ?? 0
+      else if (current && msg.type === "delegation.finished") current.usd += msg.summary.costUsd
+    }
+  }
+  return out
+}

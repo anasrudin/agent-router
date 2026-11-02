@@ -13,7 +13,13 @@ type Send = (message: ClientMessage) => void
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 
 /** The Models tab of Settings: per backend and tier, which model and reasoning effort to use. */
-export function createSettings(send: Send, workspace: () => string, notify: (message: string) => void) {
+export function createSettings(
+  send: Send,
+  workspace: () => string,
+  notify: (message: string) => void,
+  /** Show what the save would write and wait for the user's go-ahead. */
+  confirm: (bar: HTMLElement, scope: SettingsScope, values: SettingsValues) => Promise<boolean>,
+) {
   const dialog = $<HTMLDialogElement>("settings")
   const body = $<HTMLDivElement>("settings-body")
   const status = $<HTMLSpanElement>("settings-status")
@@ -211,12 +217,19 @@ export function createSettings(send: Send, workspace: () => string, notify: (mes
   }
 
   $("settings-cancel").addEventListener("click", load)
-  $("settings-form").addEventListener("submit", (e) => {
+  $("settings-form").addEventListener("submit", async (e) => {
     e.preventDefault()
     const scope = (dialog.querySelector<HTMLInputElement>('input[name="scope"]:checked')?.value ?? "project") as SettingsScope
+    const values = readValues()
     saveButton.disabled = true
+    setStatus("")
+    const ok = await confirm($("settings-foot-bar"), scope, values)
+    if (!ok) {
+      saveButton.disabled = false
+      return
+    }
     setStatus("Saving…")
-    send({ type: "settings.save", workspace: workspace(), scope, values: readValues() })
+    send({ type: "settings.save", workspace: workspace(), scope, values })
   })
 
   return { onMessage, load }
