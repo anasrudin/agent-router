@@ -16,6 +16,7 @@ import {
 import path from "node:path"
 import { promisify } from "node:util"
 import { resolveExecutable } from "../backends/process"
+import { samePath } from "../coordinator/worktrees"
 import type { GitStats, WorktreeList } from "./protocol"
 
 const run = promisify(execFile)
@@ -253,17 +254,11 @@ export function listWorktrees(workspace: string): WorktreeList | undefined {
       worktrees.push(cur)
     } else if (line.startsWith("branch ") && cur) cur.branch = line.slice(7).replace(/^refs\/heads\//, "")
   }
-  const root = realpathSync(workspace)
   return {
     current: head.stdout.trim(),
     branches,
-    worktrees: worktrees.filter((w) => {
-      try {
-        return realpathSync(w.path) !== root
-      } catch {
-        return false
-      }
-    }),
+    // git may spell the workspace differently (Windows short names, slashes, case): compare as the platform does.
+    worktrees: worktrees.filter((w) => existsSync(w.path) && !samePath(w.path, workspace)),
   }
 }
 

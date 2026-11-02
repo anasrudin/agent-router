@@ -1,11 +1,13 @@
 import { createBackends } from "../backends/registry"
 import { loadConfig, projectConfigPath, userConfigPath } from "../config/load"
-import { PROVIDERS, TIERS, type Tier } from "../config/schema"
+import { PROVIDERS, type ProviderId, TIERS, type Tier } from "../config/schema"
 import { Session } from "../coordinator/session"
 import { guessTaskClass } from "../router/classify"
 import { decide, explainDecision } from "../router/policy"
 import { editLayer, type LayerResult } from "./layers"
 import type { RouteEdit, RouteRow, RouteTest, SettingsScope } from "./protocol"
+
+const PROVIDER_NAME: Record<ProviderId, string> = { claude: "Claude", gemini: "Gemini", openai: "Codex" }
 
 /** The routes in effect (all layers merged), one row per task class, in the config's order. */
 export function readRouting(workspace: string): { routes: RouteRow[]; profiles: string[]; paths: Record<SettingsScope, string> } {
@@ -70,6 +72,11 @@ export async function testRoute(workspace: string, text: string, taskClass?: str
     const d = decide(session, { taskClass: cls, taskText: text })
     return { taskClass: cls, provider: d.provider, tier: d.tier, model: d.model, agent: d.agent, why: explainDecision(config, d, profile) }
   } catch (e) {
-    return { taskClass: cls, error: e instanceof Error ? e.message : String(e), why: [] }
+    // Say what the router saw, so a refusal is explained like a choice is.
+    const health = session.health.snapshot()
+    const why = PROVIDERS.filter((p) => !health[p]?.installed).map(
+      (p) => `${PROVIDER_NAME[p]} is not available: ${health[p]?.reason ?? "not found"}.`,
+    )
+    return { taskClass: cls, error: e instanceof Error ? e.message : String(e), why }
   }
 }

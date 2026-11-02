@@ -66,8 +66,15 @@ describe("readWorkspaceFile", () => {
 
   test("refuses paths outside the workspace, through .. or a symlink", () => {
     expect(() => readWorkspaceFile(ws, "../../etc/passwd")).toThrow(/outside/)
-    symlinkSync("/etc", path.join(ws, "etc-link"))
-    expect(() => readWorkspaceFile(ws, "etc-link/hostname")).toThrow(/outside/)
+    // A folder outside the workspace, linked in (a junction on Windows, which needs no admin rights).
+    const outside = mkdtempSync(path.join(tmpdir(), "files-outside-"))
+    try {
+      writeFileSync(path.join(outside, "hostname"), "secret")
+      symlinkSync(outside, path.join(ws, "etc-link"), "junction")
+      expect(() => readWorkspaceFile(ws, "etc-link/hostname")).toThrow(/outside/)
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 
   test("binary files and large files", () => {
