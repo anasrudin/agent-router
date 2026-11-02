@@ -1,25 +1,45 @@
 import { invoke } from "@tauri-apps/api/core"
-import { open } from "@tauri-apps/plugin-dialog"
+import { open, save } from "@tauri-apps/plugin-dialog"
 import type { PermissionMode } from "../../backends/Backend"
 import type { QuotaSnapshot, QuotaWindow } from "../../backends/events"
 import type { ProviderId } from "../../config/schema"
 import type {
   BackendStatus,
+  Card,
+  ChatMeta,
   ClientMessage,
   DelegationSummary,
   ProfileInfo,
   QueuedPrompt,
+  Schedule,
   ServerMessage,
   WireEvent,
+  WorktreeList,
   WorktreePreview,
 } from "../../server/protocol"
+import { fileLines, setupAnnotator } from "./annotate"
+import { type Annotation, formatAnnotations, MARK_LABELS } from "./annotations"
+import { setupAppearance } from "./appearance"
+import { setupBoard } from "./board"
 import { closePopovers, flash, installTooltips, type MenuItem, openMenu, overlayScrollbar, popover } from "./chrome"
+import { type Command, PromptHistory } from "./composer"
+import { fileBase64, setupComposer } from "./composer-ui"
 import { type DiffFile, formatReview, parseUnifiedDiff, type ReviewComment } from "./diff"
+import { sortable } from "./drag"
+import { createEditor, type EditorHandle } from "./editor"
+import { type FileContent, linkifyFileRefs, renderFileView } from "./fileview"
+import { setupFind } from "./find"
 import { agentLogoSvg } from "./icons"
 import { escapeHtml, renderMarkdown, resultLine } from "./markdown"
+import { setupMinimap } from "./minimap"
 import { notifyIfAway } from "./notify"
+import { type PaletteItem, setupPalette } from "./palette"
+import { renderBrowser, renderFileTree } from "./panels"
 import { type Answer, formatAnswers, letter, type QuestionForm, splitQuestions } from "./questions"
 import { createSettings } from "./settings"
+import { canSpeak, chime, toggleSpeech } from "./speech"
+import { setupDock } from "./terminal"
+import { activityLine, editStats, outputTail, toolDetail, toolLabel } from "./tools"
 
 interface ServerInfo {
   url: string
@@ -37,19 +57,34 @@ const banner = $<HTMLDivElement>("banner")
 
 const PROVIDER_LABEL: Record<ProviderId, string> = { claude: "Claude", gemini: "Gemini", openai: "Codex" }
 
-/** Per-viewer conveniences only; the app works without storage. */
+/** Per-viewer conveniences only; with storage blocked (or full) they last until the window closes. */
+const memory = new Map<string, string>()
 const prefs = {
   get(key: string): string | null {
     try {
-      return localStorage.getItem(`agent-router.${key}`)
+      return localStorage.getItem(`agent-router.${key}`) ?? memory.get(key) ?? null
     } catch {
-      return null
+      return memory.get(key) ?? null
     }
   },
   set(key: string, value: string) {
+    memory.set(key, value)
     try {
       localStorage.setItem(`agent-router.${key}`, value)
     } catch {}
+  },
+  remove(key: string) {
+    memory.delete(key)
+    try {
+      localStorage.removeItem(`agent-router.${key}`)
+    } catch {}
+  },
+  json<T>(key: string, fallback: T): T {
+    try {
+      return (JSON.parse(prefs.get(key) ?? "null") as T) ?? fallback
+    } catch {
+      return fallback
+    }
   },
 }
 
@@ -59,7 +94,9 @@ const state = {
   running: false,
   turnEl: undefined as HTMLElement | undefined,
   /** This turn's "Worked for" fold: Conductor's own work, folded once the turn ends. */
-  fold: undefined as { el: HTMLDetailsElement; body: HTMLElement; started: number; tools: number } | undefined,
+  fold: undefined as { el: HTMLDetailsElement; body: HTMLElement; started: number; tools: number; activity: string } | undefined,
+  /** Tool rows by their call id, so a result finds its row. */
+  tools: new Map<string, HTMLElement>(),
   threads: new Map<string, Thread>(),
   /** The thread open in the detail panel; undefined shows Conductor's chat alone. */
   selected: undefined as string | undefined,
@@ -71,7 +108,51 @@ const state = {
   costUsd: 0,
   tokensIn: 0,
   tokensOut: 0,
+  /** The saved chat on screen (and the one requests go to); undefined for a new chat before its first request. */
+  chat: undefined as ChatMeta | undefined,
+  chats: [] as ChatMeta[],
+  /** While a reopened chat's messages are drawn: no notifications, and times come from the record. */
+  replaying: false,
+  replayAt: undefined as number | undefined,
+  /** The connection's greeting is pending: reopen the chat that was on screen. */
+  greeting: false,
+  /** A file open in the side panel, in place of a thread. */
+  file: undefined as { path: string; line?: number; endLine?: number; content?: FileContent } | undefined,
+  /** The sidebar row being renamed. */
+  renaming: undefined as string | undefined,
+  /** While replaying a long chat, its older turns go here, folded behind "Show earlier turns". */
+  earlier: undefined as HTMLElement | undefined,
+  queue: [] as QueuedPrompt[],
+  queuePaused: false,
+  /** Notes made on files and reports, waiting to be sent. */
+  notes: [] as Annotation[],
+  /** Where a new chat will run, picked before its first request. */
+  newChatRun: { mode: "here" } as { mode: "here" } | { mode: "new"; base: string } | { mode: "existing"; path: string },
+  worktrees: undefined as WorktreeList | undefined,
+  schedules: [] as Schedule[],
+  /** The side panel's view when no thread or file is open in it. */
+  panel: undefined as "files" | "browser" | undefined,
+  browser: { url: "", nonce: 0 },
+  files: undefined as string[] | undefined,
+  fileFilter: "",
+  openDirs: new Set<string>(),
+  view: "chat" as "chat" | "board",
+  /** A board card started as a chat, waiting for that chat's id. */
+  runningCard: undefined as string | undefined,
 }
+
+/** The folder the chat works in: its worktree when it runs in one, else the workspace. */
+const runDir = () => state.chat?.runIn ?? state.workspace
+
+/** Where top-level transcript items go: the chat, or the folded "earlier turns" while replaying a long chat. */
+const top = () => state.earlier ?? log
+
+/** Now, or the recorded time of the message being replayed. */
+const now = () => state.replayAt ?? Date.now()
+const notify = (title: string, body: string) => {
+  if (!state.replaying) notifyIfAway(title, body)
+}
+const savedChat = prefs.get("chat")
 
 function el(tag: string, className?: string, html?: string): HTMLElement {
   const node = document.createElement(tag)
@@ -80,7 +161,7 @@ function el(tag: string, className?: string, html?: string): HTMLElement {
   return node
 }
 
-function append(node: HTMLElement, parent: HTMLElement = state.turnEl ?? log) {
+function append(node: HTMLElement, parent: HTMLElement = state.turnEl ?? top()) {
   $("empty")?.remove()
   const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 120
   parent.append(node)
@@ -116,6 +197,8 @@ function setRunning(running: boolean) {
   state.running = running
   updateSendButton()
   renderSidebar()
+  renderStrip()
+  renderQueue(state.queue, state.queuePaused)
 }
 
 /** While a turn runs the button stops it, unless there is text to queue behind it. */
@@ -128,8 +211,33 @@ function updateSendButton() {
 
 // ── Prompt queue ────────────────────────────────────────────────────────
 
+const ICON = {
+  up: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" /></svg>`,
+  close: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>`,
+  edit: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 2.5l3 3-8 8H2.5v-3z" /></svg>`,
+  play: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7-4.5z" /></svg>`,
+  grip: `<svg class="grip-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6" cy="4" r=".9" /><circle cx="10" cy="4" r=".9" /><circle cx="6" cy="8" r=".9" /><circle cx="10" cy="8" r=".9" /><circle cx="6" cy="12" r=".9" /><circle cx="10" cy="12" r=".9" /></svg>`,
+  speak: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6h2.5l3.5-3v10l-3.5-3H2.5zM11 5.5a3.5 3.5 0 0 1 0 5M12.8 3.5a6 6 0 0 1 0 9" /></svg>`,
+}
+
+function iconButton(icon: string, label: string, run: () => void, cls = "icon-btn"): HTMLButtonElement {
+  const b = el("button", cls, icon) as HTMLButtonElement
+  b.type = "button"
+  b.title = label
+  b.setAttribute("aria-label", label)
+  b.addEventListener("click", run)
+  return b
+}
+
+/**
+ * Requests waiting for the turn, as Ghostex shows its queue: drag (or Alt+arrows) to reorder,
+ * Edit takes one back into the composer, Play stops the turn and runs it now.
+ */
 function renderQueue(items: QueuedPrompt[], paused: boolean) {
+  state.queue = items
+  state.queuePaused = paused
   const box = $("queue")
+  const focusKey = (document.activeElement as HTMLElement | null)?.closest?.<HTMLElement>("#queue [data-focus-key]")?.dataset.focusKey
   box.replaceChildren()
   box.hidden = !items.length
   if (paused) {
@@ -142,46 +250,71 @@ function renderQueue(items: QueuedPrompt[], paused: boolean) {
     head.append(resume)
     box.append(head)
   }
+  const list = el("div", "queue-list")
   items.forEach((item, i) => {
     const row = el("div", "queue-row")
+    row.dataset.id = item.id
+    row.tabIndex = 0
+    row.dataset.focusKey = `q:${item.id}`
+    row.setAttribute("aria-label", `Queued ${i + 1} of ${items.length}: ${item.prompt}. Alt+arrows reorder.`)
     const label = el("span", "queue-text")
     label.textContent = item.prompt
     label.title = item.prompt
-    const next = el("button", "icon-btn") as HTMLButtonElement
-    next.type = "button"
-    next.title = i === 0 ? "Send now when idle" : "Send next"
-    next.setAttribute("aria-label", next.title)
-    next.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" /></svg>`
-    next.addEventListener("click", () => send({ type: "queue.send", id: item.id }))
-    const remove = el("button", "icon-btn") as HTMLButtonElement
-    remove.type = "button"
-    remove.title = "Remove from queue"
-    remove.setAttribute("aria-label", remove.title)
-    remove.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>`
-    remove.addEventListener("click", () => send({ type: "queue.remove", id: item.id }))
-    row.append(Object.assign(el("span", "queue-num"), { textContent: String(i + 1) }), label, next, remove)
-    box.append(row)
+    const grip = el("span", "queue-grip", ICON.grip)
+    grip.title = "Drag to reorder"
+    row.append(
+      grip,
+      Object.assign(el("span", "queue-num"), { textContent: String(i + 1) }),
+      label,
+      iconButton(ICON.edit, "Edit: back to the composer", () => {
+        send({ type: "queue.take", id: item.id })
+        promptBox.value = promptBox.value.trim() ? `${promptBox.value}\n${item.prompt}` : item.prompt
+        promptBox.focus()
+        updateSendButton()
+      }),
+      ...(state.running
+        ? [iconButton(ICON.play, "Stop the turn and run this now", () => send({ type: "queue.interrupt", id: item.id }))]
+        : []),
+      iconButton(ICON.up, i === 0 ? "Send now when idle" : "Send next", () => send({ type: "queue.send", id: item.id })),
+      iconButton(ICON.close, "Remove from queue", () => send({ type: "queue.remove", id: item.id })),
+    )
+    row.addEventListener("keydown", (e) => {
+      if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return
+      e.preventDefault()
+      send({ type: "queue.move", id: item.id, to: i + (e.key === "ArrowUp" ? -1 : 1) })
+    })
+    list.append(row)
   })
+  box.append(list)
+  if (focusKey) box.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus()
 }
 
 // ── Workspace and backends ──────────────────────────────────────────────
 
 function setWorkspace(dir: string) {
+  const changed = !samePath(dir, state.workspace)
   state.workspace = dir
   prefs.set("workspace", dir)
+  if (dir) {
+    rememberWorkspace(dir)
+    if (changed) setGroupOpen(dir, true)
+  }
   showWorkspacePath(dir)
   if (dir) send({ type: "status", workspace: dir })
+  renderSidebar()
+  if (changed) {
+    state.files = undefined
+    if (state.view === "board") board.load()
+  }
+  // On first connect too, not only when the folder changes.
+  if (changed || !state.worktrees) loadWorktrees()
 }
 
-/** Long paths are cut from the left so the folder name stays visible; the placeholder is plain text. */
 function showWorkspacePath(dir: string) {
-  const label = $("workspace-path")
-  label.replaceChildren()
-  label.classList.toggle("is-path", Boolean(dir))
-  const name = dir ? (dir.split(/[\\/]/).filter(Boolean).pop() ?? dir) : ""
-  label.textContent = name || "Choose a folder…"
+  const name = dir ? folderName(dir) : ""
+  $("workspace-path").textContent = "Open folder…"
   $("crumb-workspace").textContent = name || "No folder"
-  $("workspace").title = dir || "Choose the project folder Conductor works in"
+  $("crumb-workspace").title = dir
 }
 
 function renderProfiles(profiles: ProfileInfo[], defaultProfile: string | undefined) {
@@ -230,6 +363,8 @@ function currentWindows(p: ProviderId): QuotaWindow[] {
 }
 
 function recordQuota(p: ProviderId, windows: QuotaWindow[]) {
+  // A replayed chat's old windows are history, not the account's usage now.
+  if (state.replaying) return
   state.quota[p] = { windows, at: Date.now() }
   if (state.backends) renderBackends(state.backends)
 }
@@ -265,16 +400,158 @@ function renderBackends(status: BackendStatus) {
   }
   if (!status.health.claude.healthy)
     showBanner("Conductor runs on Claude Code, which is not available. Install it and sign in, then reopen the app.")
+  renderStatusbar()
+  renderSidebar()
+}
+
+/**
+ * The line under the composer, as Ghostex's: Claude's usage windows (Conductor runs on it), the
+ * chat's spend, its threads, and the branch with its uncommitted lines.
+ */
+function renderStatusbar() {
+  const quota = $("quota")
+  quota.replaceChildren()
+  const windows = currentWindows("claude")
+  for (const w of windows) {
+    const level = w.limited || w.usedFraction >= 0.9 ? "bad" : w.usedFraction >= 0.7 ? "warn" : ""
+    const item = el("span", `quota-window ${level}`)
+    item.append(
+      Object.assign(el("span", "muted"), { textContent: w.label }),
+      document.createTextNode(` ${Math.round(w.usedFraction * 100)}%`),
+    )
+    item.title = `Claude ${describeWindow(w)}`
+    quota.append(item)
+  }
+  const git = $("git")
+  git.replaceChildren()
+  const g = state.backends?.git
+  if (g) {
+    git.append(
+      Object.assign(el("span", "branch"), {
+        innerHTML: `<svg class="branch-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4.5" cy="3.5" r="1.5" /><circle cx="4.5" cy="12.5" r="1.5" /><circle cx="11.5" cy="5.5" r="1.5" /><path d="M4.5 5v6M11.5 7c0 3-7 2-7 4" /></svg>`,
+      }),
+    )
+    ;(git.querySelector(".branch") as HTMLElement).append(document.createTextNode(g.branch))
+    if (g.added || g.removed)
+      git.append(
+        Object.assign(el("span", "add mono"), { textContent: `+${g.added}` }),
+        Object.assign(el("span", "del mono"), { textContent: `−${g.removed}` }),
+      )
+    git.title = `${g.branch}: ${g.files} file${g.files === 1 ? "" : "s"} changed, not committed`
+  }
 }
 
 // ── Conductor turn rendering ────────────────────────────────────────────
 
-const TOOL_LABELS: Record<string, string> = { Read: "Read", Grep: "Search", Glob: "Find files", Bash: "Run", Edit: "Edit", Write: "Write" }
+const describeTool = toolDetail
+/** Tools whose output is worth a look in the transcript; a Read's output is just the file. */
+const OUTPUT_TOOLS = new Set(["Bash", "Grep", "Glob", "WebFetch", "WebSearch"])
 
-function describeTool(input: unknown): string {
-  const i = (input ?? {}) as Record<string, unknown>
-  const detail = i.command ?? i.file_path ?? i.pattern ?? i.path ?? i.task_class ?? i.description ?? ""
-  return String(detail)
+/** A Markdown block of a reply: rendered, its source kept for Copy, its file references clickable. */
+function mdBlock(text: string): HTMLElement {
+  const block = el("div", "md", renderMarkdown(text))
+  block.dataset.source = text
+  linkifyFileRefs(block, openFile, (url) => openUrl(url))
+  return block
+}
+
+function copyButton(text: () => string, label: string): HTMLButtonElement {
+  const b = el("button", "icon-btn msg-action") as HTMLButtonElement
+  b.type = "button"
+  b.title = label
+  b.setAttribute("aria-label", label)
+  b.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5" /><path d="M10.5 5V3.5A1 1 0 0 0 9.5 2.5h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1H5" /></svg>`
+  b.addEventListener("click", () => copyText(text(), b))
+  return b
+}
+
+/** The line under a message: its time and a Copy button. */
+function messageMeta(at: number, text: () => string, label: string, extra: HTMLElement[] = []): HTMLElement {
+  const meta = el("div", "msg-meta")
+  const time = document.createElement("time")
+  time.dateTime = new Date(at).toISOString()
+  time.textContent = clock(at)
+  time.title = new Date(at).toLocaleString()
+  meta.append(time, copyButton(text, label), ...extra)
+  return meta
+}
+
+/** Read aloud, where the webview has a voice. */
+function speakButton(text: () => string): HTMLElement[] {
+  if (!canSpeak()) return []
+  const b = iconButton(ICON.speak, "Read aloud", () => toggleSpeech(text(), b), "icon-btn msg-action")
+  b.setAttribute("aria-pressed", "false")
+  return [b]
+}
+
+/** A sound for the moments that want you (Ghostex's sound notifications), when turned on. */
+function sound(kind: "done" | "attention") {
+  if (!state.replaying && prefs.get("sound") === "on") chime(kind)
+}
+
+/**
+ * The pinned working strip above the composer (Ghostex's): what Conductor is doing now and each
+ * running thread's latest step, in view however far the chat is scrolled. A thread opens on click.
+ */
+function renderStrip() {
+  const strip = $("strip")
+  const running = [...state.threads.values()].filter((t) => !t.summary && !t.error)
+  strip.hidden = !state.running || state.replaying
+  if (strip.hidden) return
+  const now = el("span", "strip-now")
+  now.append(el("span", "spinner"), Object.assign(el("span", "strip-text"), { textContent: `${state.fold?.activity ?? "Starting"}…` }))
+  const chips = running.map((t) => {
+    const chip = el("button", "strip-thread") as HTMLButtonElement
+    chip.type = "button"
+    const last = t.activity.at(-1)
+    chip.title = `${t.agent} on ${PROVIDER_LABEL[t.provider]}: ${t.task}${last ? `\nNow: ${last.text}` : ""}`
+    chip.append(glyph(t.provider), Object.assign(el("span", "strip-text"), { textContent: last ? last.text : taskTitle(t.task) }))
+    chip.addEventListener("click", () => selectThread(t.id))
+    return chip
+  })
+  strip.replaceChildren(now, ...chips)
+}
+
+const slug = (text: string) =>
+  text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60) || "chat"
+
+/** Save to Markdown (Ghostex's): a chat rendered from its record, or a thread's report, where the save dialog says. */
+async function saveMarkdown(name: string, payload: { chatId?: string; text?: string }) {
+  const path = await save({ defaultPath: `${runDir() || "."}/${slug(name)}.md`, filters: [{ name: "Markdown", extensions: ["md"] }] })
+  if (!path) return
+  const msg = await request({ type: "export.save", requestId: nextRequestId(), path, ...payload })
+  if (msg.type !== "export.saved") return
+  if (msg.error) showBanner(msg.error)
+  else flash($("chat-title"), `Saved to ${path}`)
+}
+
+const LONG_PROMPT = { lines: 10, chars: 900 }
+
+/** The user's request as a bubble; a long one is clamped with Show more, as Ghostex folds long prompts. */
+function userMessage(prompt: string, at: number): HTMLElement {
+  const wrap = el("div", "msg msg-user")
+  const bubble = el("div", "user")
+  bubble.textContent = prompt
+  wrap.append(bubble)
+  if (prompt.split("\n").length > LONG_PROMPT.lines || prompt.length > LONG_PROMPT.chars) {
+    bubble.classList.add("clamped")
+    const more = el("button", "ghost small more") as HTMLButtonElement
+    more.type = "button"
+    more.textContent = "Show more"
+    more.setAttribute("aria-expanded", "false")
+    more.addEventListener("click", () => {
+      const open = bubble.classList.toggle("expanded")
+      more.textContent = open ? "Show less" : "Show more"
+      more.setAttribute("aria-expanded", String(open))
+    })
+    wrap.append(more)
+  }
+  wrap.append(messageMeta(at, () => prompt, "Copy request"))
+  return wrap
 }
 
 /*
@@ -298,7 +575,7 @@ function turnFold() {
   $("empty")?.remove()
   if (state.turnEl) state.turnEl.prepend(fold)
   else append(fold)
-  state.fold = { el: fold, body, started: Date.now(), tools: 0 }
+  state.fold = { el: fold, body, started: now(), tools: 0, activity: "Thinking" }
   renderFoldSummary(state.fold, false)
   return state.fold
 }
@@ -318,11 +595,15 @@ function turnCards(): HTMLElement {
 
 function renderFoldSummary(f: NonNullable<typeof state.fold>, done: boolean) {
   const summary = f.el.querySelector("summary") as HTMLElement
-  const secs = Math.max(1, Math.round((Date.now() - f.started) / 1000))
+  const secs = Math.max(1, Math.round((now() - f.started) / 1000))
+  const running = [...state.threads.values()].filter((t) => !t.summary && !t.error).length
+  // While it works, the line says what it is doing now (Ghostex's working strip).
+  const live = running && /^(Thinking|Delegating)/.test(f.activity) ? `Waiting on ${running} thread${running > 1 ? "s" : ""}` : f.activity
+  if (!done) queueMicrotask(renderStrip)
   summary.replaceChildren(
     ...(done ? [] : [el("span", "spinner")]),
-    Object.assign(el("span", "fold-title"), {
-      textContent: done ? `Worked for ${secs < 60 ? `${secs}s` : `${Math.round(secs / 60)}m`}` : "Working",
+    Object.assign(el("span", `fold-title${done ? "" : " live"}`), {
+      textContent: done ? `Worked for ${secs < 60 ? `${secs}s` : `${Math.round(secs / 60)}m`}` : `${live}…`,
     }),
     ...(f.tools ? [Object.assign(el("span", "count-pill"), { textContent: `${f.tools} tool call${f.tools === 1 ? "" : "s"}` })] : []),
   )
@@ -340,6 +621,8 @@ function closeFold() {
   if (turn && reply.length) {
     const anchor = turn.querySelector(":scope > .turn-cards") ?? f.el
     anchor.after(...reply)
+    const text = () => reply.map((b) => (b as HTMLElement).dataset.source ?? b.textContent ?? "").join("\n\n")
+    ;(reply.at(-1) as Element).after(messageMeta(now(), text, "Copy reply", speakButton(text)))
   }
   // A turn that only talked has nothing left to fold.
   if (!f.body.childElementCount) {
@@ -350,29 +633,86 @@ function closeFold() {
   f.el.open = false
 }
 
+/** One tool call in the fold: what it is, what it touched, an edit's +/- lines; its result fills in later. */
+function toolRow(name: string, input: unknown, id?: string): HTMLElement {
+  const row = el("div", "tool")
+  row.dataset.tool = name
+  const head = el("div", "tool-head")
+  head.append(
+    Object.assign(el("span", "name"), { textContent: toolLabel(name) }),
+    Object.assign(el("span", "tool-detail mono"), { textContent: describeTool(input), title: describeTool(input) }),
+  )
+  const stats = editStats(name, input)
+  if (stats) {
+    const s = el("span", "tool-stats mono")
+    s.append(
+      Object.assign(el("span", "add"), { textContent: `+${stats.added}` }),
+      Object.assign(el("span", "del"), { textContent: `−${stats.removed}` }),
+    )
+    head.append(s)
+  }
+  row.append(head)
+  if (id) state.tools.set(id, row)
+  return row
+}
+
+function toolResult(ok: boolean, id: string | undefined, output: string | undefined) {
+  const body = state.fold?.body
+  const row = (id ? state.tools.get(id) : undefined) ?? [...(body?.querySelectorAll<HTMLElement>(".tool:not([data-done])") ?? [])][0]
+  if (!row) return
+  row.dataset.done = ok ? "ok" : "failed"
+  if (!ok) {
+    const head = row.querySelector(".tool-head") as HTMLElement
+    head.append(Object.assign(el("span", "tool-failed"), { textContent: "failed" }))
+  }
+  if (output && (OUTPUT_TOOLS.has(row.dataset.tool ?? "") || !ok)) {
+    const tail = outputTail(output)
+    const box = document.createElement("details")
+    box.className = "tool-output"
+    const sum = document.createElement("summary")
+    sum.textContent = tail.more ? "Output, last lines" : "Output"
+    const pre = el("pre", "mono")
+    pre.textContent = tail.text
+    box.append(sum, pre)
+    // A failure shows its output straight away: that is where the reason is.
+    box.open = !ok
+    row.append(box)
+  }
+}
+
 function conductorEvent(event: WireEvent) {
   switch (event.type) {
     case "text":
       for (const seg of splitQuestions(event.text)) {
-        if (seg.kind === "markdown") append(el("div", "md", renderMarkdown(seg.text)), state.turnEl ? turnFold().body : log)
-        else {
+        if (seg.kind === "markdown") {
+          append(mdBlock(seg.text), state.turnEl ? turnFold().body : top())
+          if (state.fold) {
+            state.fold.activity = "Writing"
+            renderFoldSummary(state.fold, false)
+          }
+        } else {
           append(renderQuestionForm(seg.form))
-          notifyIfAway("agent-router: Conductor has questions", seg.form.title ?? seg.form.questions[0]?.question ?? "")
+          notify("agent-router: Conductor has questions", seg.form.title ?? seg.form.questions[0]?.question ?? "")
         }
       }
       return
     case "tool_call": {
-      // Delegations get their own card from the router; showing the raw call too would duplicate it.
-      if (event.name.startsWith("mcp__router__")) return
-      const label = TOOL_LABELS[event.name] ?? event.name.replace(/^mcp__[^_]+__/, "")
-      const line = el("div", "tool mono", `<span class="name">${escapeHtml(label)}</span><span class="tool-detail"></span>`)
-      ;(line.querySelector(".tool-detail") as HTMLElement).textContent = describeTool(event.input)
       const fold = turnFold()
+      // Delegations get their own card from the router; showing the raw call too would duplicate it.
+      if (event.name.startsWith("mcp__router__")) {
+        fold.activity = /delegate/.test(event.name) ? "Delegating" : `Checking (${toolLabel(event.name)})`
+        renderFoldSummary(fold, false)
+        return
+      }
+      append(toolRow(event.name, event.input, event.id), fold.body)
       fold.tools += 1
+      fold.activity = activityLine(event.name, event.input)
       renderFoldSummary(fold, false)
-      append(line, fold.body)
       return
     }
+    case "tool_result":
+      toolResult(event.ok, event.id, event.output)
+      return
     case "usage":
       addUsage(event.costUsd, event.inputTokens, event.outputTokens)
       return
@@ -461,6 +801,25 @@ function renderQuestionForm(form: QuestionForm): HTMLElement {
   controls.push(submit)
   footer.append(submit, hint)
   card.append(footer)
+  // Ghostex's keys: a letter picks that choice in the question holding focus (the first one
+  // otherwise), Mod+Enter sends. Typing in an answer field is left alone.
+  card.tabIndex = -1
+  card.addEventListener("keydown", (e) => {
+    if (card.classList.contains("answered")) return
+    const target = e.target as HTMLElement
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault()
+      submit.click()
+      return
+    }
+    if (target.matches("input, textarea") || e.metaKey || e.ctrlKey || e.altKey || !/^[a-z]$/i.test(e.key)) return
+    const block = target.closest(".question") ?? card.querySelector(".question")
+    const choice = block?.querySelectorAll<HTMLButtonElement>(".choice")[e.key.toLowerCase().charCodeAt(0) - 97]
+    if (!choice) return
+    e.preventDefault()
+    choice.click()
+    choice.focus()
+  })
   return card
 }
 
@@ -492,6 +851,8 @@ interface Thread {
   /** Lines picked for the next comment. */
   selection?: { file: string; side: "new" | "old"; start: number; end: number }
   draft?: string
+  /** The detail panel's tab for this thread. */
+  tab?: DetailTab
   /** "confirm" while the Revert button asks to be pressed again; the outcome once done. */
   revert?: "confirm" | { ok: boolean; message: string }
   /** Bringing a worktree thread's work in: last preview, the action awaiting a second press, the last outcome. */
@@ -508,7 +869,7 @@ interface Thread {
 const threadsNav = $<HTMLElement>("threads")
 const detail = $<HTMLElement>("detail")
 
-function age(from: number, to = Date.now()): string {
+function age(from: number, to = now()): string {
   const s = Math.max(0, Math.round((to - from) / 1000))
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`
 }
@@ -622,12 +983,20 @@ function threadMenu(t: Thread, row: HTMLElement): MenuItem[] {
     "separator",
     { label: "Copy task", run: () => copyText(t.task, row) },
   ]
-  if (sum?.report) items.push({ label: "Copy report", run: () => copyText(sum.report, row) })
+  if (sum?.report)
+    items.push(
+      { label: "Copy report", run: () => copyText(sum.report, row) },
+      {
+        label: "Save report as Markdown…",
+        run: () => void saveMarkdown(taskTitle(t.task), { text: `# ${taskTitle(t.task)}\n\n${sum.report}\n` }),
+      },
+    )
   const worktree = sum?.worktree
   if (worktree && !t.wt?.gone)
     items.push("separator", {
       label: "Preview worktree merge",
       run: () => {
+        t.tab = "changes"
         selectThread(t.id)
         worktreeAction(t, worktree, "preview")
       },
@@ -640,6 +1009,7 @@ function threadMenu(t: Thread, row: HTMLElement): MenuItem[] {
       // The panel still asks for a second press before anything changes.
       run: () => {
         t.revert = "confirm"
+        t.tab = "changes"
         selectThread(t.id)
         detail.querySelector(".changes-bar")?.scrollIntoView({ block: "nearest" })
       },
@@ -647,46 +1017,249 @@ function threadMenu(t: Thread, row: HTMLElement): MenuItem[] {
   return items
 }
 
-function conductorMenu(row: HTMLElement): MenuItem[] {
+const CHAT_ICON = `<svg class="row-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v7.5h-6.5l-3 2.5V11h-1.5z" /></svg>`
+const CROWN_ICON = `<svg class="crown" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12.5h12M2.5 11 1.8 5l3.6 2.6L8 3l2.6 4.6L14.2 5l-.7 6z" /></svg>`
+const FOLDER_ICON = `<svg class="row-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.2l1.5 1.5h6.3a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" /></svg>`
+const CHEVRON = `<svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" /></svg>`
+
+/** Paths compared as the server would: separators and a trailing slash do not matter. */
+const pathKey = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "")
+const samePath = (a: string, b: string) => pathKey(a) === pathKey(b)
+const folderName = (dir: string) => dir.split(/[\\/]/).filter(Boolean).pop() ?? dir
+
+/** Folders opened before, newest first, so their chats stay one click away. */
+function recentWorkspaces(): string[] {
+  return prefs.json<string[]>("workspaces", [])
+}
+function rememberWorkspace(dir: string) {
+  prefs.set("workspaces", JSON.stringify([dir, ...recentWorkspaces().filter((d) => !samePath(d, dir))].slice(0, 8)))
+}
+function forgetWorkspace(dir: string) {
+  prefs.set("workspaces", JSON.stringify(recentWorkspaces().filter((d) => !samePath(d, dir))))
+}
+/** Which workspace groups are open: the current one by default, others closed. */
+function groupOpen(dir: string): boolean {
+  const saved = prefs.json<Record<string, boolean>>("groups", {})[pathKey(dir)]
+  return saved ?? samePath(dir, state.workspace)
+}
+function setGroupOpen(dir: string, open: boolean) {
+  prefs.set("groups", JSON.stringify({ ...prefs.json<Record<string, boolean>>("groups", {}), [pathKey(dir)]: open }))
+}
+const showAll = new Set<string>()
+
+function currentChatMenu(row: HTMLElement): MenuItem[] {
   const items: MenuItem[] = [{ label: "Show conversation", run: () => selectThread(undefined) }]
   if (state.running) items.push({ label: "Stop the turn", danger: true, run: () => send({ type: "cancel" }) })
-  items.push("separator", { label: "Copy chat title", run: () => copyText(state.chatTitle ?? "", row) }, "separator", {
-    label: "New chat",
-    run: () => $("new-chat").click(),
-  })
+  if (state.chat) items.push("separator", ...chatActions(state.chat, row))
+  items.push("separator", { label: "New chat", run: () => newChat() })
   return items
+}
+
+/** Pin, rename, copy and delete: the same for every saved chat. */
+function chatActions(c: ChatMeta, row: HTMLElement): MenuItem[] {
+  return [
+    { label: c.pinned ? "Unpin" : "Pin", run: () => send({ type: "chat.update", id: c.id, pinned: !c.pinned }) },
+    {
+      label: "Rename…",
+      run: () => {
+        state.renaming = c.id
+        renderSidebar()
+      },
+    },
+    { label: "Copy title", run: () => copyText(c.title, row) },
+    { label: "Save as Markdown…", run: () => void saveMarkdown(c.title, { chatId: c.id }) },
+    "separator",
+    {
+      label: "Delete chat…",
+      danger: true,
+      // A second, explicit choice before anything is deleted.
+      run: () =>
+        openMenu(
+          [
+            {
+              label: `Delete "${c.title.length > 40 ? `${c.title.slice(0, 39)}…` : c.title}"`,
+              danger: true,
+              run: () => send({ type: "chat.delete", id: c.id }),
+            },
+            { label: "Keep it", run: () => {} },
+          ],
+          row,
+          row,
+          "Delete this chat?",
+        ),
+    },
+  ]
+}
+
+function chatMenu(c: ChatMeta, row: HTMLElement): MenuItem[] {
+  return [{ label: "Open chat", run: () => openChat(c) }, "separator", ...chatActions(c, row)]
+}
+
+function openChat(c: ChatMeta) {
+  if (state.chat?.id === c.id) {
+    selectThread(undefined)
+    return
+  }
+  if (state.running) {
+    showBanner("Stop the running turn before opening another chat.")
+    return
+  }
+  send({ type: "chat.open", id: c.id })
 }
 
 function renderSidebar() {
   const list = [...state.threads.values()]
   // The tree is rebuilt every second while threads run; keep keyboard focus where it was.
   const focusKey = (document.activeElement as HTMLElement | null)?.closest?.<HTMLElement>("#threads [data-focus-key]")?.dataset.focusKey
+  const scroll = threadsNav.scrollTop
   threadsNav.replaceChildren()
-  renderSidebarRows(list)
+  const dirs: string[] = []
+  const add = (d: string) => {
+    if (d && !dirs.some((x) => samePath(x, d))) dirs.push(d)
+  }
+  add(state.workspace)
+  for (const d of recentWorkspaces()) add(d)
+  for (const c of state.chats) add(c.workspace)
+  for (const dir of dirs) renderGroup(dir, list)
+  threadsNav.scrollTop = scroll
   if (focusKey) threadsNav.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus()
+  if (state.renaming) threadsNav.querySelector<HTMLInputElement>(".rename")?.focus()
   const running = list.filter((t) => !t.summary && !t.error).length
   $("status-threads").textContent = list.length
     ? `${list.length} thread${list.length > 1 ? "s" : ""}${running ? `, ${running} running` : ""}`
     : ""
 }
 
-function renderSidebarRows(list: Thread[]) {
-  if (!state.chatTitle) return
-  const head = el("button", `tree-row conductor${state.selected ? "" : " selected"}`) as HTMLButtonElement
+/** A workspace: its row (name, uncommitted +/- for the current one), then its pinned chats and sessions. */
+function renderGroup(dir: string, threads: Thread[]) {
+  const current = samePath(dir, state.workspace)
+  const open = groupOpen(dir)
+  const head = el("button", `tree-row group${current ? " current" : ""}`) as HTMLButtonElement
   head.type = "button"
-  head.innerHTML = `<svg class="crown" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 12.5h12M2.5 11 1.8 5l3.6 2.6L8 3l2.6 4.6L14.2 5l-.7 6z" /></svg><span class="row-title"></span>`
-  ;(head.querySelector(".row-title") as HTMLElement).textContent = state.chatTitle
-  if (list.length) {
-    // The crew badge: people and a count, as Ghostex marks a coordinator's threads.
-    const count = el("span", "row-count row-tail", `${PEOPLE_ICON}<span>${list.length}</span>`)
-    count.title = `${list.length} thread${list.length > 1 ? "s" : ""}`
-    head.append(count)
+  head.setAttribute("aria-expanded", String(open))
+  head.title = dir
+  head.innerHTML = `${CHEVRON}${FOLDER_ICON}<span class="row-title"></span>`
+  ;(head.querySelector(".row-title") as HTMLElement).textContent = folderName(dir)
+  const git = current ? state.backends?.git : undefined
+  if (git && (git.added || git.removed)) {
+    const stats = el("span", "row-tail git-stats mono")
+    stats.append(
+      Object.assign(el("span", "add"), { textContent: `+${git.added}` }),
+      Object.assign(el("span", "del"), { textContent: `−${git.removed}` }),
+    )
+    stats.title = `${git.files} file${git.files === 1 ? "" : "s"} changed on ${git.branch}, not committed`
+    head.append(stats)
   }
-  if (state.running) head.append(statusMark("running"))
-  head.addEventListener("click", () => selectThread(undefined))
-  const headActions = [rowAction(MORE_ICON, "More actions", (b) => openMenu(conductorMenu(head), b, b, "Chat actions"))]
-  if (state.running) headActions.unshift(rowAction(STOP_ICON, "Stop the turn", () => send({ type: "cancel" })))
-  threadsNav.append(sidebarItem(head, headActions, () => conductorMenu(head), "Chat actions", "conductor"))
+  head.addEventListener("click", () => {
+    setGroupOpen(dir, !open)
+    renderSidebar()
+  })
+  const key = `ws:${pathKey(dir)}`
+  const groupMenu = (): MenuItem[] => {
+    const items: MenuItem[] = [{ label: current ? "New chat" : "New chat in this folder", run: () => newChat(dir) }]
+    items.push({ label: "Copy path", run: () => copyText(dir, head) })
+    if (!current && !state.chats.some((c) => samePath(c.workspace, dir)))
+      items.push("separator", {
+        label: "Remove from sidebar",
+        run: () => {
+          forgetWorkspace(dir)
+          renderSidebar()
+        },
+      })
+    return items
+  }
+  const more = rowAction(MORE_ICON, "Folder actions", (b) => openMenu(groupMenu(), b, b, "Folder actions"))
+  threadsNav.append(sidebarItem(head, [more], groupMenu, "Folder actions", key))
+  if (!open) return
+
+  const chats = state.chats.filter((c) => samePath(c.workspace, dir))
+  if (state.chat && current && !chats.some((c) => c.id === state.chat?.id)) chats.unshift(state.chat)
+  const pinned = chats.filter((c) => c.pinned)
+  const rest = chats.filter((c) => !c.pinned)
+  if (!chats.length) {
+    threadsNav.append(Object.assign(el("div", "tree-note muted"), { textContent: current ? "No chats yet" : "No saved chats" }))
+    return
+  }
+  if (pinned.length) {
+    threadsNav.append(Object.assign(el("div", "tree-label"), { textContent: "Pinned" }))
+    for (const c of pinned) renderChatRow(c, threads)
+  }
+  if (rest.length) {
+    if (pinned.length) threadsNav.append(Object.assign(el("div", "tree-label"), { textContent: "Sessions" }))
+    const limit = showAll.has(key) ? rest.length : 12
+    // The open chat always shows, however far down the list it is.
+    const visible = rest.filter((c, i) => i < limit || c.id === state.chat?.id)
+    for (const c of visible) renderChatRow(c, threads)
+    if (rest.length > visible.length) {
+      const moreRow = el("button", "tree-row tree-more") as HTMLButtonElement
+      moreRow.type = "button"
+      moreRow.textContent = `Show ${rest.length - visible.length} more`
+      moreRow.addEventListener("click", () => {
+        showAll.add(key)
+        renderSidebar()
+      })
+      threadsNav.append(moreRow)
+    }
+  }
+}
+
+function renderChatRow(c: ChatMeta, threads: Thread[]) {
+  const isCurrent = state.chat?.id === c.id
+  if (state.renaming === c.id) {
+    const item = el("div", "tree-row chat renaming")
+    const input = document.createElement("input")
+    input.className = "rename"
+    input.value = c.title
+    input.setAttribute("aria-label", "Chat name")
+    let done = false
+    const finish = (save: boolean) => {
+      if (done) return
+      done = true
+      state.renaming = undefined
+      const title = input.value.trim()
+      if (save && title && title !== c.title) send({ type: "chat.update", id: c.id, title })
+      renderSidebar()
+    }
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") finish(true)
+      if (e.key === "Escape") {
+        e.stopPropagation()
+        finish(false)
+      }
+    })
+    input.addEventListener("blur", () => finish(true))
+    item.append(input)
+    threadsNav.append(item)
+    return
+  }
+  const row = el("button", `tree-row chat${isCurrent && !state.selected && !state.file ? " selected" : ""}`) as HTMLButtonElement
+  row.type = "button"
+  row.title = c.title
+  row.innerHTML = `${isCurrent ? CROWN_ICON : CHAT_ICON}<span class="row-title"></span>`
+  ;(row.querySelector(".row-title") as HTMLElement).textContent = isCurrent && state.chatTitle && !c.title ? state.chatTitle : c.title
+  if (isCurrent && threads.length) {
+    // The crew badge: people and a count, as Ghostex marks a coordinator's threads.
+    const count = el("span", "row-count row-tail", `${PEOPLE_ICON}<span>${threads.length}</span>`)
+    count.title = `${threads.length} thread${threads.length > 1 ? "s" : ""}`
+    row.append(count)
+  } else if (!(isCurrent && state.running)) {
+    row.append(
+      Object.assign(el("span", "row-age row-tail"), {
+        textContent: age(c.updatedAt, Date.now()),
+        title: new Date(c.updatedAt).toLocaleString(),
+      }),
+    )
+  }
+  if (isCurrent && state.running) row.append(statusMark("running"))
+  row.addEventListener("click", () => openChat(c))
+  const menu = () => (isCurrent ? currentChatMenu(row) : chatMenu(c, row))
+  const actions = [rowAction(MORE_ICON, "More actions", (b) => openMenu(menu(), b, b, "Chat actions"))]
+  if (isCurrent && state.running) actions.unshift(rowAction(STOP_ICON, "Stop the turn", () => send({ type: "cancel" })))
+  threadsNav.append(sidebarItem(row, actions, menu, "Chat actions", `chat:${c.id}`))
+  if (isCurrent) renderThreadRows(threads)
+}
+
+function renderThreadRows(list: Thread[]) {
   for (const t of list) {
     const row = el("button", `tree-row thread${state.selected === t.id ? " selected" : ""}`) as HTMLButtonElement
     row.type = "button"
@@ -694,7 +1267,7 @@ function renderSidebarRows(list: Thread[]) {
     const title = el("span", "row-title")
     title.textContent = taskTitle(t.task)
     const tail = el("span", "row-age row-tail")
-    tail.textContent = age(t.startedAt, t.finishedAt)
+    tail.textContent = age(t.startedAt, t.finishedAt ?? Date.now())
     row.append(glyph(t.provider), title, statusMark(t.error ? "error" : (t.summary?.status ?? "running")), tail)
     row.addEventListener("click", () => selectThread(t.id))
     const more = rowAction(MORE_ICON, "More actions", (b) => openMenu(threadMenu(t, row), b, b, "Thread actions"))
@@ -771,10 +1344,69 @@ function renderThreadsPill() {
 }
 
 function selectThread(id: string | undefined) {
+  if (!leaveEditor(() => selectThread(id))) return
   state.selected = id
-  detail.hidden = !id
+  state.file = undefined
+  if (id) state.panel = undefined
+  detail.hidden = !id && !state.panel
   renderSidebar()
-  if (id) renderDetail()
+  renderDetail()
+}
+
+/** A file in the side panel at a line, from a reference in a reply or a report. */
+function openFile(path: string, line?: number, endLine?: number) {
+  if (!state.workspace) return
+  if (!leaveEditor(() => openFile(path, line, endLine))) return
+  const file: NonNullable<typeof state.file> = { path, line, endLine }
+  state.file = file
+  detail.hidden = false
+  renderDetail()
+  renderSidebar()
+  void request({ type: "file.read", requestId: nextRequestId(), workspace: runDir(), path }).then((msg) => {
+    if (msg.type !== "file.content" || state.file !== file) return
+    file.content = msg
+    renderDetail()
+  })
+}
+
+function closeDetail() {
+  if (!leaveEditor(closeDetail)) return
+  if (state.file && (state.selected || state.panel)) {
+    state.file = undefined
+    renderDetail()
+    renderSidebar()
+    return
+  }
+  state.panel = undefined
+  selectThread(undefined)
+}
+
+/** Open the side panel on the file tree or the browser, or close it when it already shows that. */
+function togglePanel(panel: "files" | "browser", url?: string) {
+  if (!leaveEditor(() => togglePanel(panel, url))) return
+  const showing = state.panel === panel && !state.selected && !state.file && !detail.hidden
+  if (showing && !url) {
+    closeDetail()
+    return
+  }
+  state.panel = panel
+  state.selected = undefined
+  state.file = undefined
+  if (url) state.browser = { url, nonce: state.browser.nonce + 1 }
+  detail.hidden = false
+  if (panel === "files") loadFiles()
+  renderSidebar()
+  renderDetail()
+}
+
+function loadFiles() {
+  const dir = runDir()
+  if (!dir) return
+  void request({ type: "files.list", requestId: nextRequestId(), workspace: dir, query: "", limit: 20_000 }).then((m) => {
+    if (m.type !== "files.listed") return
+    state.files = m.files
+    if (state.panel === "files" && !state.file && !state.selected) renderDetail()
+  })
 }
 
 // ── A thread's diff: review comments and revert ────────────────────────
@@ -796,7 +1428,7 @@ function loadDiff(t: Thread) {
   const checkpoint = t.summary?.checkpoint
   if (!checkpoint || t.diffRequested) return
   t.diffRequested = true
-  void request({ type: "thread.diff", requestId: nextRequestId(), workspace: state.workspace, checkpoint }).then((msg) => {
+  void request({ type: "thread.diff", requestId: nextRequestId(), workspace: runDir(), checkpoint }).then((msg) => {
     if (msg.type !== "thread.diff") return
     t.diff = msg.error
       ? { files: [], truncated: false, error: msg.error }
@@ -967,7 +1599,7 @@ function renderChanges(t: Thread): HTMLElement {
     void request({
       type: "thread.revert",
       requestId: nextRequestId(),
-      workspace: state.workspace,
+      workspace: runDir(),
       checkpoint,
       title: taskTitle(t.task),
     }).then((msg) => {
@@ -1024,7 +1656,7 @@ function worktreeAction(t: Thread, worktree: string, action: "preview" | "apply"
   void request({
     type: "worktree.action",
     requestId: nextRequestId(),
-    workspace: state.workspace,
+    workspace: runDir(),
     worktree,
     action,
     force,
@@ -1104,7 +1736,242 @@ function renderWorktree(t: Thread, worktree: string): HTMLElement {
   return box
 }
 
+type DetailTab = "overview" | "changes" | "route" | "activity"
+const TAB_LABELS: Record<DetailTab, string> = { overview: "Overview", changes: "Changes", route: "Route", activity: "Activity" }
+
+function threadTabs(t: Thread): DetailTab[] {
+  const sum = t.summary
+  const tabs: DetailTab[] = ["overview"]
+  if (sum?.worktree || sum?.checkpoint?.after || sum?.changedFiles.length) tabs.push("changes")
+  if (sum) tabs.push("route")
+  if (t.activity.length) tabs.push("activity")
+  return tabs
+}
+
+/** The panel's tabs, as a tablist: arrows move between them, the chosen one is the only tab stop. */
+function renderTabs(t: Thread, tabs: DetailTab[], active: DetailTab) {
+  const bar = $("detail-tabs")
+  bar.hidden = tabs.length < 2
+  bar.replaceChildren()
+  for (const tab of tabs) {
+    const b = el("button", "tab") as HTMLButtonElement
+    b.type = "button"
+    b.id = `tab-${tab}`
+    b.setAttribute("role", "tab")
+    b.setAttribute("aria-selected", String(tab === active))
+    b.setAttribute("aria-controls", "detail-body")
+    b.tabIndex = tab === active ? 0 : -1
+    b.textContent = TAB_LABELS[tab]
+    if (tab === "changes" && t.comments.length) b.append(Object.assign(el("span", "tab-count"), { textContent: String(t.comments.length) }))
+    b.addEventListener("click", () => {
+      t.tab = tab
+      renderDetail()
+      $("detail-tabs").querySelector<HTMLElement>(`#tab-${tab}`)?.focus()
+    })
+    b.addEventListener("keydown", (e) => {
+      const i = tabs.indexOf(tab)
+      const next =
+        e.key === "ArrowRight" ? tabs[(i + 1) % tabs.length] : e.key === "ArrowLeft" ? tabs[(i + tabs.length - 1) % tabs.length] : undefined
+      if (!next) return
+      e.preventDefault()
+      t.tab = next
+      renderDetail()
+      $("detail-tabs").querySelector<HTMLElement>(`#tab-${next}`)?.focus()
+    })
+    bar.append(b)
+  }
+}
+
+/** The bar above a file: back, where you are, and Edit / Save / Done or Open in VS Code and Copy. */
+function fileBar(file: NonNullable<typeof state.file>, content: FileContent): HTMLElement {
+  const bar = el("div", "file-bar")
+  if (state.selected || state.panel) {
+    const back = el("button", "ghost small") as HTMLButtonElement
+    back.type = "button"
+    back.textContent = state.selected ? "Back to the thread" : state.panel === "files" ? "Back to files" : "Back"
+    back.addEventListener("click", closeDetail)
+    bar.append(back)
+  }
+  bar.append(
+    Object.assign(el("span", "muted"), {
+      textContent: editing.dirty ? "Unsaved changes" : file.line ? `Line ${file.line}${file.endLine ? `-${file.endLine}` : ""}` : "",
+    }),
+  )
+  if (editing.path === file.path && !content.error) {
+    if (editing.ask)
+      bar.append(
+        Object.assign(el("span", "muted"), { textContent: "Discard your changes?" }),
+        textButton("Save", "primary small", () => void saveEdit()),
+        textButton("Discard", "ghost small danger", () => {
+          const after = editing.after
+          stopEditing()
+          after?.()
+        }),
+        textButton("Keep editing", "ghost small", () => {
+          editing.ask = false
+          editing.after = undefined
+          renderEditorBar()
+          editing.handle?.focus()
+        }),
+      )
+    else
+      bar.append(
+        textButton("Save", "primary small", () => void saveEdit(), !editing.dirty),
+        textButton("Done", "ghost small", () => {
+          if (leaveEditor(() => renderDetail())) renderDetail()
+        }),
+      )
+    return bar
+  }
+  if (!content.error && !content.truncated) bar.append(textButton("Edit", "ghost small", () => startEditing(file.path)))
+  bar.append(
+    iconButton(EDITOR_ICON, "Open in VS Code", () => send({ type: "open.editor", workspace: runDir(), path: file.path, line: file.line })),
+    copyButton(() => (file.line ? `${file.path}:${file.line}` : file.path), "Copy path"),
+  )
+  return bar
+}
+
+function renderFilePanel(file: NonNullable<typeof state.file>) {
+  const g = $("detail-glyph")
+  g.className = "glyph file"
+  g.innerHTML = FOLDER_ICON.replace("row-icon", "file-icon")
+  $("detail-title").textContent = file.path
+  $("detail-tabs").hidden = true
+  const body = $("detail-body")
+  body.setAttribute("aria-labelledby", "detail-title")
+  const content = file.content
+  if (!content) {
+    body.replaceChildren(Object.assign(el("div", "muted"), { textContent: "Loading the file…" }))
+    return
+  }
+  const bar = fileBar(file, content)
+  if (editing.path === file.path && !content.error) {
+    const host = el("div", "editor-host")
+    body.replaceChildren(bar, host)
+    const text = editing.handle?.text() ?? content.text
+    editing.handle?.destroy()
+    editing.handle = undefined
+    void createEditor(host, {
+      doc: text,
+      path: file.path,
+      line: file.line,
+      changed: (dirty) => {
+        const next = dirty || text !== content.text
+        if (next === editing.dirty) return
+        editing.dirty = next
+        renderEditorBar()
+      },
+      save: () => void saveEdit(),
+    }).then((h) => {
+      if (!host.isConnected) {
+        h.destroy()
+        return
+      }
+      editing.handle = h
+      h.focus()
+    })
+    return
+  }
+  const view = el("div", "file-wrap")
+  renderFileView(view, content, file.line, file.endLine)
+  body.replaceChildren(bar, view)
+}
+
+// ── The built-in editor ─────────────────────────────────────────────────
+
+const EDITOR_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11 2.5 5.5 8 11 13.5l2.5-1.2V3.7zM5.5 8 2.5 5.5v5zM11 5.5 7.5 8 11 10.5" /></svg>`
+const editing: { path?: string; dirty: boolean; handle?: EditorHandle; ask?: boolean; after?: () => void; saving?: boolean } = {
+  dirty: false,
+}
+
+function textButton(label: string, cls: string, run: () => void, disabled = false): HTMLButtonElement {
+  const b = el("button", cls) as HTMLButtonElement
+  b.type = "button"
+  b.textContent = label
+  b.disabled = disabled
+  b.addEventListener("click", run)
+  return b
+}
+
+function startEditing(path: string) {
+  editing.path = path
+  editing.dirty = false
+  editing.ask = false
+  renderDetail()
+}
+
+function stopEditing() {
+  editing.handle?.destroy()
+  Object.assign(editing, { path: undefined, dirty: false, handle: undefined, ask: false, after: undefined })
+  renderDetail()
+}
+
+/** Leaving the editor with unsaved changes asks first; true when it is fine to go on now. */
+function leaveEditor(after: () => void): boolean {
+  if (!editing.path) return true
+  if (!editing.dirty) {
+    editing.handle?.destroy()
+    Object.assign(editing, { path: undefined, handle: undefined, ask: false })
+    return true
+  }
+  editing.ask = true
+  editing.after = after
+  renderEditorBar()
+  return false
+}
+
+/** Redraw the file bar only: the editor keeps its text, cursor and focus. */
+function renderEditorBar() {
+  const old = $("detail-body").querySelector(":scope > .file-bar")
+  if (!old || !state.file?.content) return
+  old.replaceWith(fileBar(state.file, state.file.content))
+}
+
+async function saveEdit() {
+  const file = state.file
+  if (!file?.content || !editing.handle || editing.saving) return
+  editing.saving = true
+  const text = editing.handle.text()
+  const msg = await request({
+    type: "file.write",
+    requestId: nextRequestId(),
+    workspace: runDir(),
+    path: file.path,
+    text,
+    expectedMtime: file.content.mtime,
+  })
+  editing.saving = false
+  if (msg.type !== "file.saved") return
+  if (msg.error) {
+    showBanner(msg.error)
+    return
+  }
+  file.content = { ...file.content, text, mtime: msg.mtime }
+  editing.dirty = false
+  const after = editing.ask ? editing.after : undefined
+  editing.ask = false
+  editing.after = undefined
+  renderEditorBar()
+  flash($("detail-title"), `Saved ${file.path}`)
+  after?.()
+}
+
+function renderPanelButtons() {
+  const onPanel = !detail.hidden && !state.selected && !state.file
+  $("toggle-files").setAttribute("aria-pressed", String(onPanel && state.panel === "files"))
+  $("toggle-browser").setAttribute("aria-pressed", String(onPanel && state.panel === "browser"))
+}
+
 function renderDetail() {
+  renderPanelButtons()
+  if (state.file) {
+    renderFilePanel(state.file)
+    return
+  }
+  if (!state.selected && state.panel) {
+    renderSidePanel(state.panel)
+    return
+  }
   const t = state.selected ? state.threads.get(state.selected) : undefined
   if (!t) return
   const g = $("detail-glyph")
@@ -1113,6 +1980,68 @@ function renderDetail() {
   $("detail-title").textContent = taskTitle(t.task)
   const body = $("detail-body")
   body.replaceChildren()
+  body.setAttribute("aria-labelledby", "detail-title")
+  const tabs = threadTabs(t)
+  const tab = t.tab && tabs.includes(t.tab) ? t.tab : "overview"
+  renderTabs(t, tabs, tab)
+  if (tabs.length > 1) body.setAttribute("aria-labelledby", `tab-${tab}`)
+
+  const section = (title: string, node: HTMLElement) => {
+    const s = el("section", "detail-section")
+    s.append(Object.assign(el("h3"), { textContent: title }), node)
+    body.append(s)
+  }
+  const sum = t.summary
+  if (tab === "changes") {
+    if (sum?.worktree) section("Worktree", renderWorktree(t, sum.worktree))
+    if (sum?.checkpoint?.after) section("Changes", renderChanges(t))
+    else if (sum?.changedFiles.length) {
+      const list = el("ul", "files mono")
+      for (const f of sum.changedFiles) list.append(Object.assign(el("li"), { textContent: f }))
+      section("Files changed", list)
+    }
+    return
+  }
+  if (tab === "route" && sum) {
+    const attempts = el("ol", "attempts")
+    for (const a of sum.attempts) {
+      const li = el("li", a.outcome === "ok" || a.outcome === "done" ? "good" : "")
+      li.append(
+        glyph(a.provider),
+        Object.assign(el("span"), { textContent: `${PROVIDER_LABEL[a.provider]}, ${a.tier}` }),
+        Object.assign(el("span", "muted"), { textContent: `${a.outcome}${a.errorKind ? ` (${a.errorKind})` : ""}` }),
+      )
+      if (a.message) li.title = a.message
+      attempts.append(li)
+    }
+    section("Attempts", attempts)
+    const box = el("div", "facts")
+    for (const line of [
+      `Task class: ${sum.taskClass}`,
+      `Stop reason: ${sum.stopReason}`,
+      ...(sum.sessionId ? [`Session: ${sum.sessionId}`] : []),
+      ...(sum.worktree ? [`Worktree: ${sum.worktree}`] : []),
+    ])
+      box.append(Object.assign(el("div"), { textContent: line }))
+    section("Route", box)
+    if (sum.notes.length) {
+      const notes = el("ul", "findings")
+      for (const n of sum.notes) notes.append(Object.assign(el("li"), { textContent: n }))
+      section("Notes", notes)
+    }
+    return
+  }
+  if (tab === "activity") {
+    const list = el("ul", "activity mono")
+    for (const line of t.activity) {
+      const li = el("li")
+      li.append(Object.assign(el("span", "who"), { textContent: line.who }), document.createTextNode(line.text))
+      list.append(li)
+    }
+    section("Activity", list)
+    list.scrollTop = list.scrollHeight
+    return
+  }
 
   const status = t.error ? "error" : (t.summary?.status ?? "running")
   const meta = el("div", "detail-meta")
@@ -1138,53 +2067,25 @@ function renderDetail() {
   }
   body.append(facts)
 
-  const section = (title: string, node: HTMLElement) => {
-    const s = el("section", "detail-section")
-    s.append(Object.assign(el("h3"), { textContent: title }), node)
-    body.append(s)
-  }
   section("Task", Object.assign(el("p", "task"), { textContent: t.task }))
   if (t.error) section("Error", Object.assign(el("div", "error"), { textContent: t.error }))
-  const sum = t.summary
-  if (sum?.worktree) section("Worktree", renderWorktree(t, sum.worktree))
-  if (sum?.checkpoint?.after) section("Changes", renderChanges(t))
-  else if (sum?.changedFiles.length) {
-    const list = el("ul", "files mono")
-    for (const f of sum.changedFiles) list.append(Object.assign(el("li"), { textContent: f }))
-    section("Files changed", list)
-  }
   if (sum?.findings.length) {
     const list = el("ul", "findings")
     for (const f of sum.findings) list.append(Object.assign(el("li", f.severity), { textContent: f.message }))
     section("Harness findings", list)
   }
   if (sum) {
-    const attempts = sum.attempts.map(
-      (a) => `${PROVIDER_LABEL[a.provider]}/${a.tier} ${a.outcome}${a.errorKind ? ` (${a.errorKind})` : ""}`,
-    )
-    const lines = [
-      `Attempts: ${attempts.join(" → ")}`,
-      `Stop reason: ${sum.stopReason}`,
-      ...(sum.worktree ? [`Worktree: ${sum.worktree}`] : []),
-    ]
-    const box = el("div", "facts")
-    for (const line of lines) box.append(Object.assign(el("div"), { textContent: line }))
-    section("Route", box)
-    section("Report (Conductor verifies before using it)", el("div", "md", renderMarkdown(sum.report || "(no output)")))
-  }
-  if (t.activity.length) {
-    const list = el("ul", "activity mono")
-    for (const line of t.activity) {
-      const li = el("li")
-      li.append(Object.assign(el("span", "who"), { textContent: line.who }), document.createTextNode(line.text))
-      list.append(li)
-    }
-    section("Activity", list)
-    list.scrollTop = list.scrollHeight
+    const report = mdBlock(sum.report || "(no output)")
+    report.dataset.report = t.id
+    section("Report (Conductor verifies before using it)", report)
+  } else if (!t.error && t.activity.length) {
+    const last = t.activity.at(-1) as Thread["activity"][number]
+    section("Now", Object.assign(el("div", "facts mono"), { textContent: `${last.who}: ${last.text}` }))
   }
 }
 
 function refreshThread(t: Thread) {
+  renderStrip()
   renderAgentCard(t)
   renderThreadsPill()
   renderSidebar()
@@ -1202,7 +2103,7 @@ function delegationStarted(msg: Extract<ServerMessage, { type: "delegation.start
     model: msg.model,
     tier: msg.tier,
     status: "running",
-    startedAt: Date.now(),
+    startedAt: now(),
     tokens: 0,
     activity: [],
     comments: [],
@@ -1235,14 +2136,19 @@ function delegationEvent(msg: Extract<ServerMessage, { type: "delegation.event" 
   if (msg.provider !== t.provider) t.provider = msg.provider
   if (state.selected === t.id) renderDetail()
   if (ev.type !== "tool_call") renderSidebar()
+  else renderStrip()
 }
 
 function delegationFinished(id: string, summary: DelegationSummary) {
   const t = state.threads.get(id)
   if (!t) return
   addUsage(summary.costUsd, summary.tokens.input, summary.tokens.output)
-  Object.assign(t, { summary, provider: summary.provider, tokens: summary.tokens.input + summary.tokens.output, finishedAt: Date.now() })
+  Object.assign(t, { summary, provider: summary.provider, tokens: summary.tokens.input + summary.tokens.output, finishedAt: now() })
   refreshThread(t)
+  if (summary.status === "blocked") {
+    notify("agent-router: a thread needs you", `${taskTitle(t.task)}: ${resultLine(summary.report)}`)
+    sound("attention")
+  }
 }
 
 function delegationFailed(id: string, error: string) {
@@ -1251,7 +2157,7 @@ function delegationFailed(id: string, error: string) {
     append(el("div", "error", escapeHtml(`Delegation refused: ${error}`)))
     return
   }
-  Object.assign(t, { error, finishedAt: Date.now() })
+  Object.assign(t, { error, finishedAt: now() })
   refreshThread(t)
 }
 
@@ -1263,7 +2169,100 @@ function clearThreads() {
   $("chat-title").textContent = "Conductor"
 }
 
-$("detail-close").addEventListener("click", () => selectThread(undefined))
+const emptyState = ($("empty") as HTMLElement).cloneNode(true) as HTMLElement
+
+/** An empty transcript: no turn, no threads, no usage. The server's chat is left to the caller. */
+function resetView(withEmpty: boolean) {
+  find.reset()
+  quickCards.clear()
+  clearThreads()
+  state.fold = undefined
+  state.turnEl = undefined
+  state.tools.clear()
+  log.replaceChildren(...(withEmpty ? [emptyState.cloneNode(true)] : []))
+  state.costUsd = 0
+  state.tokensIn = 0
+  state.tokensOut = 0
+  addUsage(0)
+}
+
+/** A new chat, in this workspace or another folder. */
+function newChat(dir?: string) {
+  if (state.running) {
+    showBanner("Stop the running turn before starting a new chat.")
+    return
+  }
+  send({ type: "reset" })
+  state.chat = undefined
+  prefs.remove("chat")
+  resetView(true)
+  if (dir && !samePath(dir, state.workspace)) setWorkspace(dir)
+  else {
+    renderSidebar()
+    loadWorktrees()
+  }
+  promptBox.focus()
+}
+
+const KEEP_TURNS = 20
+
+/** A reopened chat, drawn from its saved messages exactly as they first arrived. */
+function replayChat(msg: Extract<ServerMessage, { type: "chat.replay" }>) {
+  resetView(false)
+  state.chat = msg.chat
+  prefs.set("chat", msg.chat.id)
+  if (!samePath(msg.chat.workspace, state.workspace)) setWorkspace(msg.chat.workspace)
+  // A long chat shows its last turns; the older ones are drawn folded, behind one button.
+  const starts = msg.events.flatMap((e, i) => (e.msg.type === "turn.started" ? [i] : []))
+  const cut = starts.length > KEEP_TURNS ? (starts[starts.length - KEEP_TURNS] as number) : 0
+  if (cut) {
+    // Drawn into a detached element, out of the page (and out of find, the minimap and layout) until asked for.
+    const earlier = el("div", "earlier-turns")
+    const more = el("button", "ghost small earlier-button") as HTMLButtonElement
+    more.type = "button"
+    more.textContent = `Show ${starts.length - KEEP_TURNS} earlier turn${starts.length - KEEP_TURNS > 1 ? "s" : ""}`
+    more.addEventListener("click", () => {
+      const keep = log.scrollHeight - log.scrollTop
+      more.replaceWith(earlier)
+      log.scrollTop = log.scrollHeight - keep
+    })
+    log.append(more)
+    state.earlier = earlier
+  }
+  state.replaying = true
+  try {
+    msg.events.forEach((ev, i) => {
+      if (i === cut) state.earlier = undefined
+      state.replayAt = ev.at
+      onMessage(ev.msg)
+    })
+  } finally {
+    state.replaying = false
+    state.replayAt = undefined
+    state.earlier = undefined
+  }
+  if (msg.running) setRunning(true)
+  else {
+    // The app or the turn stopped before this chat's last turn ended: close it as it stands.
+    if (state.turnEl) {
+      state.turnEl.querySelector(".status-line")?.remove()
+      closeFold()
+      state.turnEl = undefined
+    }
+    for (const t of state.threads.values())
+      if (!t.summary && !t.error) Object.assign(t, { error: "Stopped before it finished.", finishedAt: t.startedAt })
+    for (const t of state.threads.values()) refreshThread(t)
+    setRunning(false)
+  }
+  state.chatTitle = msg.chat.title
+  $("chat-title").textContent = msg.chat.title
+  renderWorktreeTray()
+  if (!log.childElementCount) log.append(emptyState.cloneNode(true))
+  log.scrollTop = log.scrollHeight
+  renderSidebar()
+}
+
+$("detail-close").addEventListener("click", closeDetail)
 // Ages in the sidebar tick while threads run.
 setInterval(() => {
   if ([...state.threads.values()].some((t) => !t.finishedAt)) renderSidebar()
@@ -1301,23 +2300,60 @@ function approvalRequest(msg: Extract<ServerMessage, { type: "approval.request" 
   }
   append(card)
   ;(card.querySelector("button") as HTMLButtonElement).focus()
-  notifyIfAway("agent-router: approval needed", title)
+  notify("agent-router: approval needed", title)
+  sound("attention")
 }
 
 // ── Server connection ───────────────────────────────────────────────────
 
 function onMessage(msg: ServerMessage) {
   if (settings.onMessage(msg)) return
-  if (
-    (msg.type === "thread.diff" || msg.type === "thread.reverted" || msg.type === "worktree.result") &&
-    pendingRequests.has(msg.requestId)
-  ) {
+  if (besideMessage(msg)) return
+  if ("requestId" in msg && pendingRequests.has(msg.requestId)) {
     pendingRequests.get(msg.requestId)?.(msg)
     pendingRequests.delete(msg.requestId)
     return
   }
   switch (msg.type) {
+    case "chats":
+      state.chats = msg.items
+      if (state.chat) {
+        const fresh = msg.items.find((c) => c.id === state.chat?.id)
+        if (fresh) {
+          state.chat = fresh
+          state.chatTitle = fresh.title
+          $("chat-title").textContent = fresh.title
+        }
+      }
+      renderSidebar()
+      return
+    case "chat.current": {
+      // On connecting, reopen what was on screen (or last time's chat), so the next request resumes it.
+      if (state.greeting) {
+        state.greeting = false
+        const want = msg.chat?.id ?? state.chat?.id ?? savedChat ?? undefined
+        if (want && (state.chats.some((c) => c.id === want) || msg.chat?.id === want)) {
+          send({ type: "chat.open", id: want })
+          return
+        }
+      }
+      // A scheduled request can start a new chat on its own: clear what was on screen.
+      if (!msg.chat && state.chat && !state.running) resetView(true)
+      state.chat = msg.chat
+      if (msg.chat) prefs.set("chat", msg.chat.id)
+      if (msg.chat && state.runningCard) {
+        send({ type: "board.upsert", workspace: state.workspace, card: { id: state.runningCard, column: "doing", chatId: msg.chat.id } })
+        state.runningCard = undefined
+      }
+      renderSidebar()
+      renderWorktreeTray()
+      return
+    }
+    case "chat.replay":
+      replayChat(msg)
+      return
     case "hello":
+      state.greeting = true
       showBanner(undefined)
       // Backend health does not depend on the folder, so show it before one is chosen.
       if (state.workspace) setWorkspace(state.workspace)
@@ -1329,9 +2365,9 @@ function onMessage(msg: ServerMessage) {
       renderPlans(msg.backends.plans, msg.backends.configuredPlan)
       return
     case "turn.started": {
-      append(el("div", "user", escapeHtml(msg.prompt)), log)
+      append(userMessage(msg.prompt, now()), top())
       if (!state.chatTitle) {
-        state.chatTitle = taskTitle(msg.prompt)
+        state.chatTitle = state.chat?.title ?? taskTitle(msg.prompt)
         $("chat-title").textContent = state.chatTitle
       }
       state.turnEl = el("section", "turn")
@@ -1342,8 +2378,8 @@ function onMessage(msg: ServerMessage) {
           `<span class="spinner"></span><span>${msg.resumed ? "Continuing the conversation" : "Starting Conductor"}…</span>${msg.mode ? `<span class="muted">${escapeHtml(msg.mode)}</span>` : ""}`,
         ),
       )
-      append(state.turnEl, log)
-      setRunning(true)
+      append(state.turnEl, top())
+      if (!state.replaying) setRunning(true)
       return
     }
     case "conductor":
@@ -1354,9 +2390,23 @@ function onMessage(msg: ServerMessage) {
       state.turnEl?.querySelector(".status-line")?.remove()
       closeFold()
       if (!msg.ok && msg.error) append(el("div", "error", escapeHtml(msg.error)))
-      notifyIfAway("agent-router", msg.ok ? "Your request is done." : `Stopped: ${(msg.error ?? "error").slice(0, 160)}`)
-      setRunning(false)
+      notify("agent-router", msg.ok ? "Your request is done." : `Stopped: ${(msg.error ?? "error").slice(0, 160)}`)
+      sound("done")
       state.turnEl = undefined
+      if (state.replaying) return
+      // Delegates stop with the turn (Stop, an interrupt, a crash): their threads end here too.
+      for (const t of state.threads.values())
+        if (!t.summary && !t.error) {
+          Object.assign(t, { error: "Stopped with the turn.", finishedAt: Date.now() })
+          refreshThread(t)
+        }
+      setRunning(false)
+      // A board card that ran in this chat is ready for review.
+      for (const card of board.cards())
+        if (card.chatId && card.chatId === state.chat?.id && card.column === "doing")
+          send({ type: "board.move", workspace: state.workspace, id: card.id, column: "review", index: 0 })
+      // The turn may have changed files: refresh the branch's +/- counts.
+      if (state.workspace) send({ type: "status", workspace: state.workspace })
       return
     case "queue":
       renderQueue(msg.items, msg.paused)
@@ -1409,6 +2459,7 @@ function startRequest(prompt: string): boolean {
     return false
   }
   showBanner(undefined)
+  const run = state.newChatRun
   send({
     type: "start",
     prompt,
@@ -1416,6 +2467,9 @@ function startRequest(prompt: string): boolean {
     permission: permissionSelect.value as PermissionMode,
     profile: profileSelect.value || undefined,
     plan: planSelect.value || undefined,
+    // Only a new chat picks where it runs.
+    ...(!state.chat && run.mode === "new" ? { worktree: { base: run.base } } : {}),
+    ...(!state.chat && run.mode === "existing" ? { worktree: { path: run.path } } : {}),
   })
   return true
 }
@@ -1427,9 +2481,27 @@ function submit() {
     return
   }
   if (!prompt) return
+  // "/btw …" is a side question for the fast model; Conductor's chat is not interrupted.
+  const side = /^\/btw\s+([\s\S]+)/.exec(prompt)
+  if (side) {
+    if (!state.workspace) {
+      showBanner("Choose a workspace folder first.")
+      return
+    }
+    send({ type: "side.ask", workspace: runDir(), question: (side[1] as string).trim() })
+    history.push(prompt)
+    prefs.set("history", JSON.stringify(history.all))
+    promptBox.value = ""
+    composer.close()
+    updateSendButton()
+    return
+  }
   // The bubble appears when the server starts the turn: now, or later if it queues it.
   if (!startRequest(prompt)) return
+  history.push(prompt)
+  prefs.set("history", JSON.stringify(history.all))
   promptBox.value = ""
+  composer.close()
   updateSendButton()
 }
 
@@ -1439,28 +2511,219 @@ $("form").addEventListener("submit", (e) => {
 })
 promptBox.addEventListener("input", updateSendButton)
 promptBox.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+  if (e.isComposing || composer.handleKey(e)) return
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault()
+    submit()
+  } else if (e.key === "Tab" && !e.shiftKey && state.running && promptBox.value.trim()) {
+    // Ghostex's Tab to queue: only while a turn runs and there is text, so Tab still moves focus otherwise.
     e.preventDefault()
     submit()
   }
 })
 $("workspace").addEventListener("click", async () => {
   const dir = await open({ directory: true, multiple: false, defaultPath: state.workspace || undefined })
-  if (typeof dir === "string") {
-    if (dir !== state.workspace) send({ type: "reset" })
-    setWorkspace(dir)
-  }
+  if (typeof dir === "string" && !samePath(dir, state.workspace)) newChat(dir)
 })
-$("new-chat").addEventListener("click", () => {
-  if (state.running) return
-  send({ type: "reset" })
-  clearThreads()
-  state.fold = undefined
-  log.replaceChildren()
-  state.costUsd = 0
-  state.tokensIn = 0
-  state.tokensOut = 0
-  addUsage(0)
+$("new-chat").addEventListener("click", () => newChat())
+
+// ── Composer: @files, /commands, history, images ───────────────────────
+
+const history = new PromptHistory(prefs.json<string[]>("history", []))
+
+function slashCommands(): Command[] {
+  const profiles = state.backends?.profiles ?? []
+  return [
+    { name: "new", hint: "Start a new chat", run: () => newChat() },
+    ...(state.running ? [{ name: "stop", hint: "Stop the running turn", run: () => send({ type: "cancel" }) }] : []),
+    { name: "route", hint: "Pin a kind of task: /route code.review gemini", insert: "/route" },
+    ...profiles.map((p) => ({ name: p.name, hint: `${p.label} profile for this request`, insert: `@${p.name}` })),
+    { name: "claude", hint: "Pin Claude for this request", insert: "@claude" },
+    { name: "gemini", hint: "Pin Gemini for this request", insert: "@gemini" },
+    { name: "codex", hint: "Pin Codex for this request", insert: "@codex" },
+    { name: "ultrawork", hint: "Finish the whole task and verify it", insert: "ultrawork" },
+    { name: "btw", hint: "A side question for a fast model; Conductor keeps working", insert: "/btw" },
+    { name: "catchup", hint: "Where this chat stands, in a few lines", run: () => catchUp() },
+    { name: "terminal", hint: "Open the terminal", run: () => dock.show(true) },
+    { name: "cli", hint: "Continue Conductor's session in the Claude Code CLI", run: () => void dock.open("conductor") },
+    { name: "files", hint: "Browse the workspace's files", run: () => togglePanel("files") },
+    { name: "browser", hint: "Preview a local web page", run: () => togglePanel("browser") },
+    { name: "board", hint: "The workspace's Kanban board", run: () => setView("board") },
+    {
+      name: "save",
+      hint: "Save this chat as Markdown",
+      run: () => state.chat && void saveMarkdown(state.chat.title, { chatId: state.chat.id }),
+    },
+    { name: "models", hint: "Model and reasoning for each tier", run: () => $("open-settings").click() },
+    { name: "find", hint: "Find in this chat", run: () => find.open() },
+    { name: "search", hint: "Search every chat", run: () => palette.open() },
+    { name: "glass", hint: "Turn glass on or off", run: () => appearance.toggle() },
+  ]
+}
+
+const composer = setupComposer({
+  box: promptBox,
+  list: $("complete"),
+  files: (query) =>
+    state.workspace
+      ? request({ type: "files.list", requestId: nextRequestId(), workspace: runDir(), query }).then((m) =>
+          m.type === "files.listed" ? m.files : [],
+        )
+      : Promise.resolve([]),
+  commands: slashCommands,
+  history,
+  changed: updateSendButton,
+})
+
+/** Images go to the workspace (.harness/attachments) and into the request as @path. */
+async function attachImages(files: File[]) {
+  const images = files.filter((f) => f.type.startsWith("image/"))
+  if (!images.length) return
+  if (!state.workspace) {
+    showBanner("Choose a workspace folder first.")
+    return
+  }
+  for (const f of images) {
+    const ext = f.type.split("/")[1]?.replace("jpeg", "jpg") ?? "png"
+    const name = f.name && /\.\w+$/.test(f.name) ? f.name : `pasted.${ext}`
+    const data = await fileBase64(f)
+    const msg = await request({ type: "attachment.save", requestId: nextRequestId(), workspace: runDir(), name, data })
+    if (msg.type !== "attachment.saved") continue
+    if (msg.error) showBanner(msg.error)
+    else composer.mention(msg.path)
+  }
+}
+promptBox.addEventListener("paste", (e) => {
+  const files = [...(e.clipboardData?.files ?? [])]
+  if (!files.some((f) => f.type.startsWith("image/"))) return
+  e.preventDefault()
+  void attachImages(files)
+})
+const form = $("form")
+form.addEventListener("dragover", (e) => {
+  if (![...(e.dataTransfer?.items ?? [])].some((i) => i.kind === "file")) return
+  e.preventDefault()
+  form.classList.add("dropping")
+})
+form.addEventListener("dragleave", () => form.classList.remove("dropping"))
+form.addEventListener("drop", (e) => {
+  form.classList.remove("dropping")
+  const files = [...(e.dataTransfer?.files ?? [])]
+  if (!files.length) return
+  e.preventDefault()
+  void attachImages(files)
+})
+const attachInput = $<HTMLInputElement>("attach-file")
+$("attach").addEventListener("click", () => attachInput.click())
+attachInput.addEventListener("change", () => {
+  const files = [...(attachInput.files ?? [])]
+  attachInput.value = ""
+  void attachImages(files)
+})
+$("expand").addEventListener("click", () => {
+  const big = form.classList.toggle("expanded")
+  $("expand").setAttribute("aria-pressed", String(big))
+  promptBox.focus()
+})
+
+// ── Find, the palette, appearance ───────────────────────────────────────
+
+const find = setupFind({
+  bar: $("find-bar"),
+  input: $<HTMLInputElement>("find-input"),
+  count: $("find-count"),
+  prev: $<HTMLButtonElement>("find-prev"),
+  next: $<HTMLButtonElement>("find-next"),
+  close: $<HTMLButtonElement>("find-close"),
+  root: log,
+})
+$("open-find").addEventListener("click", () => find.open())
+
+const paletteFilter = { folder: false, pinned: false }
+const chatShown = (c: ChatMeta) => (!paletteFilter.folder || samePath(c.workspace, state.workspace)) && (!paletteFilter.pinned || c.pinned)
+
+function paletteItems(): PaletteItem[] {
+  const items: PaletteItem[] = []
+  for (const c of state.chats.filter(chatShown))
+    items.push({
+      group: "Chats",
+      label: c.title,
+      detail: `${folderName(c.workspace)}, ${age(c.updatedAt, Date.now())} ago${c.pinned ? ", pinned" : ""}`,
+      run: () => openChat(c),
+    })
+  for (const t of state.threads.values())
+    items.push({ group: "Threads in this chat", label: taskTitle(t.task), detail: statusText(t), run: () => selectThread(t.id) })
+  items.push(
+    { group: "Commands", label: "New chat", keys: "Ctrl N", run: () => newChat() },
+    { group: "Commands", label: "Open a folder", run: () => $("workspace").click() },
+    { group: "Commands", label: "Find in this chat", keys: "Ctrl F", run: () => find.open() },
+    { group: "Commands", label: "Models", run: () => $("open-settings").click() },
+    {
+      group: "Commands",
+      label: "Toggle the sidebar",
+      keys: "Ctrl B",
+      run: () => document.querySelector(".app")?.classList.toggle("no-sidebar"),
+    },
+    { group: "Commands", label: "Glass on or off", run: () => appearance.toggle() },
+  )
+  items.push(
+    { group: "Commands", label: "Board", run: () => setView("board") },
+    { group: "Commands", label: "Files", keys: "Ctrl P", run: () => togglePanel("files") },
+    { group: "Commands", label: "Browser preview", run: () => togglePanel("browser") },
+    { group: "Commands", label: "Terminal", keys: "Ctrl `", run: () => dock.show(true) },
+    { group: "Commands", label: "Continue in the Claude Code CLI", run: () => void dock.open("conductor") },
+    { group: "Commands", label: "Catch me up", run: catchUp },
+  )
+  if (state.chat) {
+    const chat = state.chat
+    items.push({ group: "Commands", label: "Save this chat as Markdown", run: () => void saveMarkdown(chat.title, { chatId: chat.id }) })
+  }
+  if (state.running) items.push({ group: "Commands", label: "Stop the turn", run: () => send({ type: "cancel" }) })
+  for (const sc of state.schedules)
+    items.push({
+      group: "Scheduled",
+      label: sc.prompt,
+      detail: new Date(sc.at).toLocaleString(),
+      run: () => $("schedule-btn").click(),
+    })
+  return items
+}
+
+const palette = setupPalette({
+  dialog: $<HTMLDialogElement>("palette"),
+  input: $<HTMLInputElement>("palette-input"),
+  list: $("palette-list"),
+  items: paletteItems,
+  search: (query) =>
+    request({ type: "chats.search", requestId: nextRequestId(), query }).then((m) =>
+      m.type === "chats.found"
+        ? m.hits
+            .filter((h) => chatShown(h.chat))
+            .map((h) => ({ group: "In messages", label: h.chat.title, detail: h.snippet, run: () => openChat(h.chat) }))
+        : [],
+    ),
+})
+$("open-palette").addEventListener("click", () => palette.open())
+for (const [id, key] of [
+  ["pf-folder", "folder"],
+  ["pf-pinned", "pinned"],
+] as const)
+  $(id).addEventListener("click", () => {
+    paletteFilter[key] = !paletteFilter[key]
+    $(id).setAttribute("aria-pressed", String(paletteFilter[key]))
+    palette.refresh()
+    $("palette-input").focus()
+  })
+
+const appearance = setupAppearance({
+  toggle: $<HTMLInputElement>("glass-toggle"),
+  swatches: $("backdrop-swatches"),
+  choose: $<HTMLButtonElement>("backdrop-choose"),
+  remove: $<HTMLButtonElement>("backdrop-remove"),
+  file: $<HTMLInputElement>("backdrop-file"),
+  dim: $<HTMLInputElement>("glass-dim"),
+  store: prefs,
+  report: showBanner,
 })
 permissionSelect.value = prefs.get("permission") ?? "default"
 permissionSelect.addEventListener("change", () => prefs.set("permission", permissionSelect.value))
@@ -1480,23 +2743,507 @@ function renderModeSummary() {
 }
 for (const select of [profileSelect, planSelect, permissionSelect]) select.addEventListener("change", renderModeSummary)
 popover($<HTMLButtonElement>("mode-pill"), $("mode-menu"))
+// ── Beside the chat: side panels, notes, side questions, worktrees, schedules, terminal, board ──
+
+function renderSidePanel(panel: "files" | "browser") {
+  const g = $("detail-glyph")
+  g.className = "glyph file"
+  g.innerHTML =
+    panel === "files"
+      ? FOLDER_ICON.replace("row-icon", "file-icon")
+      : `<svg class="file-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" /><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12" /></svg>`
+  $("detail-title").textContent = panel === "files" ? `Files in ${folderName(runDir())}` : "Browser"
+  $("detail-tabs").hidden = true
+  const body = $("detail-body")
+  body.setAttribute("aria-labelledby", "detail-title")
+  body.replaceChildren()
+  if (panel === "browser") {
+    renderBrowser(body, state.browser, {
+      navigate: (url) => {
+        state.browser = { url, nonce: state.browser.nonce + 1 }
+        renderDetail()
+      },
+      external: (url) => send({ type: "open.url", url }),
+      reload: () => {
+        state.browser = { ...state.browser, nonce: state.browser.nonce + 1 }
+        renderDetail()
+      },
+    })
+    return
+  }
+  renderFileTree(body, state.files, {
+    filter: state.fileFilter,
+    open: state.openDirs,
+    openFile: (path) => openFile(path),
+    setFilter: (q) => {
+      state.fileFilter = q
+      renderDetail()
+      body.querySelector<HTMLInputElement>(".tree-filter")?.focus()
+    },
+    redraw: () => renderDetail(),
+  })
+}
+
+const openUrl = (url: string) => togglePanel("browser", url)
+
+/** Side questions (/btw) and catch-ups: cards in the chat that are not part of Conductor's conversation. */
+const quickCards = new Map<string, HTMLElement>()
+
+function quickCard(id: string, kind: "side" | "catchup", question?: string): HTMLElement {
+  const have = quickCards.get(id)
+  if (have) return have
+  const card = el("article", `card ${kind === "side" ? "side-card" : "catchup-card"}`)
+  const head = el("header", "quick-head")
+  head.append(
+    Object.assign(el("span", "quick-kind"), { textContent: kind === "side" ? "By the way" : "Catch-up" }),
+    Object.assign(el("span", "muted"), {
+      textContent: kind === "side" ? "a fast model, outside Conductor's chat" : "where this chat stands",
+    }),
+  )
+  card.append(head)
+  if (question) card.append(Object.assign(el("p", "quick-question"), { textContent: question }))
+  const body = el("div", "quick-body")
+  body.append(el("span", "spinner"), Object.assign(el("span", "muted"), { textContent: "Thinking…" }))
+  card.append(body)
+  quickCards.set(id, card)
+  append(card, top())
+  return card
+}
+
+function quickAnswer(id: string, kind: "side" | "catchup", text: string, error: string | undefined, question?: string) {
+  const card = quickCard(id, kind, question)
+  const body = card.querySelector(".quick-body") as HTMLElement
+  if (error) body.replaceChildren(Object.assign(el("div", "error"), { textContent: error }))
+  else body.replaceChildren(mdBlock(text))
+  card.append(
+    messageMeta(
+      now(),
+      () => text,
+      "Copy answer",
+      speakButton(() => text),
+    ),
+  )
+}
+
+function catchUp() {
+  if (!state.workspace) {
+    showBanner("Choose a workspace folder first.")
+    return
+  }
+  if (!state.chat) {
+    showBanner("There is nothing to catch up on yet: this chat has no requests.")
+    return
+  }
+  send({ type: "catchup", workspace: runDir() })
+}
+$("catchup").addEventListener("click", catchUp)
+
+// Notes made on files and reports collect above the composer until sent.
+function addNote(note: Annotation) {
+  state.notes.push(note)
+  renderNotes()
+}
+
+function renderNotes() {
+  const box = $("notes")
+  box.hidden = !state.notes.length
+  box.replaceChildren()
+  if (!state.notes.length) return
+  const head = el("div", "notes-head")
+  head.append(
+    Object.assign(el("strong"), { textContent: `${state.notes.length} note${state.notes.length > 1 ? "s" : ""} for Conductor` }),
+    el("span", "spacer"),
+    textButton("Send notes", "primary small", () => {
+      if (startRequest(formatAnnotations(state.notes))) {
+        state.notes = []
+        renderNotes()
+      }
+    }),
+    textButton("Clear", "ghost small", () => {
+      state.notes = []
+      renderNotes()
+    }),
+  )
+  const list = el("ol", "notes-list")
+  for (const n of state.notes) {
+    const li = el("li", "note-row")
+    const where =
+      n.source.kind === "file"
+        ? `${n.source.path}:${n.source.start}${n.source.end !== n.source.start ? `-${n.source.end}` : ""}`
+        : `report of "${n.source.title}"`
+    li.append(
+      Object.assign(el("span", `note-chip mark-${n.mark}`), { textContent: MARK_LABELS[n.mark] }),
+      Object.assign(el("span", "note-where mono"), { textContent: where }),
+      Object.assign(el("span", "note-quote"), { textContent: n.note ? `${n.note} (on "${n.quote}")` : `"${n.quote}"`, title: n.quote }),
+      iconButton(ICON.close, "Remove note", () => {
+        state.notes = state.notes.filter((x) => x !== n)
+        renderNotes()
+      }),
+    )
+    list.append(li)
+  }
+  box.append(head, list)
+}
+
+setupAnnotator({
+  root: $("detail-body"),
+  bar: $("note-bar"),
+  add: addNote,
+  sourceFor: (range) => {
+    const node = range.commonAncestorContainer
+    const elOf = (node instanceof Element ? node : node.parentElement) as HTMLElement | null
+    if (state.file && elOf?.closest(".file-view")) {
+      const lines = fileLines(range)
+      return lines ? { kind: "file", path: state.file.path, ...lines } : undefined
+    }
+    const report = elOf?.closest<HTMLElement>("[data-report]")
+    const t = report ? state.threads.get(report.dataset.report as string) : undefined
+    return t ? { kind: "report", title: taskTitle(t.task), agent: t.agent } : undefined
+  },
+})
+
+// A new chat can run in a worktree, picked before its first request (Ghostex's worktree tray).
+function loadWorktrees() {
+  state.worktrees = undefined
+  state.newChatRun = { mode: "here" }
+  renderWorktreeTray()
+  if (!state.workspace) return
+  void request({ type: "worktrees.list", requestId: nextRequestId(), workspace: state.workspace }).then((m) => {
+    if (m.type !== "worktrees") return
+    state.worktrees = m.list
+    renderWorktreeTray()
+  })
+}
+
+function renderWorktreeTray() {
+  const tray = $("worktree-tray")
+  const wt = state.worktrees
+  tray.hidden = Boolean(state.chat) || !wt || state.view !== "chat"
+  renderRunBadge()
+  if (tray.hidden || !wt) return
+  tray.replaceChildren()
+  const run = state.newChatRun
+  const group = el("div", "seg")
+  group.setAttribute("role", "radiogroup")
+  group.setAttribute("aria-label", "Where this chat runs")
+  const option = (mode: "here" | "new" | "existing", label: string, title: string) => {
+    const b = el("button", "seg-btn") as HTMLButtonElement
+    b.type = "button"
+    b.setAttribute("role", "radio")
+    b.setAttribute("aria-checked", String(run.mode === mode))
+    b.textContent = label
+    b.title = title
+    b.disabled = mode === "existing" && !wt.worktrees.length
+    b.addEventListener("click", () => {
+      state.newChatRun =
+        mode === "new"
+          ? { mode, base: wt.current }
+          : mode === "existing"
+            ? { mode, path: (wt.worktrees[0] as { path: string }).path }
+            : { mode }
+      renderWorktreeTray()
+    })
+    group.append(b)
+  }
+  option("here", "This folder", `Run in ${state.workspace}`)
+  option("new", "New worktree", "A fresh checkout on its own branch, so this chat's edits stay apart")
+  option("existing", "Existing worktree", wt.worktrees.length ? "Continue in a worktree that already exists" : "No other worktrees yet")
+  tray.append(Object.assign(el("span", "muted"), { textContent: "Run in" }), group)
+  if (run.mode !== "here") {
+    const select = document.createElement("select")
+    select.className = "seg-select"
+    select.setAttribute("aria-label", run.mode === "new" ? "Start from branch" : "Worktree")
+    const items =
+      run.mode === "new" ? wt.branches.map((b) => [b, `from ${b}`]) : wt.worktrees.map((w) => [w.path, `${w.branch || folderName(w.path)}`])
+    for (const [value, label] of items) select.add(new Option(label, value))
+    select.value = run.mode === "new" ? run.base : run.path
+    select.addEventListener("change", () => {
+      state.newChatRun = run.mode === "new" ? { mode: "new", base: select.value } : { mode: "existing", path: select.value }
+    })
+    tray.append(select)
+  }
+}
+
+/** The chat's worktree beside its title in the header. */
+function renderRunBadge() {
+  let badge = document.getElementById("crumb-run")
+  if (!badge) {
+    badge = el("span", "crumb-run")
+    badge.id = "crumb-run"
+    $("chat-title").after(badge)
+  }
+  const runIn = state.chat?.runIn
+  badge.hidden = !runIn
+  badge.textContent = runIn ? `worktree ${folderName(runIn)}` : ""
+  badge.title = runIn ?? ""
+}
+
+// Schedule the composer's request for later (Ghostex's automations).
+const REPEATS: [Schedule["repeat"], string][] = [
+  ["none", "Once"],
+  ["hourly", "Every hour"],
+  ["daily", "Every day"],
+  ["weekdays", "Weekdays"],
+  ["weekly", "Every week"],
+]
+
+function localInputValue(ms: number) {
+  const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60_000)
+  return d.toISOString().slice(0, 16)
+}
+
+function renderScheduleMenu() {
+  const menu = $("schedule-menu")
+  menu.replaceChildren()
+  const form = document.createElement("form")
+  form.className = "schedule-form"
+  const text = document.createElement("textarea")
+  text.rows = 2
+  text.value = promptBox.value.trim()
+  text.className = "schedule-input"
+  text.placeholder = "The request to send"
+  text.setAttribute("aria-label", "Request")
+  const when = document.createElement("input")
+  when.type = "datetime-local"
+  when.value = localInputValue(Math.ceil((Date.now() + 3_600_000) / 900_000) * 900_000)
+  when.setAttribute("aria-label", "When")
+  const repeat = document.createElement("select")
+  repeat.setAttribute("aria-label", "Repeat")
+  for (const [v, label] of REPEATS) repeat.add(new Option(label, v))
+  const target = document.createElement("select")
+  target.setAttribute("aria-label", "Send it to")
+  if (state.chat) target.add(new Option("This chat", "chat"))
+  target.add(new Option("A new chat", "new"))
+  const row = el("div", "schedule-row")
+  row.append(when, repeat, target)
+  const go = textButton("Schedule", "primary small", () => form.requestSubmit())
+  go.type = "submit"
+  form.append(text, row, go)
+  form.addEventListener("submit", (e) => {
+    e.preventDefault()
+    const at = new Date(when.value).getTime()
+    if (!text.value.trim() || !Number.isFinite(at) || !state.workspace) return
+    send({
+      type: "schedule.add",
+      schedule: {
+        workspace: state.workspace,
+        chatId: target.value === "chat" ? state.chat?.id : undefined,
+        prompt: text.value.trim(),
+        at,
+        repeat: repeat.value as Schedule["repeat"],
+        profile: profileSelect.value || undefined,
+        permission: permissionSelect.value as PermissionMode,
+      },
+    })
+    if (text.value.trim() === promptBox.value.trim()) {
+      promptBox.value = ""
+      updateSendButton()
+    }
+  })
+  menu.append(form)
+  if (state.schedules.length) {
+    const list = el("ul", "schedule-list")
+    for (const sc of state.schedules) {
+      const li = el("li")
+      const label = REPEATS.find(([v]) => v === sc.repeat)?.[1] ?? ""
+      li.append(
+        Object.assign(el("span", "schedule-when"), {
+          textContent: `${new Date(sc.at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}${sc.repeat !== "none" ? `, ${label.toLowerCase()}` : ""}`,
+        }),
+        Object.assign(el("span", "schedule-text"), { textContent: sc.prompt, title: sc.prompt }),
+        iconButton(ICON.close, "Cancel this schedule", () => send({ type: "schedule.remove", id: sc.id })),
+      )
+      list.append(li)
+    }
+    menu.append(Object.assign(el("div", "field-label"), { textContent: "Scheduled" }), list)
+  }
+  requestAnimationFrame(() => (text.value ? when : text).focus())
+}
+
+// The terminal dock.
+const dock = setupDock({
+  dock: $("dock"),
+  tabs: $("dock-tabs"),
+  body: $("dock-body"),
+  send,
+  request,
+  nextId: nextRequestId,
+  workspace: runDir,
+  draft: () => {
+    const d = promptBox.value.trim()
+    promptBox.value = ""
+    updateSendButton()
+    return d
+  },
+  report: showBanner,
+})
+$("toggle-dock").addEventListener("click", () => dock.toggle())
+$("dock-hide").addEventListener("click", () => dock.show(false))
+$("dock-shell").addEventListener("click", () => void dock.open("shell"))
+$("dock-cli").addEventListener("click", () => void dock.open("conductor"))
+{
+  // Drag (or arrow keys on) the dock's top edge to resize it.
+  const handle = $("dock-resize")
+  const set = (h: number) => {
+    const max = Math.round(innerHeight * 0.7)
+    const px = Math.max(120, Math.min(max, h))
+    document.documentElement.style.setProperty("--dock-height", `${px}px`)
+    prefs.set("dock-height", String(px))
+  }
+  const saved = Number(prefs.get("dock-height"))
+  if (saved) set(saved)
+  handle.addEventListener("pointerdown", (e) => {
+    const startY = e.clientY
+    const startH = $("dock").getBoundingClientRect().height
+    handle.setPointerCapture(e.pointerId)
+    const move = (ev: PointerEvent) => set(startH + startY - ev.clientY)
+    const up = () => {
+      handle.removeEventListener("pointermove", move)
+      handle.removeEventListener("pointerup", up)
+    }
+    handle.addEventListener("pointermove", move)
+    handle.addEventListener("pointerup", up)
+  })
+  handle.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return
+    e.preventDefault()
+    set($("dock").getBoundingClientRect().height + (e.key === "ArrowUp" ? 24 : -24))
+  })
+}
+
+// The board view, in place of the chat.
+const board = setupBoard({
+  root: $("board"),
+  send,
+  workspace: () => state.workspace,
+  chats: () => state.chats,
+  run: (card: Card) => {
+    if (state.running) {
+      showBanner("Stop the running turn before starting a card.")
+      return false
+    }
+    newChat()
+    state.runningCard = card.id
+    setView("chat")
+    return startRequest(card.notes.trim() ? `${card.title}\n\n${card.notes}` : card.title)
+  },
+  openChat: (id) => {
+    const c = state.chats.find((x) => x.id === id)
+    if (!c) return
+    setView("chat")
+    openChat(c)
+  },
+})
+
+function setView(view: "chat" | "board") {
+  state.view = view
+  for (const [id, v] of [
+    ["view-chat", "chat"],
+    ["view-board", "board"],
+  ] as const) {
+    const tab = $(id)
+    tab.setAttribute("aria-selected", String(view === v))
+    tab.tabIndex = view === v ? 0 : -1
+  }
+  log.hidden = view !== "chat"
+  $("board").hidden = view !== "board"
+  document.querySelector(".composer")?.toggleAttribute("hidden", view !== "chat")
+  if (view === "board") {
+    $("minimap").hidden = true
+    board.load()
+  }
+  renderWorktreeTray()
+}
+$("view-chat").addEventListener("click", () => setView("chat"))
+$("view-board").addEventListener("click", () => setView("board"))
+for (const id of ["view-chat", "view-board"])
+  $(id).addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      e.preventDefault()
+      const next = state.view === "chat" ? "board" : "chat"
+      setView(next)
+      $(`view-${next}`).focus()
+    }
+  })
+
+$("toggle-files").addEventListener("click", () => togglePanel("files"))
+$("toggle-browser").addEventListener("click", () => togglePanel("browser"))
+
+sortable($("queue"), {
+  lists: () => [...$("queue").querySelectorAll<HTMLElement>(".queue-list")],
+  item: ".queue-row",
+  handle: ".queue-grip",
+  drop: (id, _list, index) => send({ type: "queue.move", id, to: index }),
+})
+setupMinimap(log, $("minimap"))
+
+const soundToggle = $<HTMLInputElement>("sound-toggle")
+soundToggle.checked = prefs.get("sound") === "on"
+soundToggle.addEventListener("change", () => {
+  prefs.set("sound", soundToggle.checked ? "on" : "off")
+  if (soundToggle.checked) chime("done")
+})
+
+/** Messages for the views beside the chat; true when handled. */
+function besideMessage(msg: ServerMessage): boolean {
+  if (dock.onMessage(msg)) return true
+  switch (msg.type) {
+    case "quick.started":
+      quickCard(msg.id, msg.kind, msg.question)
+      return true
+    case "side.answer":
+      quickAnswer(msg.id, "side", msg.text, msg.error, msg.question)
+      return true
+    case "catchup":
+      quickAnswer(msg.id, "catchup", msg.text, msg.error)
+      return true
+    case "schedules":
+      state.schedules = msg.items
+      if (!$("schedule-menu").hidden) renderScheduleMenu()
+      $("schedule-btn").classList.toggle("has-items", msg.items.length > 0)
+      return true
+    case "board":
+      board.set(msg.workspace, msg.cards)
+      return true
+    default:
+      return false
+  }
+}
+
 popover($<HTMLButtonElement>("threads-pill"), $("threads-menu"))
+popover($<HTMLButtonElement>("schedule-btn"), $("schedule-menu"), renderScheduleMenu)
+popover($<HTMLButtonElement>("appearance-btn"), $("appearance-menu"))
 installTooltips($("tooltip"))
 for (const id of ["log", "threads", "detail-body"]) overlayScrollbar($(id))
 
-// Ghostex's keys: Mod+B the sidebar, Mod+N a new chat, Escape closes the thread panel.
+// Ghostex's keys: Mod+B the sidebar, Mod+N a new chat, Mod+K search, Mod+F find, Escape closes the side panel.
 document.addEventListener("keydown", (e) => {
-  const mod = e.metaKey || e.ctrlKey
-  if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
+  const mod = (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey
+  const key = e.key.toLowerCase()
+  if (mod && key === "b") {
     e.preventDefault()
     document.querySelector(".app")?.classList.toggle("no-sidebar")
-  } else if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "n") {
+  } else if (mod && key === "n") {
     e.preventDefault()
-    $("new-chat").click()
-  } else if (e.key === "Escape" && !e.defaultPrevented && state.selected && !document.querySelector("dialog[open]")) {
-    selectThread(undefined)
+    newChat()
+  } else if (mod && key === "k") {
+    e.preventDefault()
+    palette.open()
+  } else if (mod && key === "f" && !document.querySelector("dialog[open]")) {
+    e.preventDefault()
+    find.open()
+  } else if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "`" || e.code === "Backquote")) {
+    e.preventDefault()
+    dock.toggle()
+  } else if (mod && key === "p") {
+    e.preventDefault()
+    togglePanel("files")
+  } else if (e.key === "Escape" && !e.defaultPrevented && (state.selected || state.file) && !document.querySelector("dialog[open]")) {
+    closeDetail()
   }
 })
+// Chat ages in the sidebar tick over.
+setInterval(renderSidebar, 60_000)
 
 showWorkspacePath(state.workspace)
 renderModeSummary()

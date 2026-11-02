@@ -39,21 +39,51 @@ Config is layered, later files winning key by key: the shipped `routing.yaml`, t
 
 ## Desktop app (Tauri)
 
-![The desktop app after a real run: Conductor read a file and delegated a lookup to a Claude Haiku scout; the turn folded into "Worked for 14s" and the thread is open on the right](docs/screenshots/threads-detail.png)
+![The desktop app after a real run: Conductor read a file and delegated a lookup to a Claude Haiku scout; the turn folded into "Worked for 17s", the answer links to greet.js:10, and the thread is open on its Overview tab](docs/screenshots/threads-detail.png)
 
-The layout follows [Ghostex](https://github.com/maddada/Ghostex) (MIT): the workspace and this chat's threads on the left, Conductor's conversation in the middle, the selected thread beside it. Every delegation is a **thread**: a row in the sidebar (agent logo, task, status dot, age), a one-line card in the turn (role, backend, task, time, status), and on click a detail panel with its route, attempts, files changed, findings, report and live activity. While Conductor works, its notes and tool calls collect under **Working**; when it is done they fold into **Worked for Ns**. A turn always reads the same way, whatever order things happened in: the fold, then the delegation cards, then the answer. The **Threads** pill above the composer shows how many threads are working or need you and opens a menu of them. Profile, plan and permission sit behind one mode pill in the composer; spend, tokens and threads at the foot of the sidebar, beside how full each backend's subscription window is. Requests sent while Conductor works queue above the composer. An edit thread's panel shows its exact diff, where you can comment on lines and send the comments back to that delegate, or revert the thread; a worktree thread's panel can preview, apply and remove its worktree. When Conductor needs a decision, it asks with a form in the chat.
+The layout follows [Ghostex](https://github.com/maddada/Ghostex) (MIT): workspaces and their chats on the left, Conductor's conversation in the middle, a thread or a file beside it. Every delegation is a **thread**: a row under its chat in the sidebar (agent logo, task, status dot, age), a one-line card in the turn (role, backend, task, time, status), and on click a panel with tabs: **Overview** (task, findings, the delegate's report), **Changes** (its diff, where you can comment on lines and send the comments back to that delegate, or revert it; a worktree thread can preview, apply and remove its worktree), **Route** (each attempt and why it stopped) and **Activity**. When Conductor needs a decision, it asks with a form in the chat; a letter key picks a choice and Ctrl/Cmd+Enter sends.
+
+![Chats saved per workspace in the sidebar, a turn's tool calls with an edit's +/- lines and a command's output, and a file opened from a greet.js:2 reference in the answer](docs/screenshots/chat-history.png)
+
+**Chats are saved** (in the platform's data folder: `~/.local/share/agent-router`, `%LOCALAPPDATA%\agent-router` or `~/Library/Application Support/agent-router`). The sidebar groups them by workspace, with pinned chats first; folders you opened before stay there, collapsed, with their chats. Open a chat and it is drawn exactly as it was, and your next request resumes its Conductor session. The app reopens the last chat after a restart. Rename, pin, copy or delete a chat from its row's menu.
+
+**A turn shows its work.** While Conductor works, the fold's title says what it is doing now ("Running npm test…", "Waiting on 2 threads…"); once done it folds into **Worked for Ns**. Inside, each tool call is a row: what it touched, an edit's added and removed lines, and a command's last lines of output (open straight away when it failed). A turn always reads the same way: the fold, then the delegation cards, then the answer. Every request and answer shows its time and a Copy button; a long request is clamped with Show more. File references in answers and reports (`src/a.ts:12`) open the file in the side panel at that line. A ```` ```chart ```` block of JSON (`{"type": "bar" | "line", "labels": [...], "series": [{"name", "values"}]}`) is drawn as a chart; tables render as tables.
+
+| | |
+|---|---|
+| ![The composer's @ menu listing workspace files that match "gre"](docs/screenshots/composer-mention.png) | ![The Ctrl+K palette: matching chats, this chat's threads and commands](docs/screenshots/palette.png) |
+
+**The composer** takes `@` to mention a workspace file (a menu of matches; Conductor is told which files you mean), `/` at the start of a line for commands (`/new`, `/stop`, `/route`, a profile, `@claude`/`@gemini`/`@codex`, `ultrawork`, `/models`, `/find`, `/glass`), ArrowUp at the start for earlier requests, and images: paste, drop or attach one and it is saved to `.harness/attachments` (kept out of git) and mentioned by path. Enter sends; while Conductor works, Enter or Tab queues the request above the composer. The expand button gives a bigger editor. Profile, plan and permission sit behind one mode pill. The line under the composer shows each backend's health and subscription window, Claude's usage windows, the chat's spend, tokens and threads, and the branch with its uncommitted lines.
+
+![Glass: the panels over a blurred backdrop, a thread open on its Overview tab](docs/screenshots/glass.png)
+
+**Glass** (the palette button at the foot of the sidebar) puts the panels over a blurred backdrop, as Ghostex draws its window: four built-in backdrops or your own picture, and a slider for how much the panels tint it. It works the same on every OS (the backdrop is inside the window, since Linux compositors cannot blur what is behind it).
+
+![Requests queued behind a running turn, with Edit, Play (run now) and drag handles, and the working strip above them](docs/screenshots/queue-strip.png)
+
+**While Conductor works**, a strip above the composer says what it is doing and what each running thread is on; a thread opens on click. Requests you send meanwhile **queue**: drag them (or Alt+arrow keys) to reorder, Edit takes one back into the composer, and Play stops the turn and runs it now. A long chat shows its last 20 turns with a button for the earlier ones, and a **minimap** rail beside it marks each request and anything that needs you. `/btw <question>` asks a fast model a side question with the chat as context, without interrupting Conductor; **Catch me up** (the list button in the composer) summarizes where the chat stands. Both answers stay with the chat. Replies have a Read aloud button where the system has a voice, and Appearance can play a sound when a turn ends. A chat or a thread's report saves as Markdown from its menu.
+
+![A note on two lines of greet.js, marked Needs tests, waiting above the composer](docs/screenshots/notes.png)
+
+**Notes on the work**: select text in a file or a thread's report and mark it *Looks good*, *Clarify* or *Needs tests*, or write a note. Notes collect above the composer and go to Conductor as numbered feedback with the file and lines.
+
+**A new chat can run in its own worktree**: before the first request, pick This folder, a New worktree from a branch (the project's `.harness/routing.yaml` and memory are copied in), or an Existing worktree. The header shows the worktree. **Schedule** (the clock button) sends the composer's request later, once or every hour, day, weekday or week, to this chat or a new one, while the app is open.
+
+| | |
+|---|---|
+| ![The terminal dock: a shell in the chat's folder](docs/screenshots/terminal.png) | ![The board: a card that ran as a chat, now in Review](docs/screenshots/board.png) |
+
+**Terminal** (Ctrl/Cmd+`): real terminals in the chat's folder, in a dock under the chat (drag its edge to resize). **Conductor CLI** opens Conductor's own session in the Claude Code CLI (`claude --resume`), taking the composer's text with it. Terminals live in the core, so they survive a reload of the window; Linux and macOS for now. **Files** (Ctrl/Cmd+P) browses the workspace in the side panel; a file opens with line numbers and an **Edit** button for the built-in editor (CodeMirror, Ctrl/Cmd+S saves, and a file changed on disk since it was opened is never overwritten), or opens in VS Code. **Browser** previews a local dev server in the side panel (type a port or address; `localhost` links in replies open there). The **Board** view is a Kanban board per workspace: a card runs as a new chat, moves to Doing, and to Review when its turn ends. The terminal and the editor load the first time you open them.
 
 ![A thread's context menu in the sidebar after a real run: open the thread, ask Conductor about it, copy its task or report](docs/screenshots/sidebar-menu.png)
 
-Hovering a sidebar row (or tabbing to it) swaps its age for a More button; the chat's row also gets Stop while Conductor works. Right-click, the menu key or Shift+F10 open the same actions as a menu: open the thread, ask Conductor about it (the question starts in the composer), copy its task or report, preview a worktree thread's merge, or revert an edit thread (the panel still asks to confirm). The arrow keys move through the menu and Escape returns to the row.
-
-Status is a small dot with its word beside it (orange working, blue done, pink needs you, red failed), every icon-only control has a tooltip and a label, and the keyboard covers the rest: Ctrl/Cmd+B hides the sidebar, Ctrl/Cmd+N starts a new chat, Escape closes a menu or the thread panel. The chat, sidebar and thread panel draw thin overlay scrollbars that take no room and show only while you scroll or point at them. Inter, DM Sans (chat prose) and JetBrains Mono ship with the app. Light and dark follow the system.
+Hovering a sidebar row (or tabbing to it) swaps its age for a More button; the open chat's row also gets Stop while Conductor works. Right-click, the menu key or Shift+F10 open the same actions as a menu. **Ctrl/Cmd+K** searches every chat (titles and messages; filter to this folder or pinned chats), this chat's threads, scheduled requests and the commands; **Ctrl/Cmd+F** finds text in the chat (Enter and Shift+Enter step through matches, folded work opens to show them); Ctrl/Cmd+B hides the sidebar, Ctrl/Cmd+N starts a new chat, Escape closes a menu or the side panel. Status is a small dot with its word beside it (orange working, blue done, pink needs you, red failed), every icon-only control has a tooltip and a label, and the chat, sidebar and side panel draw thin overlay scrollbars. A thread that needs you, a question, an approval and a finished request notify you when the window is in the background. Inter, DM Sans (chat prose) and JetBrains Mono ship with the app. Light and dark follow the system.
 
 | | |
 |---|---|
 | ![Light theme](docs/screenshots/threads-light.png) | ![Models dialog](docs/screenshots/models-dialog.png) |
 
-The light-theme screenshot uses scripted sample data; the one above is a real run.
+The first screenshot and the sidebar menu are real runs; the others use scripted sample data (a stand-in for the Claude CLI).
 
 ```sh
 npm install                     # once

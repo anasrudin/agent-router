@@ -42,7 +42,8 @@ export function parseOverrides(message: string, profiles: string[] = []): Overri
     routes[m[1] as string] = p
     cut.push([m.index ?? 0, (m.index ?? 0) + m[0].length])
   }
-  for (const m of masked.matchAll(/(^|\s)@(\w+)\b/g)) {
+  // "@claude.md" or "@economy/notes.txt" mention a file (the composer's @-menu), not the keyword.
+  for (const m of masked.matchAll(/(^|\s)@(\w+)(?![\w/\\-]|\.[\w/\\-])/g)) {
     const name = (m[2] ?? "").toLowerCase()
     const start = (m.index ?? 0) + (m[1] ?? "").length
     const p = MENTIONS[`@${name}`]

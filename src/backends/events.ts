@@ -60,8 +60,9 @@ export type QuotaSnapshot = Partial<Record<ProviderId, ProviderQuota>>
 export type BackendEvent =
   | { type: "session"; sessionId: string }
   | { type: "text"; text: string }
-  | { type: "tool_call"; name: string; input: unknown }
-  | { type: "tool_result"; ok: boolean }
+  | { type: "tool_call"; name: string; input: unknown; id?: string }
+  /** `id` pairs it with its call; `output` is the tail of what the tool printed, when the CLI says. */
+  | { type: "tool_result"; ok: boolean; id?: string; output?: string }
   | { type: "usage"; usage: Usage }
   /** The subscription's usage windows, when the CLI reports them (Claude stream, Codex rollout). */
   | { type: "quota"; windows: QuotaWindow[] }

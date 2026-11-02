@@ -16,7 +16,7 @@ export function repoRoot(cwd: string): string {
 }
 
 /** Give a parallel writer its own checkout so two writers never touch one file (conductor.md §6). */
-export function createWorktree(workspace: string, label: string): Worktree {
+export function createWorktree(workspace: string, label: string, base = "HEAD"): Worktree {
   const root = repoRoot(workspace)
   const slug = `${
     label
@@ -32,7 +32,7 @@ export function createWorktree(workspace: string, label: string): Worktree {
   } catch {
     throw new Error("Worktree isolation needs at least one commit in the repository.")
   }
-  git(root, ["worktree", "add", "-b", branch, wtPath, "HEAD"])
+  git(root, ["worktree", "add", "-b", branch, wtPath, base])
   return { path: wtPath, branch }
 }
 

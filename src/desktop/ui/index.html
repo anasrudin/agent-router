@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>agent-router</title>
     <meta name="description" content="Conductor and its delegated threads across Claude Code, Gemini CLI and Codex, in one window." />
+    <link rel="stylesheet" href="xterm.css" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -12,23 +13,42 @@
       <aside class="sidebar" aria-label="Workspace and threads">
         <div class="side-top">
           <span class="brand"><span class="logo" aria-hidden="true"></span>agent-router</span>
-          <button id="new-chat" type="button" class="icon-btn" title="New chat" aria-label="New chat">
+          <button id="open-palette" type="button" class="icon-btn" title="Search chats and commands (Ctrl+K)" aria-label="Search">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg>
+          </button>
+          <button id="new-chat" type="button" class="icon-btn" title="New chat (Ctrl+N)" aria-label="New chat">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg>
           </button>
+        </div>
+        <nav id="threads" class="tree" aria-label="Workspaces and chats"></nav>
+        <div class="side-foot">
+          <button id="workspace" type="button" class="project" title="Open another project folder">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.2l1.5 1.5h6.3a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" /><path d="M8 7.5v4M6 9.5h4" /></svg>
+            <span id="workspace-path" class="path">Open folder…</span>
+          </button>
+          <div class="appearance-wrap">
+            <button id="appearance-btn" type="button" class="icon-btn" title="Appearance: glass and backdrop" aria-label="Appearance" aria-haspopup="dialog" aria-expanded="false" aria-controls="appearance-menu">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.8a6.2 6.2 0 1 0 0 12.4c.9 0 1.3-.6 1.3-1.2 0-.8-.7-1-.7-1.8 0-.7.6-1.2 1.3-1.2h1.5a2.8 2.8 0 0 0 2.8-2.8C14.2 4.4 11.4 1.8 8 1.8z" /><circle cx="5" cy="7" r=".6" /><circle cx="7.5" cy="4.6" r=".6" /><circle cx="10.6" cy="5.4" r=".6" /></svg>
+            </button>
+            <div id="appearance-menu" class="popover appearance-menu" role="dialog" aria-label="Appearance" hidden>
+              <label class="switch-row"><input id="glass-toggle" type="checkbox" /> <span>Glass</span></label>
+              <label class="switch-row"><input id="sound-toggle" type="checkbox" /> <span>Sound when a turn ends</span></label>
+              <fieldset class="swatch-set">
+                <legend class="field-label">Backdrop</legend>
+                <div id="backdrop-swatches" class="swatches"></div>
+              </fieldset>
+              <div class="buttons">
+                <button id="backdrop-choose" type="button" class="ghost small">Use a picture…</button>
+                <button id="backdrop-remove" type="button" class="ghost small" hidden>Remove picture</button>
+              </div>
+              <label class="field"><span>Panel tint</span><input id="glass-dim" type="range" min="20" max="90" step="5" /></label>
+              <input id="backdrop-file" type="file" accept="image/*" hidden />
+            </div>
+          </div>
           <button id="open-settings" type="button" class="icon-btn" title="Models: the model and reasoning effort for each backend and tier" aria-label="Models">
             <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.2" /><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" /></svg>
           </button>
         </div>
-        <button id="workspace" type="button" class="project" title="Choose the project folder Conductor works in">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.2l1.5 1.5h6.3a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" /></svg>
-          <span id="workspace-path" class="path">Choose a folder…</span>
-        </button>
-        <nav id="threads" class="tree" aria-label="This chat"></nav>
-        <section class="usage" aria-label="This chat's usage">
-          <span id="cost" class="cost" title="Reported spend and tokens this chat, Conductor and delegates together"></span>
-          <span id="status-threads" class="muted"></span>
-        </section>
-        <fieldset id="backends" class="backends" aria-label="Backend status"></fieldset>
       </aside>
 
       <section class="main">
@@ -38,22 +58,65 @@
             <span class="crumb-sep" aria-hidden="true">/</span>
             <span id="chat-title" class="chat-title">Conductor</span>
           </nav>
+          <span class="spacer"></span>
+          <div class="view-switch" role="tablist" aria-label="View">
+            <button id="view-chat" type="button" role="tab" aria-selected="true" aria-controls="log">Chat</button>
+            <button id="view-board" type="button" role="tab" aria-selected="false" aria-controls="board">Board</button>
+          </div>
+          <button id="toggle-files" type="button" class="icon-btn" title="Files (Ctrl+P)" aria-label="Files" aria-pressed="false">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3.5h4l1.5 1.5H14v8H2zM5 8.5h6M5 11h4" /></svg>
+          </button>
+          <button id="toggle-browser" type="button" class="icon-btn" title="Browser preview" aria-label="Browser preview" aria-pressed="false">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" /><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12" /></svg>
+          </button>
+          <button id="toggle-dock" type="button" class="icon-btn" title="Terminal (Ctrl+`)" aria-label="Terminal" aria-pressed="false">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" /><path d="M4.5 6l2 2-2 2M8 10.5h3.5" /></svg>
+          </button>
+          <button id="open-find" type="button" class="icon-btn" title="Find in this chat (Ctrl+F)" aria-label="Find in this chat">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5h6l3.5 3.5v7.5h-9.5z" /><circle cx="7.5" cy="9" r="2" /><path d="M9 10.5l1.8 1.8" /></svg>
+          </button>
         </header>
+        <search id="find-bar" class="find-bar" hidden>
+          <input id="find-input" type="search" placeholder="Find in this chat" aria-label="Find in this chat" autocomplete="off" />
+          <span id="find-count" class="find-count muted" aria-live="polite"></span>
+          <button id="find-prev" type="button" class="icon-btn" title="Previous match (Shift+Enter)" aria-label="Previous match"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4" /></svg></button>
+          <button id="find-next" type="button" class="icon-btn" title="Next match (Enter)" aria-label="Next match"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg></button>
+          <button id="find-close" type="button" class="icon-btn" title="Close (Escape)" aria-label="Close find"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg></button>
+        </search>
 
-        <main id="log" class="log" aria-live="polite">
-          <section class="empty" id="empty">
-            <h1>What should Conductor do?</h1>
-            <p>Conductor plans the work, routes each part to Claude, Gemini or Codex by the rules in <code>routing.yaml</code>, and checks what comes back before answering. Each delegation shows up as a thread in the sidebar.</p>
-            <ul class="tips">
-              <li><code>@gemini</code>, <code>@claude</code> or <code>@codex</code> pins a backend for this request.</li>
-              <li><code>/route code.review gemini</code> pins one kind of task.</li>
-            </ul>
-          </section>
-        </main>
+        <div class="work">
+          <main id="log" class="log" aria-live="polite">
+            <section class="empty" id="empty">
+              <h1>What should Conductor do?</h1>
+              <p>Conductor plans the work, routes each part to Claude, Gemini or Codex by the rules in <code>routing.yaml</code>, and checks what comes back before answering. Each delegation shows up as a thread in the sidebar.</p>
+              <ul class="tips">
+                <li><code>@gemini</code>, <code>@claude</code> or <code>@codex</code> pins a backend for this request.</li>
+                <li><code>/route code.review gemini</code> pins one kind of task.</li>
+                <li><code>@</code> mentions a file, <code>/</code> lists commands, and a pasted image is attached.</li>
+                <li><kbd>Ctrl</kbd> <kbd>K</kbd> searches every chat; earlier chats are in the sidebar.</li>
+              </ul>
+            </section>
+          </main>
+          <div id="minimap" class="minimap" hidden></div>
+          <div id="board" class="board" role="tabpanel" aria-labelledby="view-board" hidden></div>
+        </div>
+        <section id="dock" class="dock" aria-label="Terminal" hidden>
+          <button id="dock-resize" type="button" class="dock-resize" title="Drag, or use the arrow keys, to resize the terminal" aria-label="Resize the terminal"></button>
+          <div class="dock-bar">
+            <div id="dock-tabs" class="dock-tabs" role="tablist" aria-label="Terminals"></div>
+            <button id="dock-shell" type="button" class="ghost small" title="A new shell in this chat's folder">New shell</button>
+            <button id="dock-cli" type="button" class="ghost small" title="Continue Conductor's session in the Claude Code CLI; the composer's text goes with it">Conductor CLI</button>
+            <button id="dock-hide" type="button" class="icon-btn" title="Hide the terminal (Ctrl+`)" aria-label="Hide the terminal">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
+            </button>
+          </div>
+          <div id="dock-body" class="dock-body"></div>
+        </section>
 
         <footer class="composer">
           <div id="banner" class="banner" hidden></div>
           <div class="pill-strip">
+            <div id="strip" class="work-strip" aria-live="polite" hidden></div>
             <div class="threads-pill-wrap">
               <button id="threads-pill" type="button" class="strip-pill" aria-haspopup="menu" aria-expanded="false" aria-controls="threads-menu" hidden>
                 <span id="threads-pill-dot" class="mark"></span>
@@ -63,9 +126,12 @@
               <div id="threads-menu" class="popover threads-menu" role="menu" aria-label="This chat's threads" hidden></div>
             </div>
           </div>
-          <div id="queue" class="queue" hidden></div>
+          <section id="queue" class="queue" aria-label="Queued requests" hidden></section>
+          <section id="notes" class="notes" aria-label="Notes for Conductor" hidden></section>
+          <div id="worktree-tray" class="worktree-tray" hidden></div>
           <form id="form" class="composer-box">
-            <textarea id="prompt" rows="2" placeholder="Describe the task. Enter to send, Shift+Enter for a new line." autocomplete="off"></textarea>
+            <div id="complete" class="popover complete" role="listbox" aria-label="Suggestions" hidden></div>
+            <textarea id="prompt" rows="2" aria-label="Message to Conductor" placeholder="Message Conductor. Enter to send, Tab to queue while it works. @ mentions a file, / lists commands." autocomplete="off"></textarea>
             <div class="composer-bar">
               <div class="mode">
                 <button id="mode-pill" type="button" class="mode-pill" aria-haspopup="dialog" aria-expanded="false" aria-controls="mode-menu" title="Profile, plan and permission for the next request">
@@ -92,11 +158,35 @@
                 </div>
               </div>
               <span class="spacer"></span>
+              <button id="catchup" type="button" class="icon-btn" title="Catch me up: where this chat stands, in a few lines" aria-label="Catch me up">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M3 8h7M3 12h5M12.5 10.5v3M11 12h3" /></svg>
+              </button>
+              <div class="schedule-wrap">
+                <button id="schedule-btn" type="button" class="icon-btn" title="Schedule this request" aria-label="Schedule" aria-haspopup="dialog" aria-expanded="false" aria-controls="schedule-menu">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8.5" r="5.5" /><path d="M8 5.5v3l2 1.5M6 1.5h4" /></svg>
+                </button>
+                <div id="schedule-menu" class="popover schedule-menu" role="dialog" aria-label="Schedule a request" hidden></div>
+              </div>
+              <button id="attach" type="button" class="icon-btn" title="Attach an image (or paste one)" aria-label="Attach an image">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 7.5 8.2 12.8a3.2 3.2 0 0 1-4.6-4.6l5.6-5.6a2.1 2.1 0 0 1 3 3L6.6 11.2a1 1 0 0 1-1.5-1.5l5-5" /></svg>
+              </button>
+              <button id="expand" type="button" class="icon-btn" title="Bigger editor" aria-label="Bigger editor" aria-pressed="false">
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5 9 7M2.5 13.5 7 9" /></svg>
+              </button>
+              <input id="attach-file" type="file" accept="image/*" multiple hidden />
               <button id="send" type="submit" class="send" aria-label="Send" title="Send">
                 <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" /></svg>
               </button>
             </div>
           </form>
+          <section class="statusbar" aria-label="Status">
+            <span id="backends" class="backends"></span>
+            <span id="quota" class="status-item"></span>
+            <span id="cost" class="status-item cost" title="Reported spend and tokens this chat, Conductor and delegates together"></span>
+            <span id="status-threads" class="status-item"></span>
+            <span class="spacer"></span>
+            <span id="git" class="status-item git"></span>
+          </section>
         </footer>
       </section>
 
@@ -104,10 +194,12 @@
         <header class="detail-head">
           <span id="detail-glyph" class="glyph"></span>
           <span id="detail-title" class="detail-title"></span>
-          <button id="detail-close" type="button" class="icon-btn" title="Close" aria-label="Close thread">
+          <div id="detail-actions" class="detail-actions"></div>
+          <button id="detail-close" type="button" class="icon-btn" title="Close" aria-label="Close panel">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
           </button>
         </header>
+        <div id="detail-tabs" class="tabs" role="tablist" aria-label="Thread views" hidden></div>
         <div id="detail-body" class="detail-body"></div>
       </aside>
     </div>
@@ -133,6 +225,17 @@
       </form>
     </dialog>
 
+    <dialog id="palette" class="palette" aria-label="Search chats and commands">
+      <input id="palette-input" type="text" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" placeholder="Search chats, threads and commands" autocomplete="off" />
+      <fieldset class="palette-filters">
+        <legend class="sr-only">Filters</legend>
+        <button id="pf-folder" type="button" class="filter-chip" aria-pressed="false">This folder</button>
+        <button id="pf-pinned" type="button" class="filter-chip" aria-pressed="false">Pinned</button>
+      </fieldset>
+      <div id="palette-list" class="palette-list" role="listbox" aria-label="Results"></div>
+    </dialog>
+
+    <div id="note-bar" class="note-bar" role="toolbar" aria-label="Mark the selection" hidden></div>
     <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
     <div id="announce" class="sr-only" aria-live="polite"></div>
     <script type="module" src="main.js"></script>

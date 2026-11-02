@@ -52,6 +52,31 @@ describe("claude stream-json (recorded 2.1.312)", () => {
       { type: "tool_result", ok: false },
     ])
   })
+  test("claude: a tool call and its result share an id, and the result carries its output's tail", () => {
+    const parser = createClaudeParser()
+    expect(
+      parser.line(
+        JSON.stringify({
+          type: "assistant",
+          message: { content: [{ type: "tool_use", id: "tu1", name: "Bash", input: { command: "ls" } }] },
+        }),
+      ),
+    ).toEqual([{ type: "tool_call", name: "Bash", input: { command: "ls" }, id: "tu1" }])
+    const long = `${"x".repeat(5000)}END`
+    const [text, blocks] = [
+      parser.line(JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tu1", content: "a\nb\n" }] } })),
+      parser.line(
+        JSON.stringify({
+          type: "user",
+          message: { content: [{ type: "tool_result", tool_use_id: "tu2", content: [{ type: "text", text: long }] }] },
+        }),
+      ),
+    ]
+    expect(text).toEqual([{ type: "tool_result", ok: true, id: "tu1", output: "a\nb" }])
+    const out = (blocks[0] as { output: string }).output
+    expect(out.endsWith("END")).toBe(true)
+    expect(out.length).toBeLessThanOrEqual(2001)
+  })
   test("partial and non-JSON lines are ignored", () => {
     const parser = createClaudeParser()
     expect(parser.line('{"type":"assist')).toEqual([])

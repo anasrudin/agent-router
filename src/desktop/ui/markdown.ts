@@ -1,3 +1,5 @@
+import { parseChart, renderChart } from "./chart"
+
 /**
  * Small markdown renderer for Conductor and delegate output. Everything is escaped first, so
  * model output can never inject markup; only the constructs below are turned back into HTML.
@@ -123,7 +125,8 @@ export function renderMarkdown(source: string): string {
       i++
       while (i < lines.length && !(lines[i] as string).trim().startsWith(marker)) body.push(lines[i++] as string)
       i++
-      out.push(`<pre><code>${escapeHtml(body.join("\n"))}</code></pre>`)
+      const chart = (fence[3] as string).trim() === "chart" ? parseChart(body.join("\n")) : undefined
+      out.push(chart ? renderChart(chart) : `<pre><code>${escapeHtml(body.join("\n"))}</code></pre>`)
       continue
     }
     const heading = /^(#{1,4})\s+(.*)$/.exec(line)
@@ -198,5 +201,19 @@ export function resultLine(report: string): string {
   return line
     .replace(/^[-*]\s+/, "")
     .replace(/`|\*\*/g, "")
+    .trim()
+}
+
+/** A reply as plain sentences for Read aloud: code blocks named, not spelled out; markup dropped. */
+export function speechText(md: string): string {
+  return md
+    .replace(/```[\s\S]*?(```|$)/g, " (code block) ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^\s*\|.*\|\s*$/gm, "")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/\*\*|__|\*|_(?=\w)|(?<=\w)_/g, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\s+/g, " ")
     .trim()
 }

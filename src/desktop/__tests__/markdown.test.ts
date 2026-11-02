@@ -23,6 +23,17 @@ describe("renderMarkdown()", () => {
   test("code fences are verbatim and escaped", () => {
     expect(renderMarkdown("```ts\nconst a = <T>() => 1\n```")).toBe("<pre><code>const a = &lt;T&gt;() =&gt; 1</code></pre>")
   })
+  test("a chart block becomes an SVG chart; a broken one stays code", () => {
+    const html = renderMarkdown(
+      '```chart\n{"type":"bar","title":"<b>T</b>","labels":["a","b"],"series":[{"name":"n","values":[1,3]}]}\n```',
+    )
+    expect(html).toStartWith('<figure class="chart chart-bar">')
+    expect(html).toContain("&lt;b&gt;T&lt;/b&gt;")
+    expect(html.match(/<rect /g)).toHaveLength(2)
+    expect(renderMarkdown('```chart\n{"type":"pie"}\n```')).toStartWith("<pre><code>")
+    const line = renderMarkdown('```chart\n{"type":"line","labels":["a","b","c"],"series":[{"name":"x","values":[1,2,"3"]}]}\n```')
+    expect(line).toContain("<polyline")
+  })
   test("tables", () => {
     expect(renderMarkdown("| a | b |\n|---|---|\n| 1 | `x` |")).toContain("<td><code>x</code></td>")
   })
