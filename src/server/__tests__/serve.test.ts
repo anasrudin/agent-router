@@ -1,12 +1,22 @@
 import { afterAll, describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { Bridge } from "../bridge"
 import type { ServerMessage } from "../protocol"
 import { startServer } from "../serve"
 
 const token = "test-token-0123456789abcdef"
-const server = startServer({ port: 0, token, version: "test" })
+const data = mkdtempSync(path.join(tmpdir(), "serve-data-"))
+const server = startServer({ port: 0, token, version: "test", dataDir: data })
 const base = `ws://127.0.0.1:${server.port}`
-afterAll(() => server.stop())
+afterAll(() => {
+  server.stop()
+  rmSync(data, { recursive: true, force: true })
+})
+
+/** What every connection is sent besides hello; covered by chat-flow.test.ts. */
+const GREETING = new Set(["chats", "chat.current", "schedules", "terminals", "queue", "budget"])
 
 /** A UI client that queues every server message for awaiting in order. */
 async function uiClient() {
@@ -15,6 +25,8 @@ async function uiClient() {
   const waiters: ((m: ServerMessage) => void)[] = []
   socket.addEventListener("message", (e) => {
     const msg = JSON.parse(String(e.data)) as ServerMessage
+    // Saved chats have their own tests (chat-flow.test.ts).
+    if (GREETING.has(msg.type)) return
     const waiter = waiters.shift()
     if (waiter) waiter(msg)
     else inbox.push(msg)

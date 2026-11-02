@@ -89,4 +89,10 @@ describe("guessTaskClass()", () => {
     ["hello", "trivial"],
   ]
   for (const [text, cls] of cases) test(text, () => expect(guessTaskClass(text)).toBe(cls))
+  test("an @-mentioned file is not a keyword, even when its name starts like one", () => {
+    const o = parseOverrides("look at @claude.md and @economy/notes.txt", ["economy"])
+    expect(o.provider).toBeUndefined()
+    expect(o.profile).toBeUndefined()
+    expect(parseOverrides("@claude, then @economy.", ["economy"])).toMatchObject({ provider: "claude", profile: "economy" })
+  })
 })

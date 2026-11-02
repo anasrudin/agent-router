@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { trustedCheckpoint } from "../../server/serve"
 import { fakeRegistry, report, testSession } from "../../test-support"
-import { checkpointDiff, checkpointFiles, revertCheckpoint, snapshot } from "../checkpoints"
+import { checkpointDiff, checkpointFiles, restoreCheckpoint, revertCheckpoint, snapshot } from "../checkpoints"
 import { delegate } from "../delegate"
 import { Brief } from "../protocol"
 
@@ -29,6 +29,51 @@ function repo() {
 }
 
 describe("checkpoints", () => {
+  test("snapshots leave .harness out when it is not ignored, nested repositories (worktrees) included", () => {
+    const r = repo()
+    const nested = path.join(r.dir, ".harness", "worktrees", "w")
+    mkdirSync(nested, { recursive: true })
+    spawnSync("git", ["init", "-q"], { cwd: nested })
+    const before = snapshot(r.dir, "nest-before") as string
+    expect(before).toMatch(/^[0-9a-f]{40}$/)
+    r.write("a.ts", "changed\n")
+    const after = snapshot(r.dir, "nest-after") as string
+    expect(checkpointFiles({ before, after, cwd: r.dir })).toEqual(["a.ts"])
+  })
+
+  test("snapshots work when .harness is gitignored (a common setup), and leave .harness out", () => {
+    const r = repo()
+    r.write(".gitignore", "ignored.log\n.harness/\n")
+    mkdirSync(path.join(r.dir, ".harness"), { recursive: true })
+    r.write(".harness/routing.yaml", "x: 1\n")
+    const before = snapshot(r.dir, "ign-before") as string
+    expect(before).toMatch(/^[0-9a-f]{40}$/)
+    r.write("a.ts", "changed\n")
+    const after = snapshot(r.dir, "ign-after") as string
+    expect(checkpointFiles({ before, after, cwd: r.dir })).toEqual(["a.ts"])
+  })
+
+  test("restore puts the tree back to an earlier checkpoint across several changes, and can be undone", () => {
+    const r = repo()
+    const t0 = snapshot(r.dir, "turn-1-before") as string
+    r.write("a.ts", "changed by turn 1\n")
+    r.write("new.ts", "added by turn 1\n")
+    rmSync(path.join(r.dir, "gone.ts"))
+    r.write("a.ts", "changed again by turn 2\n")
+    const restored = restoreCheckpoint(r.dir, t0, "turn-1")
+    expect(restored.ok).toBe(true)
+    expect(restored.files.sort()).toEqual(["a.ts", "gone.ts", "new.ts"])
+    expect(r.read("a.ts")).toBe("one\ntwo\n")
+    expect(r.read("gone.ts")).toBe("bye\n")
+    expect(existsSync(path.join(r.dir, "new.ts"))).toBe(false)
+    expect(r.git("diff", "--cached", "--name-only")).toBe("")
+    // Undo: back to what it was just before the restore.
+    restoreCheckpoint(r.dir, restored.undo as string, "undo")
+    expect(r.read("a.ts")).toBe("changed again by turn 2\n")
+    expect(r.read("new.ts")).toBe("added by turn 1\n")
+    expect(existsSync(path.join(r.dir, "gone.ts"))).toBe(false)
+  })
+
   test("the diff between two snapshots is exactly the thread's work, untracked files included", () => {
     const r = repo()
     r.write("a.ts", "one\ntwo\nmine (uncommitted, before the thread)\n")

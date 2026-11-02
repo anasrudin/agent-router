@@ -4,7 +4,9 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
-use tauri::{Manager, RunEvent};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Manager, RunEvent, Wry};
 
 #[derive(Clone, serde::Serialize)]
 struct ServerInfo {
@@ -21,6 +23,66 @@ struct Core {
 #[tauri::command]
 fn server_info(core: tauri::State<Core>) -> Result<ServerInfo, String> {
     core.info.clone()
+}
+
+/// The tray (menu bar) icon's status line, kept so the UI can update it.
+struct Tray {
+    status: MenuItem<Wry>,
+}
+
+/// The UI reports what Conductor is doing; the tray shows it in its menu and tooltip.
+#[tauri::command]
+fn tray_status(app: tauri::AppHandle, tray: tauri::State<Option<Tray>>, text: String) {
+    let text: String = text.chars().take(80).collect();
+    if let Some(tray) = tray.inner() {
+        let _ = tray.status.set_text(&text);
+    }
+    if let Some(icon) = app.tray_by_id("main") {
+        let _ = icon.set_tooltip(Some(format!("agent-router: {text}")));
+    }
+}
+
+fn show_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// A tray icon (Ghostex's menu bar item): the current status, Show, Hide and Quit. Desktops
+/// without a tray (some Linux setups) simply get none; the app works the same.
+fn build_tray(app: &tauri::App) -> tauri::Result<Tray> {
+    let status = MenuItem::with_id(app, "status", "Idle", false, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "Show agent-router", true, None::<&str>)?;
+    let hide = MenuItem::with_id(app, "hide", "Hide window", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(app, &[&status, &separator, &show, &hide, &quit])?;
+    let mut builder = TrayIconBuilder::with_id("main")
+        .tooltip("agent-router")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_window(app),
+            "hide" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                show_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(Tray { status })
 }
 
 fn random_token() -> Result<String, String> {
@@ -141,9 +203,11 @@ pub fn run() {
                 }
             };
             app.manage(core);
+            let tray = build_tray(app).map_err(|e| eprintln!("agent-router: no tray icon: {e}")).ok();
+            app.manage(tray);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![server_info])
+        .invoke_handler(tauri::generate_handler![server_info, tray_status])
         .build(tauri::generate_context!())
         .expect("error while building the agent-router desktop app");
 

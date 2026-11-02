@@ -12,7 +12,7 @@ import { Brief } from "../coordinator/protocol"
 import type { Session } from "../coordinator/session"
 import { eventsFile, PaneTelemetry, taskSummary } from "../coordinator/telemetry"
 import { scanDiff, workingTreeDiff } from "../coordinator/verify"
-import { RoutingError } from "../router/policy"
+import { explainDecision, RoutingError } from "../router/policy"
 import { type Bridge, toWire } from "../server/bridge"
 import type { DelegationSummary } from "../server/protocol"
 
@@ -273,6 +273,8 @@ export function createMcpServer(session: Session, pins: Pins, options: McpServer
             provider: decision.provider,
             tier: decision.tier,
             model: decision.model,
+            why: explainDecision(session.config, decision, session.profile),
+            brief: args.brief,
           })
         },
         onEvent: (provider, event) => {

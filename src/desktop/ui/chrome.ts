@@ -91,7 +91,9 @@ export function installTooltips(tip: HTMLElement) {
     timer = setTimeout(() => current === node && show(node), TOOLTIP_DELAY_MS)
   }
 
-  const owner = (target: EventTarget | null) => (target as HTMLElement | null)?.closest?.<HTMLElement>("[title], [data-tip]") ?? undefined
+  // An iframe's title is its accessible name, not a tooltip: leave it alone.
+  const owner = (target: EventTarget | null) =>
+    (target as HTMLElement | null)?.closest?.<HTMLElement>("[title]:not(iframe), [data-tip]") ?? undefined
 
   document.addEventListener("pointerover", (e) => {
     const node = owner(e.target)

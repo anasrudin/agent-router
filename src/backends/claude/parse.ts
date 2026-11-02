@@ -15,13 +15,29 @@ export function createClaudeParser(): OutputParser {
         case "assistant":
           return contentBlocks(msg).flatMap((block): BackendEvent[] => {
             if (block.type === "text" && typeof block.text === "string") return [{ type: "text", text: block.text }]
-            if (block.type === "tool_use") return [{ type: "tool_call", name: String(block.name), input: block.input }]
+            if (block.type === "tool_use")
+              return [
+                {
+                  type: "tool_call",
+                  name: String(block.name),
+                  input: block.input,
+                  ...(typeof block.id === "string" ? { id: block.id } : {}),
+                },
+              ]
             return []
           })
         case "user":
           return contentBlocks(msg)
             .filter((block) => block.type === "tool_result")
-            .map((block) => ({ type: "tool_result", ok: block.is_error !== true }))
+            .map((block): BackendEvent => {
+              const output = toolOutput(block.content)
+              return {
+                type: "tool_result",
+                ok: block.is_error !== true,
+                ...(typeof block.tool_use_id === "string" ? { id: block.tool_use_id } : {}),
+                ...(output ? { output } : {}),
+              }
+            })
         case "rate_limit_event": {
           const info = msg.rate_limit_info as Record<string, unknown> | undefined
           const windows = info ? parseClaudeRateLimit(info) : []
@@ -35,6 +51,24 @@ export function createClaudeParser(): OutputParser {
     },
     end: () => [],
   }
+}
+
+/** How much of a tool's output travels on: its end, which is where a command's result is. */
+export const TOOL_OUTPUT_TAIL = 2000
+
+/** A tool result's text (a string or text blocks), cut to its last TOOL_OUTPUT_TAIL characters. */
+export function toolOutput(content: unknown): string | undefined {
+  const text =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .map((b) => ((b as Record<string, unknown>)?.type === "text" ? String((b as Record<string, unknown>).text ?? "") : ""))
+            .join("\n")
+        : ""
+  const trimmed = text.trimEnd()
+  if (!trimmed) return undefined
+  return trimmed.length > TOOL_OUTPUT_TAIL ? `…${trimmed.slice(-TOOL_OUTPUT_TAIL)}` : trimmed
 }
 
 function contentBlocks(msg: Record<string, unknown>): Record<string, unknown>[] {
