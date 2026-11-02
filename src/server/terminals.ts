@@ -96,12 +96,22 @@ export class Terminals {
     if (t?.running) t.proc.terminal?.resize(clamp(cols, 20, 500), clamp(rows, 5, 200))
   }
 
+  /**
+   * Closing the PTY hangs up the whole session (the shell and what it runs, such as a dev
+   * server); a plain kill would reach only the shell, which ignores SIGTERM. Anything still
+   * alive after a moment is killed.
+   */
   close(id: string): void {
     const t = this.terms.get(id)
     if (!t) return
     this.terms.delete(id)
-    if (t.running) t.proc.kill()
     clearTimeout(t.timer)
+    if (!t.running) return
+    t.proc.terminal?.close()
+    const force = setTimeout(() => {
+      if (t.running) t.proc.kill("SIGKILL")
+    }, 1500)
+    void t.proc.exited.then(() => clearTimeout(force))
   }
 
   closeAll(): void {

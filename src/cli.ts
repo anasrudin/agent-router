@@ -412,10 +412,14 @@ program
     process.stdout.write(`${JSON.stringify({ event: "ready", port: server.port })}\n`)
     // The shell holds our stdin open; when it closes, the app is gone and so are we.
     process.stdin.resume()
-    process.stdin.once("close", () => {
+    // Stopping also ends what the server started (terminals, VS Code), however we are asked to go.
+    const shutdown = () => {
       server.stop()
       process.exit(0)
-    })
+    }
+    process.stdin.once("close", shutdown)
+    process.once("SIGTERM", shutdown)
+    process.once("SIGINT", shutdown)
   })
 
 await program.parseAsync()

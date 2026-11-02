@@ -9,10 +9,12 @@ import type {
   ChatMeta,
   ClientMessage,
   DelegationSummary,
+  IdeState,
   ProfileInfo,
   QueuedPrompt,
   Schedule,
   ServerMessage,
+  UsageSummary,
   WireEvent,
   WorktreeList,
   WorktreePreview,
@@ -21,6 +23,7 @@ import { fileLines, setupAnnotator } from "./annotate"
 import { type Annotation, formatAnnotations, MARK_LABELS } from "./annotations"
 import { setupAppearance } from "./appearance"
 import { setupBoard } from "./board"
+import { renderChart } from "./chart"
 import { closePopovers, flash, installTooltips, type MenuItem, openMenu, overlayScrollbar, popover } from "./chrome"
 import { type Command, PromptHistory } from "./composer"
 import { fileBase64, setupComposer } from "./composer-ui"
@@ -30,7 +33,7 @@ import { createEditor, type EditorHandle } from "./editor"
 import { type FileContent, linkifyFileRefs, renderFileView } from "./fileview"
 import { setupFind } from "./find"
 import { agentLogoSvg } from "./icons"
-import { escapeHtml, renderMarkdown, resultLine } from "./markdown"
+import { escapeHtml, renderMarkdown, renderMarkdownBlocks, resultLine } from "./markdown"
 import { setupMinimap } from "./minimap"
 import { notifyIfAway } from "./notify"
 import { type PaletteItem, setupPalette } from "./palette"
@@ -117,7 +120,9 @@ const state = {
   /** The connection's greeting is pending: reopen the chat that was on screen. */
   greeting: false,
   /** A file open in the side panel, in place of a thread. */
-  file: undefined as { path: string; line?: number; endLine?: number; content?: FileContent } | undefined,
+  file: undefined as
+    | { path: string; line?: number; endLine?: number; content?: FileContent & { image?: string }; view: "source" | "preview" | "image" }
+    | undefined,
   /** The sidebar row being renamed. */
   renaming: undefined as string | undefined,
   /** While replaying a long chat, its older turns go here, folded behind "Show earlier turns". */
@@ -131,12 +136,15 @@ const state = {
   worktrees: undefined as WorktreeList | undefined,
   schedules: [] as Schedule[],
   /** The side panel's view when no thread or file is open in it. */
-  panel: undefined as "files" | "browser" | undefined,
+  panel: undefined as "files" | "browser" | "chat" | undefined,
+  /** Another chat, read beside the open one (the side panel's chat view). */
+  refChat: undefined as { id: string; title: string; text?: string; error?: string } | undefined,
+  ide: { state: "missing", canInstall: false } as IdeState,
   browser: { url: "", nonce: 0 },
   files: undefined as string[] | undefined,
   fileFilter: "",
   openDirs: new Set<string>(),
-  view: "chat" as "chat" | "board",
+  view: "chat" as View,
   /** A board card started as a chat, waiting for that chat's id. */
   runningCard: undefined as string | undefined,
 }
@@ -452,7 +460,75 @@ function mdBlock(text: string): HTMLElement {
   const block = el("div", "md", renderMarkdown(text))
   block.dataset.source = text
   linkifyFileRefs(block, openFile, (url) => openUrl(url))
+  resolveImages(block)
+  pageCards(block)
   return block
+}
+
+/** Pictures in replies: workspace images load as data URLs; a click opens them large. */
+function resolveImages(root: HTMLElement) {
+  for (const img of root.querySelectorAll<HTMLImageElement>("img[data-src]")) {
+    const src = img.dataset.src as string
+    img.removeAttribute("data-src")
+    img.tabIndex = 0
+    img.setAttribute("role", "button")
+    img.title = `${img.alt || src} (click to enlarge)`
+    const show = () => img.src && openLightbox(img.src, img.alt || src)
+    img.addEventListener("click", show)
+    img.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault()
+        show()
+      }
+    })
+    void loadImage(src).then((url) => {
+      if (url) img.src = url
+      else img.replaceWith(Object.assign(el("span", "muted"), { textContent: `(picture not found: ${src})` }))
+    })
+  }
+}
+
+const imageCache = new Map<string, Promise<string | undefined>>()
+function loadImage(path: string): Promise<string | undefined> {
+  const key = `${runDir()}::${path}`
+  let p = imageCache.get(key)
+  if (!p) {
+    p = request({ type: "file.image", requestId: nextRequestId(), workspace: runDir(), path }).then((m) =>
+      m.type === "file.imaged" ? m.dataUrl : undefined,
+    )
+    imageCache.set(key, p)
+  }
+  return p
+}
+
+function openLightbox(src: string, alt: string) {
+  const box = $<HTMLDialogElement>("lightbox")
+  box.querySelector("img")?.remove()
+  const img = document.createElement("img")
+  img.src = src
+  img.alt = alt
+  box.prepend(img)
+  if (!box.open) box.showModal()
+}
+
+/** An HTML page a reply points at gets a card that opens its preview (Ghostex's page cards). */
+function pageCards(block: HTMLElement) {
+  const seen = new Set<string>()
+  for (const link of block.querySelectorAll<HTMLButtonElement>(".file-link")) {
+    const path = /^(\S+\.html?)(:\d+)?$/i.exec(link.textContent ?? "")?.[1]
+    if (!path || seen.has(path)) continue
+    seen.add(path)
+    const card = el("button", "page-card") as HTMLButtonElement
+    card.type = "button"
+    card.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5" /><path d="M2 5.5h12" /></svg>`
+    card.append(
+      Object.assign(el("span", "page-name"), { textContent: path.slice(path.lastIndexOf("/") + 1) }),
+      Object.assign(el("span", "muted"), { textContent: "Open the page" }),
+    )
+    card.title = `Preview ${path}`
+    card.addEventListener("click", () => openFile(path, undefined, undefined, "preview"))
+    block.append(card)
+  }
 }
 
 function copyButton(text: () => string, label: string): HTMLButtonElement {
@@ -494,6 +570,7 @@ function sound(kind: "done" | "attention") {
  * running thread's latest step, in view however far the chat is scrolled. A thread opens on click.
  */
 function renderStrip() {
+  trayStatus()
   const strip = $("strip")
   const running = [...state.threads.values()].filter((t) => !t.summary && !t.error)
   strip.hidden = !state.running || state.replaying
@@ -549,6 +626,20 @@ function userMessage(prompt: string, at: number): HTMLElement {
       more.setAttribute("aria-expanded", String(open))
     })
     wrap.append(more)
+  }
+  // Attached pictures show as thumbnails under the request.
+  const pictures = [...prompt.matchAll(/(?:^|\s)@(\S+\.(?:png|jpe?g|gif|webp|bmp|svg))/gi)].map((m) => m[1] as string)
+  if (pictures.length) {
+    const strip = el("div", "thumbs")
+    for (const path of pictures) {
+      const img = document.createElement("img")
+      img.className = "md-img thumb"
+      img.dataset.src = path
+      img.alt = path.slice(path.lastIndexOf("/") + 1)
+      strip.append(img)
+    }
+    wrap.append(strip)
+    resolveImages(strip)
   }
   wrap.append(messageMeta(at, () => prompt, "Copy request"))
   return wrap
@@ -1092,7 +1183,52 @@ function chatActions(c: ChatMeta, row: HTMLElement): MenuItem[] {
 }
 
 function chatMenu(c: ChatMeta, row: HTMLElement): MenuItem[] {
-  return [{ label: "Open chat", run: () => openChat(c) }, "separator", ...chatActions(c, row)]
+  return [
+    { label: "Open chat", run: () => openChat(c) },
+    { label: "Read beside this chat", run: () => openBeside(c) },
+    "separator",
+    ...chatActions(c, row),
+  ]
+}
+
+/** Another chat in the side panel, read-only, beside the one you work in (a split view). */
+function openBeside(c: ChatMeta) {
+  if (!leaveEditor(() => openBeside(c))) return
+  const ref: NonNullable<typeof state.refChat> = { id: c.id, title: c.title }
+  state.refChat = ref
+  state.panel = "chat"
+  state.selected = undefined
+  state.file = undefined
+  detail.hidden = false
+  renderSidebar()
+  renderDetail()
+  void request({ type: "chat.markdown", requestId: nextRequestId(), id: c.id }).then((m) => {
+    if (m.type !== "chat.markdowned" || state.refChat !== ref) return
+    ref.text = m.text
+    ref.error = m.error
+    if (state.panel === "chat") renderDetail()
+  })
+}
+
+function renderChatBeside() {
+  const ref = state.refChat
+  const g = $("detail-glyph")
+  g.className = "glyph file"
+  g.innerHTML = CHAT_ICON.replace("row-icon", "file-icon")
+  $("detail-title").textContent = ref?.title ?? "Chat"
+  $("detail-tabs").hidden = true
+  const body = $("detail-body")
+  body.replaceChildren()
+  if (!ref) return
+  const bar = el("div", "file-bar")
+  bar.append(Object.assign(el("span", "muted"), { textContent: "Read-only, beside the open chat" }))
+  const target = state.chats.find((c) => c.id === ref.id)
+  if (target) bar.append(textButton("Switch to it", "ghost small", () => openChat(target)))
+  body.append(bar)
+  if (ref.error) body.append(Object.assign(el("div", "error"), { textContent: ref.error }))
+  else if (!ref.text) body.append(Object.assign(el("div", "muted"), { textContent: "Loading the chat…" }))
+  // Its first line is the title, already in the header.
+  else body.append(mdBlock(ref.text.replace(/^# .*\n+/, "")))
 }
 
 function openChat(c: ChatMeta) {
@@ -1118,8 +1254,14 @@ function renderSidebar() {
     if (d && !dirs.some((x) => samePath(x, d))) dirs.push(d)
   }
   add(state.workspace)
+  const space = activeSpace()
   for (const d of recentWorkspaces()) add(d)
   for (const c of state.chats) add(c.workspace)
+  // A space shows its own folders (and the one you are in).
+  if (space)
+    for (let i = dirs.length - 1; i >= 0; i--)
+      if (!samePath(dirs[i] as string, state.workspace) && !space.folders.some((f) => samePath(f, dirs[i] as string))) dirs.splice(i, 1)
+  if (space) for (const f of space.folders) add(f)
   for (const dir of dirs) renderGroup(dir, list)
   threadsNav.scrollTop = scroll
   if (focusKey) threadsNav.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(focusKey)}"]`)?.focus()
@@ -1158,6 +1300,8 @@ function renderGroup(dir: string, threads: Thread[]) {
   const groupMenu = (): MenuItem[] => {
     const items: MenuItem[] = [{ label: current ? "New chat" : "New chat in this folder", run: () => newChat(dir) }]
     items.push({ label: "Copy path", run: () => copyText(dir, head) })
+    const sp = spaceItems(dir)
+    if (sp.length) items.push("separator", ...sp)
     if (!current && !state.chats.some((c) => samePath(c.workspace, dir)))
       items.push("separator", {
         label: "Remove from sidebar",
@@ -1354,10 +1498,28 @@ function selectThread(id: string | undefined) {
 }
 
 /** A file in the side panel at a line, from a reference in a reply or a report. */
-function openFile(path: string, line?: number, endLine?: number) {
+const IMAGE_FILE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
+const PREVIEWABLE = /\.(md|markdown|html?)$/i
+
+function openFile(path: string, line?: number, endLine?: number, mode?: "preview" | "source") {
   if (!state.workspace) return
-  if (!leaveEditor(() => openFile(path, line, endLine))) return
-  const file: NonNullable<typeof state.file> = { path, line, endLine }
+  if (!leaveEditor(() => openFile(path, line, endLine, mode))) return
+  // Markdown and HTML open rendered unless a line was asked for; pictures always show as pictures.
+  const view = IMAGE_FILE.test(path) ? "image" : PREVIEWABLE.test(path) ? (mode ?? (line ? "source" : "preview")) : "source"
+  const file: NonNullable<typeof state.file> = { path, line, endLine, view }
+  if (view === "image") {
+    state.file = file
+    detail.hidden = false
+    renderDetail()
+    void loadImage(path).then((url) => {
+      if (state.file !== file) return
+      file.content = url
+        ? { path, text: "", truncated: false, image: url }
+        : { path, text: "", truncated: false, error: `Could not show ${path}.` }
+      renderDetail()
+    })
+    return
+  }
   state.file = file
   detail.hidden = false
   renderDetail()
@@ -1382,7 +1544,7 @@ function closeDetail() {
 }
 
 /** Open the side panel on the file tree or the browser, or close it when it already shows that. */
-function togglePanel(panel: "files" | "browser", url?: string) {
+function togglePanel(panel: "files" | "browser" | "chat", url?: string) {
   if (!leaveEditor(() => togglePanel(panel, url))) return
   const showing = state.panel === panel && !state.selected && !state.file && !detail.hidden
   if (showing && !url) {
@@ -1433,7 +1595,7 @@ function loadDiff(t: Thread) {
     t.diff = msg.error
       ? { files: [], truncated: false, error: msg.error }
       : { files: parseUnifiedDiff(msg.patch), truncated: msg.truncated }
-    if (state.selected === t.id) renderDetail()
+    if (state.selected === t.id && !state.file) renderDetail()
   })
 }
 
@@ -1672,7 +1834,7 @@ function worktreeAction(t: Thread, worktree: string, action: "preview" | "apply"
       if (action === "apply") wt.applied = true
       else wt.gone = true
     }
-    if (state.selected === t.id) renderDetail()
+    if (state.selected === t.id && !state.file) renderDetail()
   })
 }
 
@@ -1823,7 +1985,29 @@ function fileBar(file: NonNullable<typeof state.file>, content: FileContent): HT
       )
     return bar
   }
-  if (!content.error && !content.truncated) bar.append(textButton("Edit", "ghost small", () => startEditing(file.path)))
+  if (PREVIEWABLE.test(file.path) && !content.error) {
+    const seg = el("div", "seg")
+    seg.setAttribute("role", "radiogroup")
+    seg.setAttribute("aria-label", "Show the file")
+    for (const [v, label] of [
+      ["preview", "Preview"],
+      ["source", "Source"],
+    ] as const) {
+      const b = el("button", "seg-btn") as HTMLButtonElement
+      b.type = "button"
+      b.setAttribute("role", "radio")
+      b.setAttribute("aria-checked", String(file.view === v))
+      b.textContent = label
+      b.addEventListener("click", () => {
+        file.view = v
+        renderDetail()
+      })
+      seg.append(b)
+    }
+    bar.append(seg)
+  }
+  if (!content.error && !content.truncated && file.view !== "image")
+    bar.append(textButton("Edit", "ghost small", () => startEditing(file.path)))
   bar.append(
     iconButton(EDITOR_ICON, "Open in VS Code", () => send({ type: "open.editor", workspace: runDir(), path: file.path, line: file.line })),
     copyButton(() => (file.line ? `${file.path}:${file.line}` : file.path), "Copy path"),
@@ -1870,6 +2054,37 @@ function renderFilePanel(file: NonNullable<typeof state.file>) {
       editing.handle = h
       h.focus()
     })
+    return
+  }
+  if (file.view === "image" && content.image) {
+    const img = document.createElement("img")
+    img.className = "file-image"
+    img.src = content.image
+    img.alt = file.path
+    img.addEventListener("click", () => openLightbox(content.image as string, file.path))
+    body.replaceChildren(bar, img)
+    return
+  }
+  if (file.view === "preview" && !content.error) {
+    if (/\.html?$/i.test(file.path)) {
+      // The page runs in a sandbox with no access to the app (no same-origin), as a preview should.
+      const frame = document.createElement("iframe")
+      frame.className = "page-frame"
+      frame.title = `Preview of ${file.path}`
+      frame.setAttribute("sandbox", "allow-scripts allow-forms allow-modals")
+      frame.srcdoc = content.text
+      body.replaceChildren(bar, frame)
+      return
+    }
+    const doc = el("div", "md md-preview")
+    doc.innerHTML = renderMarkdownBlocks(content.text)
+    // Pictures in a document are relative to it.
+    const dir = file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/") + 1) : ""
+    for (const img of doc.querySelectorAll<HTMLImageElement>("img[data-src]"))
+      if (!(img.dataset.src as string).startsWith("/")) img.dataset.src = `${dir}${img.dataset.src}`
+    linkifyFileRefs(doc, openFile, (url) => openUrl(url))
+    resolveImages(doc)
+    body.replaceChildren(bar, doc)
     return
   }
   const view = el("div", "file-wrap")
@@ -2089,7 +2304,7 @@ function refreshThread(t: Thread) {
   renderAgentCard(t)
   renderThreadsPill()
   renderSidebar()
-  if (state.selected === t.id) renderDetail()
+  if (state.selected === t.id && !state.file) renderDetail()
 }
 
 function delegationStarted(msg: Extract<ServerMessage, { type: "delegation.started" }>) {
@@ -2134,7 +2349,7 @@ function delegationEvent(msg: Extract<ServerMessage, { type: "delegation.event" 
     t.activity.push({ who: PROVIDER_LABEL[msg.provider], text: `${ev.kind}: ${ev.message}` })
   } else return
   if (msg.provider !== t.provider) t.provider = msg.provider
-  if (state.selected === t.id) renderDetail()
+  if (state.selected === t.id && !state.file) renderDetail()
   if (ev.type !== "tool_call") renderSidebar()
   else renderStrip()
 }
@@ -2549,6 +2764,14 @@ function slashCommands(): Command[] {
     { name: "files", hint: "Browse the workspace's files", run: () => togglePanel("files") },
     { name: "browser", hint: "Preview a local web page", run: () => togglePanel("browser") },
     { name: "board", hint: "The workspace's Kanban board", run: () => setView("board") },
+    { name: "usage", hint: "Subscriptions and spend", run: () => void openUsage() },
+    { name: "code", hint: "VS Code in the app", run: () => setView("code") },
+    {
+      name: "visuals",
+      hint: "Ask for charts, tables and stat tiles in the answer",
+      insert:
+        'Where it helps, answer with visuals: a ```chart block ({"type":"bar"|"line","labels":[…],"series":[{"name","values"}]}), a ```stats block ([{"label","value","delta"}]), or a Markdown table.',
+    },
     {
       name: "save",
       hint: "Save this chat as Markdown",
@@ -2673,6 +2896,8 @@ function paletteItems(): PaletteItem[] {
     { group: "Commands", label: "Terminal", keys: "Ctrl `", run: () => dock.show(true) },
     { group: "Commands", label: "Continue in the Claude Code CLI", run: () => void dock.open("conductor") },
     { group: "Commands", label: "Catch me up", run: catchUp },
+    { group: "Commands", label: "Usage", run: () => void openUsage() },
+    { group: "Commands", label: "Code: VS Code in the app", run: () => setView("code") },
   )
   if (state.chat) {
     const chat = state.chat
@@ -2745,7 +2970,11 @@ for (const select of [profileSelect, planSelect, permissionSelect]) select.addEv
 popover($<HTMLButtonElement>("mode-pill"), $("mode-menu"))
 // ── Beside the chat: side panels, notes, side questions, worktrees, schedules, terminal, board ──
 
-function renderSidePanel(panel: "files" | "browser") {
+function renderSidePanel(panel: "files" | "browser" | "chat") {
+  if (panel === "chat") {
+    renderChatBeside()
+    return
+  }
   const g = $("detail-glyph")
   g.className = "glyph file"
   g.innerHTML =
@@ -2892,7 +3121,7 @@ setupAnnotator({
   sourceFor: (range) => {
     const node = range.commonAncestorContainer
     const elOf = (node instanceof Element ? node : node.parentElement) as HTMLElement | null
-    if (state.file && elOf?.closest(".file-view")) {
+    if (state.file && elOf?.closest(".file-view, .md-preview")) {
       const lines = fileLines(range)
       return lines ? { kind: "file", path: state.file.path, ...lines } : undefined
     }
@@ -3135,36 +3364,90 @@ const board = setupBoard({
   },
 })
 
-function setView(view: "chat" | "board") {
+type View = "chat" | "board" | "code"
+const VIEWS: View[] = ["chat", "board", "code"]
+
+function setView(view: View) {
   state.view = view
-  for (const [id, v] of [
-    ["view-chat", "chat"],
-    ["view-board", "board"],
-  ] as const) {
-    const tab = $(id)
+  for (const v of VIEWS) {
+    const tab = $(`view-${v}`)
     tab.setAttribute("aria-selected", String(view === v))
     tab.tabIndex = view === v ? 0 : -1
   }
   log.hidden = view !== "chat"
   $("board").hidden = view !== "board"
+  $("ide").hidden = view !== "code"
   document.querySelector(".composer")?.toggleAttribute("hidden", view !== "chat")
-  if (view === "board") {
-    $("minimap").hidden = true
-    board.load()
+  if (view !== "chat") $("minimap").hidden = true
+  if (view === "board") board.load()
+  if (view === "code") {
+    renderIde()
+    send({ type: "ide.status" })
   }
   renderWorktreeTray()
 }
-$("view-chat").addEventListener("click", () => setView("chat"))
-$("view-board").addEventListener("click", () => setView("board"))
-for (const id of ["view-chat", "view-board"])
-  $(id).addEventListener("keydown", (e) => {
-    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-      e.preventDefault()
-      const next = state.view === "chat" ? "board" : "chat"
-      setView(next)
-      $(`view-${next}`).focus()
-    }
+for (const v of VIEWS) {
+  $(`view-${v}`).addEventListener("click", () => setView(v))
+  $(`view-${v}`).addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return
+    e.preventDefault()
+    const next = VIEWS[(VIEWS.indexOf(state.view) + (e.key === "ArrowRight" ? 1 : VIEWS.length - 1)) % VIEWS.length] as View
+    setView(next)
+    $(`view-${next}`).focus()
   })
+}
+
+// ── Code: VS Code in the app, on demand (Ghostex's built-in IDE) ─────────
+
+function renderIde() {
+  const box = $("ide")
+  const ide = state.ide
+  const folder = runDir()
+  if (ide.state === "running" && ide.url) {
+    let frame = box.querySelector<HTMLIFrameElement>("iframe.vscode-embed")
+    if (!frame || frame.dataset.url !== ide.url) {
+      box.replaceChildren()
+      const bar = el("div", "ide-bar")
+      bar.append(
+        Object.assign(el("span", "muted"), { textContent: `VS Code (${ide.kind ?? "server"}) in ${folderName(folder)}` }),
+        el("span", "spacer"),
+        textButton("Reload", "ghost small", () => {
+          const f = box.querySelector<HTMLIFrameElement>("iframe.vscode-embed")
+          if (f) f.src = f.dataset.url ?? f.src
+        }),
+        textButton("Open in your browser", "ghost small", () => send({ type: "open.url", url: ide.url as string })),
+        textButton("Stop", "ghost small", () => send({ type: "ide.stop" })),
+      )
+      frame = document.createElement("iframe")
+      frame.className = "vscode-embed"
+      frame.title = "VS Code"
+      frame.dataset.url = ide.url
+      frame.src = ide.url
+      frame.setAttribute("allow", "clipboard-read; clipboard-write")
+      box.append(bar, frame)
+    }
+    return
+  }
+  box.replaceChildren()
+  const card = el("section", "ide-empty")
+  card.append(Object.assign(el("h2"), { textContent: "VS Code, in the app" }))
+  const say = (text: string, cls = "muted") => card.append(Object.assign(el("p", cls), { textContent: text }))
+  if (ide.state === "installing") {
+    say(ide.progress ?? "Installing…")
+    card.append(el("span", "spinner"))
+  } else if (ide.state === "ready") {
+    say(`Runs a local VS Code server (${ide.kind}) for ${folder || "the workspace"}, only on this machine.`)
+    card.append(textButton("Open VS Code here", "primary", () => folder && send({ type: "ide.start", workspace: folder }), !folder))
+  } else {
+    say("This needs a VS Code server: openvscode-server or code-server, on PATH or downloaded here.")
+    if (ide.canInstall) {
+      say("Download openvscode-server (about 80 MB) into the app's data folder. Nothing is installed system-wide.")
+      card.append(textButton("Download openvscode-server", "primary", () => send({ type: "ide.install" })))
+    } else say("On this system, install code-server (for example with Homebrew: brew install code-server), then come back.")
+  }
+  if (ide.error) say(ide.error, "error")
+  box.append(card)
+}
 
 $("toggle-files").addEventListener("click", () => togglePanel("files"))
 $("toggle-browser").addEventListener("click", () => togglePanel("browser"))
@@ -3188,14 +3471,15 @@ soundToggle.addEventListener("change", () => {
 function besideMessage(msg: ServerMessage): boolean {
   if (dock.onMessage(msg)) return true
   switch (msg.type) {
+    // Each answer belongs to the chat it was asked in; another chat on screen does not show it.
     case "quick.started":
-      quickCard(msg.id, msg.kind, msg.question)
+      if (msg.chatId === state.chat?.id) quickCard(msg.id, msg.kind, msg.question)
       return true
     case "side.answer":
-      quickAnswer(msg.id, "side", msg.text, msg.error, msg.question)
+      if (msg.chatId === state.chat?.id || state.replaying) quickAnswer(msg.id, "side", msg.text, msg.error, msg.question)
       return true
     case "catchup":
-      quickAnswer(msg.id, "catchup", msg.text, msg.error)
+      if (msg.chatId === state.chat?.id || state.replaying) quickAnswer(msg.id, "catchup", msg.text, msg.error)
       return true
     case "schedules":
       state.schedules = msg.items
@@ -3205,9 +3489,274 @@ function besideMessage(msg: ServerMessage): boolean {
     case "board":
       board.set(msg.workspace, msg.cards)
       return true
+    case "ide":
+      state.ide = msg.ide
+      if (state.view === "code") renderIde()
+      return true
     default:
       return false
   }
+}
+
+// ── Usage: subscriptions and spend in one place ─────────────────────────
+
+async function openUsage() {
+  const dialog = $<HTMLDialogElement>("usage")
+  const body = $("usage-body")
+  body.replaceChildren(Object.assign(el("p", "muted"), { textContent: "Adding up your chats…" }))
+  if (!dialog.open) dialog.showModal()
+  const subs = el("section", "usage-section")
+  subs.append(Object.assign(el("h3"), { textContent: "Subscriptions" }))
+  const status = state.backends
+  for (const p of Object.keys(status?.health ?? {}) as ProviderId[]) {
+    const h = status?.health[p]
+    const row = el("div", "usage-sub")
+    const head = el("div", "usage-sub-head")
+    head.append(
+      el("span", `dot ${h?.healthy ? "ok" : "bad"}`),
+      Object.assign(el("strong"), { textContent: PROVIDER_LABEL[p] }),
+      Object.assign(el("span", "muted"), {
+        textContent: h?.healthy ? `${status?.executables[p] ?? ""} ${h.version ?? ""}`.trim() : (h?.reason ?? "unavailable"),
+      }),
+    )
+    row.append(head)
+    const windows = currentWindows(p)
+    if (!windows.length)
+      row.append(
+        Object.assign(el("div", "muted usage-none"), { textContent: "No usage reported yet (it shows after this backend's next run)." }),
+      )
+    for (const w of windows) {
+      const pct = Math.round(w.usedFraction * 100)
+      const level = w.limited || pct >= 90 ? "bad" : pct >= 70 ? "warn" : ""
+      const meter = el("div", "usage-window")
+      const bar = el("div", `usage-bar ${level}`)
+      bar.setAttribute("role", "meter")
+      bar.setAttribute("aria-valuemin", "0")
+      bar.setAttribute("aria-valuemax", "100")
+      bar.setAttribute("aria-valuenow", String(pct))
+      bar.setAttribute("aria-label", `${PROVIDER_LABEL[p]} ${w.label}`)
+      const fill = el("span", "usage-fill")
+      fill.style.width = `${Math.min(100, pct)}%`
+      bar.append(fill)
+      meter.append(
+        Object.assign(el("span", "usage-label"), { textContent: w.label }),
+        bar,
+        Object.assign(el("span", "usage-pct"), { textContent: `${pct}%${w.limited ? ", limit reached" : ""}` }),
+        Object.assign(el("span", "muted usage-reset"), {
+          textContent: w.resetsAt
+            ? `resets ${new Date(w.resetsAt).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}`
+            : "",
+        }),
+      )
+      row.append(meter)
+    }
+    subs.append(row)
+  }
+  const reply = await request({ type: "usage.summary", requestId: nextRequestId() })
+  if (reply.type !== "usage" || !dialog.open) return
+  const u: UsageSummary = reply.summary
+  const spend = el("section", "usage-section")
+  spend.append(Object.assign(el("h3"), { textContent: "Spend, all saved chats" }))
+  const tiles = el("div", "stat-tiles")
+  for (const [label, value] of [
+    ["Reported cost", `$${u.costUsd.toFixed(2)}`],
+    ["Tokens", compact(u.tokens)],
+    ["Chats", String(u.chats)],
+    ["Requests", String(u.turns)],
+  ] as [string, string][])
+    tiles.append(
+      el("div", "stat-tile", `<div class="stat-label">${escapeHtml(label)}</div><div class="stat-value">${escapeHtml(value)}</div>`),
+    )
+  spend.append(tiles)
+  const chart = el(
+    "div",
+    "",
+    renderChart({
+      type: "bar",
+      title: "Tokens per day, last 14 days",
+      labels: u.days.map((d) => d.day.slice(5)),
+      series: [{ name: "", values: u.days.map((d) => d.tokens) }],
+    }),
+  )
+  spend.append(chart)
+  const table = el("table", "usage-table")
+  table.innerHTML = "<thead><tr><th>Backend</th><th>Threads</th><th>Tokens</th><th>Reported cost</th></tr></thead>"
+  const tb = document.createElement("tbody")
+  for (const p of Object.keys(u.providers) as ProviderId[]) {
+    const v = u.providers[p]
+    const tr = document.createElement("tr")
+    for (const text of [
+      PROVIDER_LABEL[p],
+      String(v.threads),
+      compact(v.tokens),
+      p === "claude" ? `$${v.costUsd.toFixed(2)}` : "not reported",
+    ]) {
+      tr.append(Object.assign(document.createElement("td"), { textContent: text }))
+    }
+    tb.append(tr)
+  }
+  table.append(tb)
+  spend.append(
+    table,
+    Object.assign(el("p", "muted"), { textContent: "Conductor counts as Claude. Gemini and Codex report tokens but not cost." }),
+  )
+  body.replaceChildren(subs, spend)
+}
+$("open-usage").addEventListener("click", () => void openUsage())
+$("usage-close").addEventListener("click", () => $<HTMLDialogElement>("usage").close())
+$("lightbox-close").addEventListener("click", () => $<HTMLDialogElement>("lightbox").close())
+$("lightbox").addEventListener("click", (e) => {
+  if (e.target === $("lightbox")) $<HTMLDialogElement>("lightbox").close()
+})
+
+// ── Spaces: sets of folders, Arc-style, so the sidebar shows one set at a time ──
+
+interface Space {
+  id: string
+  name: string
+  folders: string[]
+}
+const spaces = () => prefs.json<Space[]>("spaces", [])
+const saveSpaces = (list: Space[]) => prefs.set("spaces", JSON.stringify(list))
+const activeSpace = () => spaces().find((sp) => sp.id === prefs.get("space"))
+let namingSpace: string | undefined
+
+function renderSpaces() {
+  const bar = $("spaces")
+  const list = spaces()
+  const active = activeSpace()
+  bar.replaceChildren()
+  const chip = (id: string, label: string, sp?: Space) => {
+    const b = el("button", "space-chip") as HTMLButtonElement
+    b.type = "button"
+    b.setAttribute("role", "tab")
+    b.setAttribute("aria-selected", String((active?.id ?? "") === id))
+    b.textContent = label
+    b.title = sp ? `${sp.folders.length} folder${sp.folders.length === 1 ? "" : "s"}. Right-click to rename or delete.` : "Every folder"
+    b.addEventListener("click", () => {
+      prefs.set("space", id)
+      renderSpaces()
+      renderSidebar()
+    })
+    if (sp)
+      b.addEventListener("contextmenu", (e) => {
+        e.preventDefault()
+        openMenu(
+          [
+            {
+              label: "Rename…",
+              run: () => {
+                namingSpace = sp.id
+                renderSpaces()
+              },
+            },
+            {
+              label: "Delete space",
+              danger: true,
+              run: () => {
+                saveSpaces(spaces().filter((x) => x.id !== sp.id))
+                if (prefs.get("space") === sp.id) prefs.set("space", "")
+                renderSpaces()
+                renderSidebar()
+              },
+            },
+          ],
+          { x: e.clientX, y: e.clientY },
+          b,
+          `Space ${sp.name}`,
+        )
+      })
+    bar.append(b)
+  }
+  chip("", "All")
+  for (const sp of list) {
+    if (namingSpace === sp.id) bar.append(spaceInput(sp))
+    else chip(sp.id, sp.name, sp)
+  }
+  if (namingSpace === "new") bar.append(spaceInput())
+  else {
+    const add = el("button", "space-chip add") as HTMLButtonElement
+    add.type = "button"
+    add.title = "New space with this folder"
+    add.setAttribute("aria-label", "New space")
+    add.textContent = "+"
+    add.addEventListener("click", () => {
+      namingSpace = "new"
+      renderSpaces()
+    })
+    bar.append(add)
+  }
+  bar.querySelector<HTMLInputElement>("input")?.focus()
+}
+
+function spaceInput(sp?: Space): HTMLInputElement {
+  const input = document.createElement("input")
+  input.className = "space-input"
+  input.value = sp?.name ?? ""
+  input.placeholder = "Space name"
+  input.setAttribute("aria-label", "Space name")
+  let done = false
+  const finish = (save: boolean) => {
+    if (done) return
+    done = true
+    namingSpace = undefined
+    const name = input.value.trim()
+    if (save && name) {
+      if (sp) saveSpaces(spaces().map((x) => (x.id === sp.id ? { ...x, name } : x)))
+      else {
+        const id = `s-${Date.now().toString(36)}`
+        saveSpaces([...spaces(), { id, name, folders: state.workspace ? [state.workspace] : [] }])
+        prefs.set("space", id)
+      }
+    }
+    renderSpaces()
+    renderSidebar()
+  }
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") finish(true)
+    if (e.key === "Escape") {
+      e.stopPropagation()
+      finish(false)
+    }
+  })
+  input.addEventListener("blur", () => finish(true))
+  return input
+}
+
+/** A folder's space actions, for its sidebar menu. */
+function spaceItems(dir: string): MenuItem[] {
+  const items: MenuItem[] = []
+  const active = activeSpace()
+  for (const sp of spaces())
+    if (!sp.folders.some((f) => samePath(f, dir)))
+      items.push({
+        label: `Add to space ${sp.name}`,
+        run: () => {
+          saveSpaces(spaces().map((x) => (x.id === sp.id ? { ...x, folders: [...x.folders, dir] } : x)))
+          renderSidebar()
+        },
+      })
+  if (active?.folders.some((f) => samePath(f, dir)))
+    items.push({
+      label: `Remove from ${active.name}`,
+      run: () => {
+        saveSpaces(spaces().map((x) => (x.id === active.id ? { ...x, folders: x.folders.filter((f) => !samePath(f, dir)) } : x)))
+        renderSidebar()
+      },
+    })
+  return items
+}
+renderSpaces()
+
+// ── The tray icon's status line (Ghostex's menu bar item) ─────────────────
+
+let lastTray = ""
+function trayStatus() {
+  const blocked = [...state.threads.values()].some((t) => t.summary?.status === "blocked")
+  const text = state.running ? `Working: ${state.fold?.activity ?? "starting"}` : blocked ? "A thread needs you" : "Idle"
+  if (text === lastTray) return
+  lastTray = text
+  void invoke("tray_status", { text }).catch(() => {})
 }
 
 popover($<HTMLButtonElement>("threads-pill"), $("threads-menu"))

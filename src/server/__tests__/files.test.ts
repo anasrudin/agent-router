@@ -12,6 +12,7 @@ import {
   openerCommand,
   rankFiles,
   readWorkspaceFile,
+  readWorkspaceImage,
   saveAttachment,
   writeWorkspaceFile,
 } from "../files"
@@ -121,6 +122,11 @@ describe("writeWorkspaceFile", () => {
     expect(() => writeWorkspaceFile(ws, "README.md", "x", mtime - 10_000)).toThrow(/changed on disk/)
     expect(() => writeWorkspaceFile(ws, "../evil.txt", "x")).toThrow(/outside/)
     expect(writeWorkspaceFile(ws, "src/new.ts", "n").path).toBe("src/new.ts")
+    const outside = mkdtempSync(path.join(tmpdir(), "outside-"))
+    symlinkSync(path.join(outside, "pwned.txt"), path.join(ws, "dangling.txt"))
+    expect(() => writeWorkspaceFile(ws, "dangling.txt", "x")).toThrow(/outside/)
+    expect(existsSync(path.join(outside, "pwned.txt"))).toBe(false)
+    rmSync(outside, { recursive: true, force: true })
   })
 })
 
@@ -128,7 +134,8 @@ describe("openers", () => {
   test("only http(s) addresses, with the platform's opener", () => {
     expect(openerCommand("http://localhost:5173/", "linux")).toEqual(["xdg-open", "http://localhost:5173/"])
     expect(openerCommand("https://x.dev", "darwin")).toEqual(["open", "https://x.dev"])
-    expect(openerCommand("https://x.dev", "win32")).toEqual(["cmd", "/c", "start", "", "https://x.dev"])
+    expect(openerCommand("https://x.dev/?a=1&b=2", "win32")).toEqual(["rundll32", "url.dll,FileProtocolHandler", "https://x.dev/?a=1&b=2"])
+    expect(() => openerCommand("http://localhost/|calc")).toThrow(/http/)
     expect(() => openerCommand("file:///etc/passwd")).toThrow(/http/)
     expect(() => openerCommand("https://x.dev; rm -rf /")).toThrow(/http/)
   })
@@ -148,5 +155,14 @@ describe("listWorktrees", () => {
     expect(list?.current).toBe("main")
     expect(list?.branches.sort()).toEqual(["feature", "main"])
     expect(list?.worktrees.map((w) => w.branch)).toEqual(["feature"])
+  })
+})
+
+describe("readWorkspaceImage", () => {
+  test("a data URL for images inside the workspace only", () => {
+    writeFileSync(path.join(ws, "pic.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+    expect(readWorkspaceImage(ws, "pic.png")).toBe("data:image/png;base64,iVBORw==")
+    expect(() => readWorkspaceImage(ws, "README.md")).toThrow(/Not an image/)
+    expect(() => readWorkspaceImage(ws, "../x.png")).toThrow(/outside/)
   })
 })

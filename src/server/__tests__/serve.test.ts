@@ -23,7 +23,8 @@ async function uiClient() {
   socket.addEventListener("message", (e) => {
     const msg = JSON.parse(String(e.data)) as ServerMessage
     // Saved chats have their own tests (chat-flow.test.ts).
-    if (msg.type === "chats" || msg.type === "chat.current" || msg.type === "schedules" || msg.type === "terminals") return
+    if (msg.type === "chats" || msg.type === "chat.current" || msg.type === "schedules" || msg.type === "terminals" || msg.type === "queue")
+      return
     const waiter = waiters.shift()
     if (waiter) waiter(msg)
     else inbox.push(msg)

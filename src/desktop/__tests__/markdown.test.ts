@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { renderMarkdown, resultLine } from "../ui/markdown"
+import { renderMarkdown, renderMarkdownBlocks, resultLine } from "../ui/markdown"
 
 describe("renderMarkdown()", () => {
   test("escapes HTML from model output", () => {
@@ -73,5 +73,32 @@ describe("resultLine()", () => {
   })
   test("a report without sections falls back to its first line", () => {
     expect(resultLine("\nAll good.\nDetails")).toBe("All good.")
+  })
+})
+
+describe("visuals", () => {
+  test("a workspace picture becomes an image the app resolves; web pictures and script URLs stay text", () => {
+    expect(renderMarkdown("See ![chart](out/chart.png)")).toBe(
+      '<p>See <img class="md-img" data-src="out/chart.png" alt="chart" loading="lazy"></p>',
+    )
+    expect(renderMarkdown("![x](https://evil.example/t.png)")).toBe("<p>![x](https://evil.example/t.png)</p>")
+    expect(renderMarkdown("![x](javascript:alert(1))")).not.toContain("<img")
+    expect(renderMarkdown('![a" onerror="x](p.png)')).not.toContain('onerror="x"')
+  })
+  test("stat tiles from a stats block, escaped; a broken one stays code", () => {
+    const html = renderMarkdown('```stats\n[{"label":"Cost","value":"$0.12","delta":"-8%"},{"label":"<b>","value":"3"}]\n```')
+    expect(html).toContain('<div class="stat-tile">')
+    expect(html).toContain('stat-delta down">-8%')
+    expect(html).toContain("&lt;b&gt;")
+    expect(renderMarkdown("```stats\n{oops\n```")).toStartWith("<pre>")
+  })
+  test("block render keeps each block's source lines, fences with blank lines included", () => {
+    const html = renderMarkdownBlocks("# Title\n\nPara one\nline two\n\n```\ncode\n\nmore\n```\n- a")
+    expect(html.match(/data-line="(\d+)" data-end="(\d+)"/g)).toEqual([
+      'data-line="1" data-end="1"',
+      'data-line="3" data-end="4"',
+      'data-line="6" data-end="10"',
+      'data-line="11" data-end="11"',
+    ])
   })
 })

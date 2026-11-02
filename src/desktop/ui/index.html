@@ -20,6 +20,7 @@
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" /></svg>
           </button>
         </div>
+        <div id="spaces" class="spaces" role="tablist" aria-label="Spaces"></div>
         <nav id="threads" class="tree" aria-label="Workspaces and chats"></nav>
         <div class="side-foot">
           <button id="workspace" type="button" class="project" title="Open another project folder">
@@ -62,6 +63,7 @@
           <div class="view-switch" role="tablist" aria-label="View">
             <button id="view-chat" type="button" role="tab" aria-selected="true" aria-controls="log">Chat</button>
             <button id="view-board" type="button" role="tab" aria-selected="false" aria-controls="board">Board</button>
+            <button id="view-code" type="button" role="tab" aria-selected="false" aria-controls="ide">Code</button>
           </div>
           <button id="toggle-files" type="button" class="icon-btn" title="Files (Ctrl+P)" aria-label="Files" aria-pressed="false">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3.5h4l1.5 1.5H14v8H2zM5 8.5h6M5 11h4" /></svg>
@@ -99,6 +101,7 @@
           </main>
           <div id="minimap" class="minimap" hidden></div>
           <div id="board" class="board" role="tabpanel" aria-labelledby="view-board" hidden></div>
+          <div id="ide" class="ide" role="tabpanel" aria-labelledby="view-code" hidden></div>
         </div>
         <section id="dock" class="dock" aria-label="Terminal" hidden>
           <button id="dock-resize" type="button" class="dock-resize" title="Drag, or use the arrow keys, to resize the terminal" aria-label="Resize the terminal"></button>
@@ -186,6 +189,9 @@
             <span id="status-threads" class="status-item"></span>
             <span class="spacer"></span>
             <span id="git" class="status-item git"></span>
+            <button id="open-usage" type="button" class="icon-btn status-btn" title="Usage: subscriptions and spend" aria-label="Usage">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 13.5h11M4.5 11V7.5M8 11V4.5M11.5 11V9" /></svg>
+            </button>
           </section>
         </footer>
       </section>
@@ -233,6 +239,22 @@
         <button id="pf-pinned" type="button" class="filter-chip" aria-pressed="false">Pinned</button>
       </fieldset>
       <div id="palette-list" class="palette-list" role="listbox" aria-label="Results"></div>
+    </dialog>
+
+    <dialog id="lightbox" class="lightbox" aria-label="Picture">
+      <button id="lightbox-close" type="button" class="icon-btn" title="Close (Escape)" aria-label="Close picture">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+      </button>
+    </dialog>
+
+    <dialog id="usage" class="settings usage-dialog" aria-labelledby="usage-title">
+      <header class="settings-head">
+        <h2 id="usage-title">Usage</h2>
+        <button type="button" class="icon-btn" id="usage-close" title="Close" aria-label="Close usage">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
+      </header>
+      <div id="usage-body" class="usage-body"></div>
     </dialog>
 
     <div id="note-bar" class="note-bar" role="toolbar" aria-label="Mark the selection" hidden></div>

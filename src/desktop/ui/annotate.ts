@@ -95,13 +95,12 @@ export function setupAnnotator(o: AnnotatorOptions) {
   return { hide }
 }
 
-/** The file lines a selection covers in the file viewer, from the rows' data-line. */
+/** The file lines a selection covers: file-viewer rows (data-line) or preview blocks (data-line to data-end). */
 export function fileLines(range: Range): { start: number; end: number } | undefined {
-  const row = (n: Node) => (n instanceof Element ? n : n.parentElement)?.closest<HTMLElement>(".file-line")
-  const a = row(range.startContainer)
-  const b = row(range.endContainer)
+  const at = (n: Node) => (n instanceof Element ? n : n.parentElement)?.closest<HTMLElement>("[data-line]")
+  const a = at(range.startContainer)
+  const b = at(range.endContainer)
   if (!a || !b) return undefined
-  const x = Number(a.dataset.line)
-  const y = Number(b.dataset.line)
-  return { start: Math.min(x, y), end: Math.max(x, y) }
+  const lines = [a, b].flatMap((x) => [Number(x.dataset.line), Number(x.dataset.end ?? x.dataset.line)])
+  return { start: Math.min(...lines), end: Math.max(...lines) }
 }

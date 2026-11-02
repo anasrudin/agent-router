@@ -148,6 +148,15 @@ export type ClientMessage =
   | { type: "term.close"; id: string }
   | { type: "file.write"; requestId: string; workspace: string; path: string; text: string; expectedMtime?: number }
   | { type: "open.url"; url: string }
+  /** A workspace image as a data URL, for pictures in replies and attachments. */
+  | { type: "file.image"; requestId: string; workspace: string; path: string }
+  /** A saved chat as Markdown, to read beside the open one. */
+  | { type: "chat.markdown"; requestId: string; id: string }
+  | { type: "usage.summary"; requestId: string }
+  | { type: "ide.status" }
+  | { type: "ide.install" }
+  | { type: "ide.start"; workspace: string }
+  | { type: "ide.stop" }
   | { type: "open.editor"; workspace: string; path: string; line?: number }
   | { type: "reset" }
   /** Every saved chat, all workspaces (the sidebar groups them). */
@@ -229,6 +238,26 @@ export interface WorktreeList {
   current: string
   branches: string[]
   worktrees: { path: string; branch: string }[]
+}
+
+export interface UsageSummary {
+  days: { day: string; costUsd: number; tokens: number }[]
+  providers: Record<ProviderId, { costUsd: number; tokens: number; threads: number }>
+  chats: number
+  turns: number
+  costUsd: number
+  tokens: number
+}
+
+export interface IdeState {
+  /** missing: nothing to run; installing: downloading openvscode-server; ready: can start; running: at `url`. */
+  state: "missing" | "installing" | "ready" | "running"
+  url?: string
+  kind?: string
+  /** Whether this app can download openvscode-server here (Linux). */
+  canInstall: boolean
+  progress?: string
+  error?: string
 }
 
 export type Repeat = "none" | "hourly" | "daily" | "weekdays" | "weekly"
@@ -324,9 +353,9 @@ export type ServerMessage =
   | { type: "chat.replay"; chat: ChatMeta; events: ChatEvent[]; running: boolean }
   | { type: "chats.found"; requestId: string; hits: ChatHit[] }
   /** A side question (/btw) or a catch-up summary is being answered by a fast model, outside Conductor's chat. */
-  | { type: "quick.started"; id: string; kind: "side" | "catchup"; question?: string }
-  | { type: "side.answer"; id: string; question: string; text: string; error?: string }
-  | { type: "catchup"; id: string; text: string; error?: string }
+  | { type: "quick.started"; id: string; kind: "side" | "catchup"; question?: string; chatId?: string }
+  | { type: "side.answer"; id: string; question: string; text: string; error?: string; chatId?: string }
+  | { type: "catchup"; id: string; text: string; error?: string; chatId?: string }
   | { type: "files.listed"; requestId: string; files: string[] }
   | { type: "file.content"; requestId: string; path: string; text: string; truncated: boolean; mtime?: number; error?: string }
   | { type: "file.saved"; requestId: string; path: string; mtime?: number; error?: string }
@@ -339,6 +368,10 @@ export type ServerMessage =
   | { type: "term.output"; id: string; data: string }
   | { type: "term.scrollback"; id: string; data: string }
   | { type: "term.exit"; id: string; code: number | null }
+  | { type: "file.imaged"; requestId: string; dataUrl?: string; error?: string }
+  | { type: "chat.markdowned"; requestId: string; text?: string; title?: string; error?: string }
+  | { type: "usage"; requestId: string; summary: UsageSummary }
+  | { type: "ide"; ide: IdeState }
   | { type: "attachment.saved"; requestId: string; path: string; error?: string }
   | { type: "settings"; snapshot: SettingsSnapshot; options: Record<ProviderId, BackendOptions> }
   | { type: "settings.saved"; path: string; shadowed: string[]; snapshot: SettingsSnapshot }

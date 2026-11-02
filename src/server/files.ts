@@ -1,5 +1,18 @@
 import { execFile, spawnSync } from "node:child_process"
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs"
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  readSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import path from "node:path"
 import { promisify } from "node:util"
 import { resolveExecutable } from "../backends/process"
@@ -189,6 +202,12 @@ export function writeWorkspaceFile(workspace: string, file: string, text: string
   const root = realpathSync(workspace)
   const target = path.resolve(root, file)
   if (!inside(root, target)) throw new Error("That file is outside the workspace.")
+  const link = lstatSync(target, { throwIfNoEntry: false })
+  if (link?.isSymbolicLink() && !existsSync(target)) {
+    // A dangling link: writing would create its target, wherever it points.
+    const pointsTo = path.resolve(path.dirname(target), readlinkSync(target))
+    if (!inside(root, pointsTo)) throw new Error("That file is outside the workspace.")
+  }
   if (existsSync(target)) {
     const real = realpathSync(target)
     if (!inside(root, real)) throw new Error("That file is outside the workspace.")
@@ -203,9 +222,10 @@ export function writeWorkspaceFile(workspace: string, file: string, text: string
 
 /** The OS's opener for a web address (http and https only). */
 export function openerCommand(url: string, platform: NodeJS.Platform = process.platform): string[] {
-  if (!/^https?:\/\/[^\s]+$/i.test(url)) throw new Error("Only http and https addresses open in the browser.")
+  if (!/^https?:\/\/[^\s"<>|^`]+$/i.test(url)) throw new Error("Only http and https addresses open in the browser.")
   if (platform === "darwin") return ["open", url]
-  if (platform === "win32") return ["cmd", "/c", "start", "", url]
+  // Not through cmd.exe, which would treat & in a query string as a command separator.
+  if (platform === "win32") return ["rundll32", "url.dll,FileProtocolHandler", url]
   return ["xdg-open", url]
 }
 
@@ -245,4 +265,30 @@ export function listWorktrees(workspace: string): WorktreeList | undefined {
       }
     }),
   }
+}
+
+const IMAGE_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  bmp: "image/bmp",
+}
+export const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+
+/** A workspace image as a data URL (an <img> never runs an SVG's scripts). */
+export function readWorkspaceImage(workspace: string, file: string): string {
+  const root = realpathSync(workspace)
+  const target = path.resolve(root, file)
+  if (!inside(root, target)) throw new Error("That file is outside the workspace.")
+  const type = IMAGE_TYPES[path.extname(target).slice(1).toLowerCase()]
+  if (!type) throw new Error("Not an image.")
+  if (!existsSync(target)) throw new Error(`No such file: ${path.relative(root, target)}`)
+  const real = realpathSync(target)
+  if (!inside(root, real)) throw new Error("That file is outside the workspace.")
+  const stat = statSync(real)
+  if (stat.size > MAX_IMAGE_BYTES) throw new Error("That image is too large to show (8 MB at most).")
+  return `data:${type};base64,${readFileSync(real).toString("base64")}`
 }

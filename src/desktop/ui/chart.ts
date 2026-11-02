@@ -93,3 +93,43 @@ export function renderChart(spec: ChartSpec): string {
   const label = escapeHtml(spec.title ?? `${spec.type} chart`)
   return `<figure class="chart chart-${spec.type}">${title}<svg class="chart-plot" viewBox="0 0 ${W} ${H}" role="img" aria-label="${label}">${parts.join("")}</svg>${legend}</figure>`
 }
+
+/** Stat tiles from a ```stats block: [{"label": "…", "value": "…", "delta": "+12%", "hint": "…"}]. */
+export interface StatTile {
+  label: string
+  value: string
+  delta?: string
+  hint?: string
+}
+
+export function parseStats(source: string): StatTile[] | undefined {
+  let raw: unknown
+  try {
+    raw = JSON.parse(source)
+  } catch {
+    return undefined
+  }
+  if (!Array.isArray(raw)) return undefined
+  const tiles = raw
+    .filter((t): t is Record<string, unknown> => Boolean(t) && typeof t === "object" && "label" in t && "value" in t)
+    .slice(0, 12)
+    .map((t) => ({
+      label: String(t.label),
+      value: String(t.value),
+      delta: t.delta === undefined ? undefined : String(t.delta),
+      hint: t.hint === undefined ? undefined : String(t.hint),
+    }))
+  return tiles.length ? tiles : undefined
+}
+
+export function renderStats(tiles: StatTile[]): string {
+  const tone = (d: string) => (/^\s*[-−]/.test(d) ? "down" : /^\s*\+/.test(d) ? "up" : "")
+  return `<div class="stat-tiles">${tiles
+    .map(
+      (t) =>
+        `<div class="stat-tile"><div class="stat-label">${escapeHtml(t.label)}</div><div class="stat-value">${escapeHtml(t.value)}</div>${
+          t.delta ? `<div class="stat-delta ${tone(t.delta)}">${escapeHtml(t.delta)}</div>` : ""
+        }${t.hint ? `<div class="stat-hint">${escapeHtml(t.hint)}</div>` : ""}</div>`,
+    )
+    .join("")}</div>`
+}

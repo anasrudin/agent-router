@@ -27,6 +27,8 @@ export interface BoardOptions {
 export function setupBoard(o: BoardOptions) {
   let cards: Card[] = []
   let editing: string | undefined
+  /** What is typed in an open card form, kept across redraws (another window or a turn can change the board). */
+  const drafts = new Map<string, { title: string; notes: string }>()
 
   const upsert = (card: Partial<Card>) => o.send({ type: "board.upsert", workspace: o.workspace(), card })
   const move = (id: string, column: CardColumn, index: number) =>
@@ -56,17 +58,30 @@ export function setupBoard(o: BoardOptions) {
     return items
   }
 
-  function editor(card: Partial<Card> & { column: CardColumn }, done: () => void): HTMLElement {
+  function editor(card: Partial<Card> & { column: CardColumn }, finish: () => void): HTMLElement {
+    const key = card.id ?? `new:${card.column}`
+    const draft = drafts.get(key) ?? { title: card.title ?? "", notes: card.notes ?? "" }
+    drafts.set(key, draft)
+    const done = () => {
+      drafts.delete(key)
+      finish()
+    }
     const form = document.createElement("form")
     form.className = "card-edit"
     const title = document.createElement("input")
     title.className = "card-field"
-    title.value = card.title ?? ""
+    title.value = draft.title
+    title.addEventListener("input", () => {
+      draft.title = title.value
+    })
     title.placeholder = "What should be done?"
     title.setAttribute("aria-label", "Card title")
     const notes = document.createElement("textarea")
     notes.className = "card-field"
-    notes.value = card.notes ?? ""
+    notes.value = draft.notes
+    notes.addEventListener("input", () => {
+      draft.notes = notes.value
+    })
     notes.rows = 3
     notes.placeholder = "Details for Conductor (optional)"
     notes.setAttribute("aria-label", "Card details")
@@ -238,7 +253,17 @@ export function setupBoard(o: BoardOptions) {
     set(workspace: string, next: Card[]) {
       if (workspace !== o.workspace()) return
       cards = next
+      // Never rebuild under a drag in progress; its drop sends a move that redraws.
+      if (o.root.querySelector(".kanban-card.dragging")) return
+      const focused = document.activeElement as HTMLElement | null
+      const keep =
+        focused && o.root.contains(focused) && focused.matches(".card-field")
+          ? focused.closest("form")
+            ? [...o.root.querySelectorAll(".card-field")].indexOf(focused)
+            : -1
+          : -1
       draw()
+      if (keep >= 0) o.root.querySelectorAll<HTMLElement>(".card-field")[keep]?.focus()
     },
     cards: () => cards,
     draw,

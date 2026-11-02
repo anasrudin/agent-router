@@ -22,6 +22,34 @@ describe.skipIf(!Terminals.supported())("Terminals", () => {
     expect(terms.list()).toEqual([])
   })
 
+  test("closing a terminal ends the shell and what it runs, not only the shell", async () => {
+    const pidFile = `${process.env.TMPDIR ?? "/tmp"}/term-child-${process.pid}-${Date.now()}`
+    const terms = new Terminals({ output: () => {}, exit: () => {} })
+    const t = terms.open({ title: "bash", cwd: process.cwd(), command: ["bash", "--norc", "-i"], cols: 80, rows: 24 })
+    terms.input(t.id, `sleep 300 & echo $! > ${pidFile}\n`)
+    let child = 0
+    for (let i = 0; i < 40 && !child; i++) {
+      await Bun.sleep(50)
+      child = Number(
+        await Bun.file(pidFile)
+          .text()
+          .catch(() => "0"),
+      )
+    }
+    expect(child).toBeGreaterThan(0)
+    terms.close(t.id)
+    const alive = () => {
+      try {
+        process.kill(child, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+    for (let i = 0; i < 60 && alive(); i++) await Bun.sleep(50)
+    expect(alive()).toBe(false)
+  })
+
   test("close kills a running terminal", async () => {
     let exited = false
     const terms = new Terminals({ output: () => {}, exit: () => (exited = true) })

@@ -1,4 +1,4 @@
-import { parseChart, renderChart } from "./chart"
+import { parseChart, parseStats, renderChart, renderStats } from "./chart"
 
 /**
  * Small markdown renderer for Conductor and delegate output. Everything is escaped first, so
@@ -64,10 +64,16 @@ function inline(text: string): string {
     escaped += `\uE000${spans.length - 1}\uE001`
     i = span.end
   }
-  return escaped
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
-    .replace(/\uE000(\d+)\uE001/g, (_, i: string) => spans[Number(i)] as string)
+  return (
+    escaped
+      // Pictures: a workspace path is resolved by the app (data-src); web images stay text (no remote loads).
+      .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt: string, src: string) =>
+        /^[a-z][\w+.-]*:/i.test(src) ? m : `<img class="md-img" data-src="${src}" alt="${alt}" loading="lazy">`,
+      )
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
+      .replace(/\uE000(\d+)\uE001/g, (_, i: string) => spans[Number(i)] as string)
+  )
 }
 
 const isTableRow = (line: string) => /^\s*\|.*\|\s*$/.test(line)
@@ -125,8 +131,10 @@ export function renderMarkdown(source: string): string {
       i++
       while (i < lines.length && !(lines[i] as string).trim().startsWith(marker)) body.push(lines[i++] as string)
       i++
-      const chart = (fence[3] as string).trim() === "chart" ? parseChart(body.join("\n")) : undefined
-      out.push(chart ? renderChart(chart) : `<pre><code>${escapeHtml(body.join("\n"))}</code></pre>`)
+      const lang = (fence[3] as string).trim()
+      const chart = lang === "chart" ? parseChart(body.join("\n")) : undefined
+      const stats = lang === "stats" ? parseStats(body.join("\n")) : undefined
+      out.push(chart ? renderChart(chart) : stats ? renderStats(stats) : `<pre><code>${escapeHtml(body.join("\n"))}</code></pre>`)
       continue
     }
     const heading = /^(#{1,4})\s+(.*)$/.exec(line)
@@ -216,4 +224,39 @@ export function speechText(md: string): string {
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(/\s+/g, " ")
     .trim()
+}
+
+/**
+ * A Markdown file rendered block by block, each block tagged with the source lines it came from
+ * (data-line, data-end), so a selection in the preview maps back to lines for notes.
+ */
+export function renderMarkdownBlocks(source: string): string {
+  const lines = source.replace(/\r\n/g, "\n").split("\n")
+  const blocks: { start: number; end: number; text: string }[] = []
+  let start = -1
+  let fence: string | undefined
+  const close = (end: number) => {
+    if (start >= 0) blocks.push({ start: start + 1, end: end + 1, text: lines.slice(start, end + 1).join("\n") })
+    start = -1
+  }
+  lines.forEach((line, i) => {
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1]
+    if (fence) {
+      if (marker && line.trim().startsWith(fence)) {
+        fence = undefined
+        close(i)
+      }
+      return
+    }
+    if (marker) {
+      close(i - 1)
+      start = i
+      fence = marker
+      return
+    }
+    if (!line.trim()) close(i - 1)
+    else if (start < 0) start = i
+  })
+  close(lines.length - 1)
+  return blocks.map((b) => `<div class="md-block" data-line="${b.start}" data-end="${b.end}">${renderMarkdown(b.text)}</div>`).join("\n")
 }

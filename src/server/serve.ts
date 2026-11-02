@@ -1,3 +1,4 @@
+import { type ChildProcess, spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { copyFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs"
 import path from "node:path"
@@ -27,15 +28,18 @@ import {
   mentionedFiles,
   openerCommand,
   readWorkspaceFile,
+  readWorkspaceImage,
   saveAttachment,
   writeWorkspaceFile,
 } from "./files"
+import { findIde, freePort, ideCommand, installIde } from "./ide"
 import type {
   BackendStatus,
   BridgeMessage,
   BridgeReply,
   ChatMeta,
   ClientMessage,
+  IdeState,
   QueuedPrompt,
   ServerMessage,
   ThreadCheckpoint,
@@ -44,6 +48,7 @@ import { catchUpPrompt, quickAsk, sideQuestionPrompt, transcriptDigest } from ".
 import { ScheduleStore } from "./schedules"
 import { backendOptions, readSettings, saveSettings, testModel } from "./settings"
 import { Terminals } from "./terminals"
+import { usageSummary } from "./usage"
 
 type Role = "ui" | "bridge"
 type Socket = ServerWebSocket<{ role: Role }>
@@ -238,10 +243,10 @@ export function startServer(opts: ServeOptions) {
   const ui = new Set<Socket>()
   const approvals = new Map<string, Socket>()
   let turn: Turn | undefined
-  const data = opts.dataDir ?? dataDir()
-  const chats = new ChatStore(path.join(data, "chats"))
-  const schedules = new ScheduleStore(path.join(data, "schedules.json"))
-  const boards = new BoardStore(path.join(data, "boards"))
+  const dataRoot = opts.dataDir ?? dataDir()
+  const chats = new ChatStore(path.join(dataRoot, "chats"))
+  const schedules = new ScheduleStore(path.join(dataRoot, "schedules.json"))
+  const boards = new BoardStore(path.join(dataRoot, "boards"))
   const terminals = new Terminals({
     output: (id, chunk) => broadcast({ type: "term.output", id, data: chunk }),
     exit: (id, code) => {
@@ -251,6 +256,30 @@ export function startServer(opts: ServeOptions) {
   })
   /** Set while a turn is stopped so a queued request can run now (not a user Stop: the queue keeps going). */
   let interrupting = false
+  /** VS Code in the app: one server at a time, started on request. */
+  let ide: { proc?: ChildProcess; url?: string; folder?: string; installing?: string; error?: string } = {}
+  const ideState = (): IdeState => {
+    const bin = findIde(dataRoot)
+    return {
+      state: ide.installing ? "installing" : ide.url ? "running" : bin ? "ready" : "missing",
+      url: ide.url,
+      kind: bin?.kind,
+      canInstall: process.platform === "linux",
+      progress: ide.installing,
+      error: ide.error,
+    }
+  }
+  const broadcastIde = () => broadcast({ type: "ide", ide: ideState() })
+  const stopIde = () => {
+    // The server runs in its own process group (a launcher script and node children): end all of it.
+    const pid = ide.proc?.pid
+    if (pid) {
+      try {
+        process.kill(process.platform === "win32" ? pid : -pid, "SIGTERM")
+      } catch {}
+    }
+    ide = {}
+  }
   /** The chat requests go to: its Conductor session is resumed, its messages saved. A new chat starts with its first request. */
   let chat: ChatMeta | undefined
   let turnCounter = 0
@@ -315,6 +344,13 @@ export function startServer(opts: ServeOptions) {
       // Named by what was asked, without the routing keywords (@economy, ultrawork, /route lines).
       const title = chatTitle(overrides.text.trim() || msg.prompt)
       const runIn = msg.worktree ? chatWorktree(workspace, title, msg.worktree) : undefined
+      // Pictures pasted before the chat existed were saved in the workspace; Conductor runs in the worktree.
+      if (runIn)
+        for (const rel of mentionedFiles(msg.prompt, workspace))
+          if (rel.startsWith(".harness/attachments/") && !existsSync(path.join(runIn, rel))) {
+            mkdirSync(path.dirname(path.join(runIn, rel)), { recursive: true })
+            copyFileSync(path.join(workspace, rel), path.join(runIn, rel))
+          }
       chat = chats.create(workspace, title)
       if (runIn) chat = chats.update(chat.id, { runIn }) ?? chat
       broadcast({ type: "chat.current", chat })
@@ -405,6 +441,7 @@ export function startServer(opts: ServeOptions) {
         reply(socket, { type: "chat.current", chat })
         reply(socket, { type: "schedules", items: schedules.list() })
         reply(socket, { type: "terminals", items: terminals.list() })
+        reply(socket, { type: "queue", ...queue.view() })
       },
       close(socket) {
         ui.delete(socket)
@@ -516,6 +553,95 @@ export function startServer(opts: ServeOptions) {
         queue.remove(msg.id)
         broadcastQueue()
         return
+      case "file.image":
+        Promise.resolve()
+          .then(() => readWorkspaceImage(assertDirectory(msg.workspace), msg.path))
+          .then((dataUrl) => reply(socket, { type: "file.imaged", requestId: msg.requestId, dataUrl }))
+          .catch((e: unknown) => reply(socket, { type: "file.imaged", requestId: msg.requestId, error: errorText(e) }))
+        return
+      case "chat.markdown": {
+        const meta = chats.get(msg.id)
+        reply(
+          socket,
+          meta
+            ? { type: "chat.markdowned", requestId: msg.requestId, title: meta.title, text: chatMarkdown(meta, chats.events(meta.id)) }
+            : { type: "chat.markdowned", requestId: msg.requestId, error: "That chat no longer exists." },
+        )
+        return
+      }
+      case "usage.summary":
+        reply(socket, {
+          type: "usage",
+          requestId: msg.requestId,
+          summary: usageSummary(chats.list().map((meta) => ({ meta, events: chats.events(meta.id) }))),
+        })
+        return
+      case "ide.status":
+        reply(socket, { type: "ide", ide: ideState() })
+        return
+      case "ide.install":
+        if (ide.installing || process.platform !== "linux") return
+        ide.installing = "Starting the download…"
+        ide.error = undefined
+        broadcastIde()
+        void installIde(dataRoot, (text) => {
+          ide.installing = text
+          broadcastIde()
+        })
+          .catch((e: unknown) => {
+            ide.error = errorText(e)
+          })
+          .finally(() => {
+            ide.installing = undefined
+            broadcastIde()
+          })
+        return
+      case "ide.start": {
+        const folder = assertDirectory(msg.workspace)
+        if (ide.url && ide.folder === folder) {
+          broadcastIde()
+          return
+        }
+        stopIde()
+        const bin = findIde(dataRoot)
+        if (!bin) {
+          ide.error = "No VS Code server is installed."
+          broadcastIde()
+          return
+        }
+        void (async () => {
+          const port = await freePort()
+          const { args, url } = ideCommand(bin, folder, port, randomUUID().replaceAll("-", ""))
+          const proc = spawn(args[0] as string, args.slice(1), { cwd: folder, stdio: "ignore", detached: process.platform !== "win32" })
+          ide = { proc, folder }
+          void new Promise((r) => proc.once("exit", r)).then(() => {
+            if (ide.proc === proc) {
+              ide = { error: "The VS Code server stopped." }
+              broadcastIde()
+            }
+          })
+          // Ready when it answers on its port.
+          for (let i = 0; i < 120 && ide.proc === proc; i++) {
+            try {
+              await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1000) })
+              ide.url = url
+              break
+            } catch {
+              await Bun.sleep(250)
+            }
+          }
+          if (ide.proc === proc && !ide.url) {
+            stopIde()
+            ide.error = "The VS Code server did not start within 30 seconds."
+          }
+          broadcastIde()
+        })()
+        return
+      }
+      case "ide.stop":
+        stopIde()
+        broadcastIde()
+        return
       case "queue.move":
         queue.move(msg.id, msg.to)
         broadcastQueue()
@@ -556,7 +682,13 @@ export function startServer(opts: ServeOptions) {
         const id = randomUUID()
         const owner = chat
         const digest = owner ? transcriptDigest(chats.events(owner.id)) : ""
-        broadcast({ type: "quick.started", id, kind: msg.type === "side.ask" ? "side" : "catchup", question: question || undefined })
+        broadcast({
+          type: "quick.started",
+          id,
+          kind: msg.type === "side.ask" ? "side" : "catchup",
+          question: question || undefined,
+          chatId: owner?.id,
+        })
         const { config } = loadConfig(dir, null)
         void quickAsk({
           executable: config.backends.claude.executable,
@@ -567,8 +699,8 @@ export function startServer(opts: ServeOptions) {
           // Saved with the chat it was asked in, even if another chat is open by now.
           const answer: ServerMessage =
             msg.type === "side.ask"
-              ? { type: "side.answer", id, question, text: r.text, error: r.error }
-              : { type: "catchup", id, text: r.text, error: r.error }
+              ? { type: "side.answer", id, question, text: r.text, error: r.error, chatId: owner?.id }
+              : { type: "catchup", id, text: r.text, error: r.error, chatId: owner?.id }
           const data = JSON.stringify(answer)
           for (const s of ui) s.send(data)
           if (owner && !r.error) chats.append(owner.id, answer)
@@ -702,7 +834,8 @@ export function startServer(opts: ServeOptions) {
           ...(title ? { title: title.slice(0, 200) } : {}),
           ...(msg.pinned !== undefined ? { pinned: msg.pinned } : {}),
         })
-        if (updated && chat?.id === updated.id) chat = { ...updated, sessionId: chat.sessionId ?? updated.sessionId }
+        // In place: a running turn holds this object and records the session id on it.
+        if (updated && chat?.id === updated.id) Object.assign(chat, { title: updated.title, pinned: updated.pinned })
         broadcastChats()
         return
       }
@@ -785,7 +918,8 @@ export function startServer(opts: ServeOptions) {
 
   // Scheduled requests fire while the app is open, when no turn is running.
   const scheduler = setInterval(() => {
-    if (turn) return
+    // Only when nothing runs or waits: never ahead of the user's own queue, never past their Stop.
+    if (turn || queue.view().items.length || queue.paused) return
     const due = schedules.due()[0]
     if (!due) return
     schedules.ran(due.id)
@@ -812,6 +946,7 @@ export function startServer(opts: ServeOptions) {
     stop() {
       clearInterval(scheduler)
       terminals.closeAll()
+      stopIde()
       turn?.abort.abort()
       server.stop(true)
     },

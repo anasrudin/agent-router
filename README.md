@@ -63,9 +63,19 @@ The layout follows [Ghostex](https://github.com/maddada/Ghostex) (MIT): workspac
 
 **While Conductor works**, a strip above the composer says what it is doing and what each running thread is on; a thread opens on click. Requests you send meanwhile **queue**: drag them (or Alt+arrow keys) to reorder, Edit takes one back into the composer, and Play stops the turn and runs it now. A long chat shows its last 20 turns with a button for the earlier ones, and a **minimap** rail beside it marks each request and anything that needs you. `/btw <question>` asks a fast model a side question with the chat as context, without interrupting Conductor; **Catch me up** (the list button in the composer) summarizes where the chat stands. Both answers stay with the chat. Replies have a Read aloud button where the system has a voice, and Appearance can play a sound when a turn ends. A chat or a thread's report saves as Markdown from its menu.
 
-![A note on two lines of greet.js, marked Needs tests, waiting above the composer](docs/screenshots/notes.png)
+![PLAN.md rendered in the side panel: a step marked Needs tests waits above the composer as a note on PLAN.md:7-8, and the mark toolbar is open on another selection](docs/screenshots/notes.png)
 
-**Notes on the work**: select text in a file or a thread's report and mark it *Looks good*, *Clarify* or *Needs tests*, or write a note. Notes collect above the composer and go to Conductor as numbered feedback with the file and lines.
+**Notes on the work**: select text in a file, a rendered Markdown document or a thread's report and mark it *Looks good*, *Clarify* or *Needs tests*, or write a note. Notes collect above the composer and go to Conductor as numbered feedback with the file and lines (a rendered document's blocks map back to their source lines).
+
+![A reply with a workspace picture, stat tiles and a card that opens page.html](docs/screenshots/visuals.png)
+
+**Visuals in replies**: a picture in the workspace (`![chart](out/chart.png)`) shows in the reply and opens large on click; a ```` ```stats ```` block of JSON (`[{"label", "value", "delta"}]`) draws stat tiles; a ```` ```chart ```` block draws a chart; an HTML file a reply names gets a card that opens it. `/visuals` asks Conductor for these in its answer. Pictures you attach show as thumbnails under your request. In the side panel, Markdown and HTML files open **rendered** (HTML in a sandbox with no access to the app; Preview and Source switch between the two) and pictures open as pictures.
+
+| | |
+|---|---|
+| ![Another chat read beside the open one, in the side panel](docs/screenshots/beside.png) | ![Usage: each subscription's windows and resets, spend across saved chats per day and per backend](docs/screenshots/usage.png) |
+
+**Read beside**: a chat's menu opens another chat read-only in the side panel, next to the one you work in. **Spaces** (the chips above the sidebar) are sets of folders, Arc-style: make one with +, add folders from a folder's menu, and the sidebar shows that set; right-click a space to rename or delete it. **Usage** (the chart button in the status line, or `/usage`) shows each subscription's usage windows and when they reset, and the reported spend and tokens across all saved chats, per day and per backend. On desktops with a tray, a **tray icon** shows what Conductor is doing and can show or hide the window.
 
 **A new chat can run in its own worktree**: before the first request, pick This folder, a New worktree from a branch (the project's `.harness/routing.yaml` and memory are copied in), or an Existing worktree. The header shows the worktree. **Schedule** (the clock button) sends the composer's request later, once or every hour, day, weekday or week, to this chat or a new one, while the app is open.
 
@@ -75,6 +85,10 @@ The layout follows [Ghostex](https://github.com/maddada/Ghostex) (MIT): workspac
 
 **Terminal** (Ctrl/Cmd+`): real terminals in the chat's folder, in a dock under the chat (drag its edge to resize). **Conductor CLI** opens Conductor's own session in the Claude Code CLI (`claude --resume`), taking the composer's text with it. Terminals live in the core, so they survive a reload of the window; Linux and macOS for now. **Files** (Ctrl/Cmd+P) browses the workspace in the side panel; a file opens with line numbers and an **Edit** button for the built-in editor (CodeMirror, Ctrl/Cmd+S saves, and a file changed on disk since it was opened is never overwritten), or opens in VS Code. **Browser** previews a local dev server in the side panel (type a port or address; `localhost` links in replies open there). The **Board** view is a Kanban board per workspace: a card runs as a new chat, moves to Doing, and to Review when its turn ends. The terminal and the editor load the first time you open them.
 
+![The Code view: VS Code (openvscode-server) running in the app on the workspace](docs/screenshots/code.png)
+
+**Code** is VS Code in the app, as Ghostex ships an IDE that loads on demand: it runs a local `openvscode-server` or `code-server` (on PATH, or openvscode-server downloaded into the app's data folder with one click on Linux; nothing is installed system-wide) for the chat's folder, bound to 127.0.0.1 with a token, and stops with the app.
+
 ![A thread's context menu in the sidebar after a real run: open the thread, ask Conductor about it, copy its task or report](docs/screenshots/sidebar-menu.png)
 
 Hovering a sidebar row (or tabbing to it) swaps its age for a More button; the open chat's row also gets Stop while Conductor works. Right-click, the menu key or Shift+F10 open the same actions as a menu. **Ctrl/Cmd+K** searches every chat (titles and messages; filter to this folder or pinned chats), this chat's threads, scheduled requests and the commands; **Ctrl/Cmd+F** finds text in the chat (Enter and Shift+Enter step through matches, folded work opens to show them); Ctrl/Cmd+B hides the sidebar, Ctrl/Cmd+N starts a new chat, Escape closes a menu or the side panel. Status is a small dot with its word beside it (orange working, blue done, pink needs you, red failed), every icon-only control has a tooltip and a label, and the chat, sidebar and side panel draw thin overlay scrollbars. A thread that needs you, a question, an approval and a finished request notify you when the window is in the background. Inter, DM Sans (chat prose) and JetBrains Mono ship with the app. Light and dark follow the system.
@@ -83,7 +97,7 @@ Hovering a sidebar row (or tabbing to it) swaps its age for a More button; the o
 |---|---|
 | ![Light theme](docs/screenshots/threads-light.png) | ![Models dialog](docs/screenshots/models-dialog.png) |
 
-The first screenshot and the sidebar menu are real runs; the others use scripted sample data (a stand-in for the Claude CLI).
+The first screenshot and the sidebar menu are real runs; the others use scripted sample data (a stand-in for the Claude CLI), except the Code view, which is a real VS Code server.
 
 ```sh
 npm install                     # once

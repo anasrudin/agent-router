@@ -40,6 +40,8 @@ function theme() {
 
 export function setupDock(o: DockOptions) {
   const views = new Map<string, View>()
+  /** Terminals waiting for their scrollback: live output before it is already in it. */
+  const attaching = new Set<string>()
   let list: TerminalInfo[] = []
   let active: string | undefined
 
@@ -75,6 +77,7 @@ export function setupDock(o: DockOptions) {
     term.onData((data) => o.send({ type: "term.input", id, data }))
     const v = { term, fit, el }
     views.set(id, v)
+    attaching.add(id)
     o.send({ type: "term.attach", id })
     return v
   }
@@ -176,9 +179,10 @@ export function setupDock(o: DockOptions) {
           if (!list.length && !o.dock.hidden) show(false)
           return true
         case "term.output":
-          views.get(msg.id)?.term.write(msg.data)
+          if (!attaching.has(msg.id)) views.get(msg.id)?.term.write(msg.data)
           return true
         case "term.scrollback":
+          attaching.delete(msg.id)
           views.get(msg.id)?.term.write(msg.data)
           return true
         case "term.exit": {
