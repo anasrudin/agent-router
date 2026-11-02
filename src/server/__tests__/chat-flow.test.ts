@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { ChatMeta, ServerMessage } from "../protocol"
@@ -21,8 +21,8 @@ writeFileSync(
   fake,
   `#!/bin/sh
 echo "$@" >> "${argsLog}"
-# Each turn leaves a mark in the folder, so a git folder gets a turn checkpoint.
-date +%s%N > touched.txt
+# Each turn leaves a mark in the folder, so a git folder gets a turn checkpoint (only in this test's own folders).
+case "$PWD" in "${root}"*|"${realpathSync(root)}"*) date +%s%N > touched.txt ;; esac
 cat > /dev/null
 echo '{"type":"system","subtype":"init","session_id":"sess-1"}'
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Read","input":{"file_path":"notes.txt"}}]}}'
