@@ -57,7 +57,7 @@ The layout follows [Ghostex](https://github.com/maddada/Ghostex) (MIT): workspac
 
 ![Glass: the panels over a blurred backdrop, a thread open on its Overview tab](docs/screenshots/glass.png)
 
-**Glass** (the palette button at the foot of the sidebar) puts the panels over a blurred backdrop, as Ghostex draws its window: four built-in backdrops or your own picture, and a slider for how much the panels tint it. It works the same on every OS (the backdrop is inside the window, since Linux compositors cannot blur what is behind it).
+**Glass** (Settings → Appearance; the palette button at the foot of the sidebar opens it) puts the panels over a blurred backdrop, as Ghostex draws its window: four built-in backdrops or your own picture, and a slider for how much the panels tint it. It works the same on every OS (the backdrop is inside the window, since Linux compositors cannot blur what is behind it).
 
 ![Requests queued behind a running turn, with Edit, Play (run now) and drag handles, and the working strip above them](docs/screenshots/queue-strip.png)
 
@@ -89,19 +89,25 @@ The layout follows [Ghostex](https://github.com/maddada/Ghostex) (MIT): workspac
 
 **Code** is VS Code in the app, as Ghostex ships an IDE that loads on demand: it runs a local `openvscode-server` or `code-server` (on PATH, or openvscode-server downloaded into the app's data folder with one click on Linux; nothing is installed system-wide) for the chat's folder, bound to 127.0.0.1 with a token, and stops with the app.
 
-**Routing you can see and change.** Every thread's Overview says *why* it went where it did: the backend that is first for its kind of task (or the fallback and why), the tier and its floor, the profile, and every note the router made (skips, quota, escalation). A read-only thread's menu can **run it again on another backend** with the same brief, without Conductor, and its **Compare** tab shows the two reports side by side; for a thread that edits, the menu asks Conductor to redo it there. **Routing** (in the Models dialog, the palette or `/routing`) edits which backend is first, which come after it and the tier for each kind of task, saved to the project or for you, never below a task's floor, with a dry run that says where a request would go and why.
+**Routing you can see and change.** Every thread's Overview says *why* it went where it did: the backend that is first for its kind of task (or the fallback and why), the tier and its floor, the profile, and every note the router made (skips, quota, escalation). A read-only thread's menu can **run it again on another backend** with the same brief, without Conductor, and its **Compare** tab shows the two reports side by side; for a thread that edits, the menu asks Conductor to redo it there. **Routing** (in Settings, the palette or `/routing`) edits which backend is first, which come after it and the tier for each kind of task, saved to the project or for you, never below a task's floor, with a dry run that says where a request would go and why.
 
 | | |
 |---|---|
 | ![A thread re-run on Claude, its Compare tab showing the original Gemini report above the re-run](docs/screenshots/compare.png) | ![Routing: each task's first backend, the ones after it and its tier, with a dry run explaining where "find where greet is exported" would go](docs/screenshots/routing.png) |
 
-**A turn's changes, and going back.** When a turn changes files, a bar under it opens the whole turn's diff (Conductor's edits and its threads' together) in the side panel, where you can comment on lines or revert it, and **Go back to before this turn** restores the folder to how it was then, across later turns too, with **Undo**. **Limits** (in Usage) set a spend per chat and per day: a turn does not start past them, stops when it gets there, and the status line and a banner warn at 80% (of a limit or of a subscription window); **Send anyway** runs one request over the limit.
+**Settings** (the gear, or **Ctrl/Cmd+,**) holds everything in one place, on tabs: General (default profile and permission), Models, Routing, Profiles, Advanced, Limits, Appearance, Templates and About (version, where each file lives, the keys). **Advanced** edits what used to need `routing.yaml` by hand: escalation, delegate limits and watchdogs, never-send paths, project checks and worktree setup, telemetry and LSP, and each backend's command and extra arguments. Each section saves to this project's `.harness/routing.yaml` or to yours for every project; only what you change is written (setting a value back to the inherited one removes it), comments in the file are kept, and the whole config is checked before anything is saved.
+
+| | |
+|---|---|
+| ![Settings, Profiles tab: the four built-in profiles and a custom "Night runs" one being edited, with Conductor's tier, reasoning effort, guidance and per-task overrides](docs/screenshots/settings-profiles.png) | ![Settings, Advanced tab: escalation rules and delegate limits and watchdogs, each with its current value](docs/screenshots/settings-advanced.png) |
+
+**A turn's changes, and going back.** When a turn changes files, a bar under it opens the whole turn's diff (Conductor's edits and its threads' together) in the side panel, where you can comment on lines or revert it, and **Go back to before this turn** restores the folder to how it was then, across later turns too, with **Undo**. **Limits** (in Usage or Settings) set a spend per chat and per day: a turn does not start past them, stops when it gets there, and the status line and a banner warn at 80% (of a limit or of a subscription window); **Send anyway** runs one request over the limit.
 
 | | |
 |---|---|
 | ![A turn's changes: the bar under the turn and the turn's diff in the side panel](docs/screenshots/turn-changes.png) | ![A request refused at the chat's limit, with Send anyway, and the limit in the status line](docs/screenshots/budget.png) |
 
-**Your own commands and the project's memory.** **Prompt templates** (`/templates`) are /commands of your own, saved in the project (`.harness/prompts/<name>.md`, shared through git) or for you everywhere; `$ARGUMENTS` takes what you type after the command (`/review-pr #12`). `/memory` opens `.harness/memory.md`, the notes Conductor reads at the start of every turn, in the editor.
+**Your own commands and the project's memory.** **Prompt templates** (`/templates`, or Settings → Templates) are /commands of your own, saved in the project (`.harness/prompts/<name>.md`, shared through git) or for you everywhere; `$ARGUMENTS` takes what you type after the command (`/review-pr #12`). `/memory` opens `.harness/memory.md`, the notes Conductor reads at the start of every turn, in the editor.
 
 ![An Excalidraw drawing in the side panel, a note on its CLIs shape above the composer and the marks offered on another shape](docs/screenshots/drawing.png)
 
@@ -113,7 +119,7 @@ Hovering a sidebar row (or tabbing to it) swaps its age for a More button; the o
 
 | | |
 |---|---|
-| ![Light theme](docs/screenshots/threads-light.png) | ![Models dialog](docs/screenshots/models-dialog.png) |
+| ![Light theme](docs/screenshots/threads-light.png) | ![Settings in the light theme on its Models tab: the model and reasoning effort for each tier of each backend, with Test buttons](docs/screenshots/models-dialog.png) |
 
 The first screenshot and the sidebar menu are real runs; the others use scripted sample data (a stand-in for the Claude CLI), except the Code view, which is a real VS Code server.
 
@@ -153,7 +159,7 @@ Choose them in the desktop app under **Models**, which saves to this project or 
 | Gemini | The Gemini API's model list when `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set, plus the catalog; otherwise the catalog |
 | Claude | The catalog (Claude Code has no list command; `haiku`, `sonnet`, `opus` and `fable` always mean the latest) |
 
-`agent-router models` prints every list with the tier each model is set to and flags problems: a model your account does not offer, an effort the model does not accept, a tier left on the CLI default. `doctor` reports the same problems. The Models dialog says where each list came from and which tier the catalog suggests for each model.
+`agent-router models` prints every list with the tier each model is set to and flags problems: a model your account does not offer, an effort the model does not accept, a tier left on the CLI default. `doctor` reports the same problems. Settings → Models says where each list came from and which tier the catalog suggests for each model.
 
 Gemini only runs headless in folders it trusts. Trust the folder in Gemini once, or tick the trust checkbox under Gemini in **Models** (`trust_workspace: true`).
 
@@ -172,7 +178,7 @@ Tiers by monthly price: 1 = $20, 2 = $40, 3 = $200, 3.5 ≈ $255–266, 4 ≈ $4
 
 ## Profiles
 
-Choose one in the app's **Profile** menu, or with `--profile <name>` on the CLI. A profile only trades depth *above* each task class's quality floor: it can't lower `min_tier`, weaken privacy, or let an author review its own work. Anything you set yourself (Models dialog, user or project config) beats the profile.
+Choose one in the app's **Profile** menu, or with `--profile <name>` on the CLI. A profile only trades depth *above* each task class's quality floor: it can't lower `min_tier`, weaken privacy, or let an author review its own work. Anything you set yourself (Settings → Models, user or project config) beats the profile. **Settings → Profiles** makes, changes and deletes your own profiles (Conductor's tier, reasoning effort and guidance, and a tier or first backend per kind of task, never below its floor), and **General** sets the default one.
 
 | | Quality (default) | Balanced | Economy | Offload |
 |---|---|---|---|---|

@@ -12,7 +12,7 @@ type Send = (message: ClientMessage) => void
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 
-/** The Models dialog: per backend and tier, which model and reasoning effort to use. */
+/** The Models tab of Settings: per backend and tier, which model and reasoning effort to use. */
 export function createSettings(send: Send, workspace: () => string, notify: (message: string) => void) {
   const dialog = $<HTMLDialogElement>("settings")
   const body = $<HTMLDivElement>("settings-body")
@@ -27,7 +27,8 @@ export function createSettings(send: Send, workspace: () => string, notify: (mes
     status.className = kind ? `muted ${kind}` : "muted"
   }
 
-  function open() {
+  /** Fill the Models tab of the Settings dialog. */
+  function load() {
     if (!workspace()) {
       notify("Choose a workspace folder first: model settings can be saved per project.")
       return
@@ -35,7 +36,6 @@ export function createSettings(send: Send, workspace: () => string, notify: (mes
     body.innerHTML = '<p class="muted">Loading models…</p>'
     saveButton.disabled = true
     setStatus("Changes apply from the next request.")
-    dialog.showModal()
     send({ type: "settings.get", workspace: workspace() })
   }
 
@@ -189,7 +189,6 @@ export function createSettings(send: Send, workspace: () => string, notify: (mes
           setStatus(`Saved to ${msg.path}, but this project's file overrides: ${msg.shadowed.join(", ")}.`, "warn")
         } else {
           setStatus(`Saved to ${msg.path}. Applies from the next request.`)
-          setTimeout(() => dialog.open && dialog.close(), 900)
         }
         saveButton.disabled = false
         return true
@@ -211,9 +210,7 @@ export function createSettings(send: Send, workspace: () => string, notify: (mes
     }
   }
 
-  $("open-settings").addEventListener("click", open)
-  $("settings-close").addEventListener("click", () => dialog.close())
-  $("settings-cancel").addEventListener("click", () => dialog.close())
+  $("settings-cancel").addEventListener("click", load)
   $("settings-form").addEventListener("submit", (e) => {
     e.preventDefault()
     const scope = (dialog.querySelector<HTMLInputElement>('input[name="scope"]:checked')?.value ?? "project") as SettingsScope
@@ -222,5 +219,5 @@ export function createSettings(send: Send, workspace: () => string, notify: (mes
     send({ type: "settings.save", workspace: workspace(), scope, values: readValues() })
   })
 
-  return { onMessage }
+  return { onMessage, load }
 }

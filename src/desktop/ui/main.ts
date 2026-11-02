@@ -13,6 +13,7 @@ import type {
   DelegationSummary,
   IdeState,
   ProfileInfo,
+  ProfileRow,
   PromptTemplate,
   QueuedPrompt,
   RouteRow,
@@ -178,6 +179,7 @@ const state = {
   /** A board card started as a chat, waiting for that chat's id. */
   runningCard: undefined as string | undefined,
   budget: undefined as BudgetState | undefined,
+  version: "",
   templates: [] as PromptTemplate[],
   /** The last request sent, to send again past a budget ("Send anyway"). */
   lastStart: undefined as Extract<ClientMessage, { type: "start" }> | undefined,
@@ -2806,6 +2808,7 @@ function onMessage(msg: ServerMessage) {
       replayChat(msg)
       return
     case "hello":
+      state.version = msg.version
       state.greeting = true
       showBanner(undefined)
       // Backend health does not depend on the folder, so show it before one is chosen.
@@ -3019,7 +3022,7 @@ function slashCommands(): Command[] {
     })),
     { name: "templates", hint: "Make or edit prompt templates", run: () => openTemplates() },
     { name: "memory", hint: "The project memory Conductor reads", run: () => void openMemory() },
-    { name: "routing", hint: "Which backend and tier each kind of task gets", run: () => void openRouting() },
+    { name: "routing", hint: "Which backend and tier each kind of task gets", run: () => openRouting() },
     { name: "usage", hint: "Subscriptions and spend", run: () => void openUsage() },
     { name: "code", hint: "VS Code in the app", run: () => setView("code") },
     {
@@ -3153,7 +3156,7 @@ function paletteItems(): PaletteItem[] {
     { group: "Commands", label: "Continue in the Claude Code CLI", run: () => void dock.open("conductor") },
     { group: "Commands", label: "Catch me up", run: catchUp },
     { group: "Commands", label: "Usage", run: () => void openUsage() },
-    { group: "Commands", label: "Routing", run: () => void openRouting() },
+    { group: "Commands", label: "Routing", run: () => openRouting() },
     { group: "Commands", label: "Prompt templates", run: () => openTemplates() },
     { group: "Commands", label: "Project memory", run: () => void openMemory() },
     { group: "Commands", label: "Code: VS Code in the app", run: () => setView("code") },
@@ -3758,7 +3761,7 @@ function besideMessage(msg: ServerMessage): boolean {
       return true
     case "templates":
       state.templates = msg.items
-      if ($<HTMLDialogElement>("templates").open) renderTemplates()
+      if (settingsTab() === "templates") renderTemplates()
       return true
     case "ide":
       state.ide = msg.ide
@@ -4108,18 +4111,14 @@ function budgetSection(): HTMLElement {
 // ── Prompt templates ────────────────────────────────────────────────────
 
 function openTemplates() {
-  if (!state.workspace) {
-    showBanner("Choose a workspace folder first.")
-    return
-  }
-  renderTemplates()
-  const d = $<HTMLDialogElement>("templates")
-  if (!d.open) d.showModal()
+  openSettings("templates")
 }
 
 function renderTemplates(edit?: PromptTemplate) {
-  const body = $("templates-body")
-  body.replaceChildren()
+  const body = $("spanel-templates")
+  body.replaceChildren(
+    ...panelHead("Templates", "Requests you send often. Type / and the name in the composer; $ARGUMENTS takes what you type after it."),
+  )
   const form = document.createElement("form")
   form.className = "template-form"
   const name = document.createElement("input")
@@ -4176,7 +4175,6 @@ function renderTemplates(edit?: PromptTemplate) {
   }
   requestAnimationFrame(() => (edit ? text : name).focus())
 }
-$("templates-close").addEventListener("click", () => $<HTMLDialogElement>("templates").close())
 
 // ── Project memory: the notes Conductor reads at the start of each turn ──
 
@@ -4194,18 +4192,16 @@ async function openMemory() {
 
 // ── Routing: which backend and tier each kind of task gets ──────────────
 
-async function openRouting() {
-  if (!state.workspace) {
-    showBanner("Choose a workspace folder first.")
-    return
-  }
-  const dialog = $<HTMLDialogElement>("routing")
-  const body = $("routing-body")
+function openRouting() {
+  openSettings("routing")
+}
+
+async function renderRouting() {
+  const current = beginRender("routing")
+  const body = $("spanel-routing")
   body.replaceChildren(Object.assign(el("p", "muted"), { textContent: "Loading the routes…" }))
-  if ($<HTMLDialogElement>("settings").open) $<HTMLDialogElement>("settings").close()
-  if (!dialog.open) dialog.showModal()
   const reply = await request({ type: "routing.get", requestId: nextRequestId(), workspace: state.workspace })
-  if (reply.type !== "routing") return
+  if (reply.type !== "routing" || !current()) return
   if (reply.error) {
     body.replaceChildren(Object.assign(el("div", "error"), { textContent: reply.error }))
     return
@@ -4213,10 +4209,10 @@ async function openRouting() {
   const rows: RouteRow[] = reply.routes.filter((r) => r.agent !== "conductor")
   const providers = Object.keys(PROVIDER_LABEL) as ProviderId[]
   const tiers = ["fast", "standard", "deep"] as const
-  const intro = Object.assign(el("p", "hint"), {
-    textContent:
-      "Each kind of task goes to its first backend, then the next ones if that cannot take it. A tier never goes below the task's floor. Changes apply from the next delegation.",
-  })
+  const intro = panelHead(
+    "Routing",
+    "Each kind of task goes to its first backend, then the next ones if that cannot take it. A tier never goes below the task's floor. Changes apply from the next delegation.",
+  )
   const table = el("table", "routing-table")
   table.innerHTML = "<thead><tr><th>Task</th><th>First backend</th><th>Then</th><th>Tier</th></tr></thead>"
   const tbody = document.createElement("tbody")
@@ -4321,14 +4317,480 @@ async function openRouting() {
     for (const line of res.why) ul.append(Object.assign(el("li"), { textContent: line }))
     out.append(ul)
   })
-  body.replaceChildren(intro, test, out, table, bar)
+  body.replaceChildren(...intro, test, out, table, bar)
 }
-$("routing-close").addEventListener("click", () => $<HTMLDialogElement>("routing").close())
-$("open-routing").addEventListener("click", () => void openRouting())
+
+// ── Settings: every setting in one place (Ctrl+,) ────────────────────────
+
+type SettingsTab = "general" | "models" | "routing" | "profiles" | "advanced" | "limits" | "appearance" | "templates" | "about"
+const SETTINGS_TABS: SettingsTab[] = ["general", "models", "routing", "profiles", "advanced", "limits", "appearance", "templates", "about"]
+const settingsDialog = $<HTMLDialogElement>("settings")
+let currentSettingsTab: SettingsTab = "general"
+const settingsTab = () => (settingsDialog.open ? currentSettingsTab : undefined)
+const panelRenders = new Map<SettingsTab, number>()
+/** Starts a render of a settings panel. The check turns false once a newer render of that panel starts or another tab is chosen, so two renders never interleave their awaits into one panel. */
+function beginRender(tab: SettingsTab): () => boolean {
+  const n = (panelRenders.get(tab) ?? 0) + 1
+  panelRenders.set(tab, n)
+  return () => panelRenders.get(tab) === n && settingsTab() === tab
+}
+const panelOf = (tab: SettingsTab) => (tab === "models" ? $("settings-form") : $(`spanel-${tab}`))
+
+function openSettings(tab: SettingsTab = currentSettingsTab) {
+  const needsFolder: SettingsTab[] = ["general", "models", "routing", "profiles", "advanced", "templates"]
+  const chosen = !state.workspace && needsFolder.includes(tab) ? "appearance" : tab
+  const opening = !settingsDialog.open
+  if (opening) settingsDialog.showModal()
+  $("settings-workspace").textContent = state.workspace ? folderName(state.workspace) : ""
+  $("settings-workspace").title = state.workspace
+  selectSettingsTab(chosen, opening)
+}
+
+function selectSettingsTab(tab: SettingsTab, focus = false) {
+  currentSettingsTab = tab
+  for (const t of SETTINGS_TABS) {
+    const b = $(`stab-${t}`)
+    b.setAttribute("aria-selected", String(t === tab))
+    b.tabIndex = t === tab ? 0 : -1
+    panelOf(t).hidden = t !== tab
+  }
+  if (focus) $(`stab-${tab}`).focus()
+  if (tab === "general") void renderGeneral()
+  else if (tab === "models") settings.load()
+  else if (tab === "routing") void renderRouting()
+  else if (tab === "profiles") void renderProfilesTab()
+  else if (tab === "advanced") void renderAdvanced()
+  else if (tab === "limits") $("spanel-limits").replaceChildren(budgetSection())
+  else if (tab === "templates") renderTemplates()
+  else if (tab === "about") renderAbout()
+}
+
+for (const t of SETTINGS_TABS) {
+  $(`stab-${t}`).addEventListener("click", () => selectSettingsTab(t))
+  $(`stab-${t}`).addEventListener("keydown", (e) => {
+    const i = SETTINGS_TABS.indexOf(t)
+    const next =
+      e.key === "ArrowDown"
+        ? SETTINGS_TABS[(i + 1) % SETTINGS_TABS.length]
+        : e.key === "ArrowUp"
+          ? SETTINGS_TABS[(i + SETTINGS_TABS.length - 1) % SETTINGS_TABS.length]
+          : undefined
+    if (!next) return
+    e.preventDefault()
+    selectSettingsTab(next, true)
+  })
+}
+$("settings-close").addEventListener("click", () => settingsDialog.close())
+$("open-settings").addEventListener("click", () => openSettings("general"))
+$("appearance-btn").addEventListener("click", () => openSettings("appearance"))
+
+/** A "Save to" choice for a settings section: this project's file or yours. */
+function scopePicker(): HTMLSelectElement {
+  const scope = document.createElement("select")
+  scope.className = "field-input"
+  scope.setAttribute("aria-label", "Save to")
+  scope.add(new Option("This project", "project"))
+  scope.add(new Option("All projects", "user"))
+  return scope
+}
+
+function panelHead(title: string, intro: string): HTMLElement[] {
+  return [Object.assign(el("h3", "panel-title"), { textContent: title }), Object.assign(el("p", "hint"), { textContent: intro })]
+}
+
+function savedStatus(status: HTMLElement, reply: ServerMessage, what = "Saved") {
+  if (reply.type !== "config.saved") return false
+  status.textContent = reply.error ?? `${what} to ${reply.path}`
+  status.className = reply.error ? "error" : "muted"
+  return !reply.error
+}
+
+// General: the default profile and permission, and where things are.
+async function renderGeneral() {
+  const current = beginRender("general")
+  const body = $("spanel-general")
+  body.replaceChildren(...panelHead("General", "Defaults for new requests. The mode pill in the composer changes them for one request."))
+  const reply = await request({ type: "profiles.get", requestId: nextRequestId(), workspace: state.workspace })
+  if (reply.type !== "profiles" || !current()) return
+  const form = el("div", "settings-grid")
+  const profile = document.createElement("select")
+  profile.className = "field-input"
+  profile.setAttribute("aria-label", "Default profile")
+  for (const p of reply.profiles) profile.add(new Option(p.label, p.name))
+  profile.value = reply.defaultProfile ?? reply.profiles[0]?.name ?? ""
+  const about = el("small", "muted settings-note")
+  const describe = () => {
+    about.textContent = reply.profiles.find((p) => p.name === profile.value)?.description ?? ""
+  }
+  describe()
+  profile.addEventListener("change", describe)
+  const scope = scopePicker()
+  const status = el("span", "muted")
+  const save = textButton("Save default profile", "primary small", async () => {
+    const r = await request({
+      type: "profile.default",
+      requestId: nextRequestId(),
+      workspace: state.workspace,
+      scope: scope.value as "project" | "user",
+      name: profile.value,
+    })
+    if (savedStatus(status, r)) send({ type: "status", workspace: state.workspace })
+  })
+  const permission = document.createElement("select")
+  permission.className = "field-input"
+  permission.setAttribute("aria-label", "Default permission")
+  for (const o of permissionSelect.options) permission.add(new Option(o.textContent ?? o.value, o.value))
+  permission.value = permissionSelect.value
+  permission.addEventListener("change", () => {
+    permissionSelect.value = permission.value
+    prefs.set("permission", permission.value)
+    renderModeSummary()
+  })
+  const row = (label: string, ...nodes: HTMLElement[]) => {
+    const r = el("div", "settings-row")
+    r.append(Object.assign(el("span", "settings-label"), { textContent: label }), ...nodes)
+    form.append(r)
+  }
+  const profileControls = el("div", "settings-controls")
+  profileControls.append(profile, scope, save, status, about)
+  row("Default profile", profileControls)
+  const permissionControls = el("div", "settings-controls")
+  permissionControls.append(
+    permission,
+    Object.assign(el("small", "muted"), { textContent: "On this machine: what Conductor and its delegates may do without asking." }),
+  )
+  row("Permission", permissionControls)
+  row("Workspace", Object.assign(el("span", "mono"), { textContent: state.workspace || "none" }))
+  body.append(form)
+}
+
+// Profiles: make, change and delete them, with Conductor's tier and per-task overrides.
+async function renderProfilesTab(editing?: ProfileRow) {
+  const current = beginRender("profiles")
+  const body = $("spanel-profiles")
+  body.replaceChildren(
+    ...panelHead(
+      "Profiles",
+      "A profile trades cost for depth above each task's quality floor: Conductor's own tier, guidance for it, and tier or backend changes per kind of task.",
+    ),
+  )
+  const reply = await request({ type: "profiles.get", requestId: nextRequestId(), workspace: state.workspace })
+  if (reply.type !== "profiles" || !current()) return
+  if (reply.error) {
+    body.append(Object.assign(el("div", "error"), { textContent: reply.error }))
+    return
+  }
+  const list = el("ul", "profile-list")
+  for (const p of reply.profiles) {
+    const li = el("li", p.name === editing?.name ? "editing" : "")
+    li.append(
+      Object.assign(el("strong"), { textContent: p.label }),
+      Object.assign(el("span", "mono muted"), { textContent: p.name }),
+      Object.assign(el("span", "muted profile-desc"), {
+        textContent: `${p.description}${p.name === reply.defaultProfile ? " (default)" : ""}`,
+      }),
+      textButton("Edit", "ghost small", () => void renderProfilesTab(p)),
+    )
+    if (!p.builtIn)
+      li.append(
+        textButton("Delete", "ghost small danger", async () => {
+          for (const scope of ["project", "user"] as const) {
+            const r = await request({ type: "profile.delete", requestId: nextRequestId(), workspace: state.workspace, scope, name: p.name })
+            if (r.type === "config.saved" && !r.error) break
+          }
+          send({ type: "status", workspace: state.workspace })
+          void renderProfilesTab()
+        }),
+      )
+    list.append(li)
+  }
+  body.append(list)
+  const draft: ProfileRow = editing
+    ? { ...editing, routeTiers: { ...editing.routeTiers }, routePrimary: { ...editing.routePrimary } }
+    : {
+        name: "",
+        label: "",
+        description: "",
+        tier: "standard",
+        reasoning: "",
+        guidance: "",
+        routeTiers: {},
+        routePrimary: {},
+        builtIn: false,
+      }
+  const form = document.createElement("form")
+  form.className = "profile-form"
+  form.append(Object.assign(el("h4"), { textContent: editing ? `Edit ${editing.label}` : "New profile" }))
+  const input = (label: string, value: string, set: (v: string) => void, opts: { readOnly?: boolean; placeholder?: string } = {}) => {
+    const wrap = el("label", "field")
+    const i = document.createElement("input")
+    i.className = "field-input"
+    i.value = value
+    i.readOnly = Boolean(opts.readOnly)
+    if (opts.placeholder) i.placeholder = opts.placeholder
+    i.addEventListener("input", () => set(i.value))
+    wrap.append(Object.assign(el("span"), { textContent: label }), i)
+    return wrap
+  }
+  const TIER_NAMES = ["fast", "standard", "deep"]
+  const tierSelect = (value: string, label: string, set: (v: string) => void, inherit?: string, floor?: string) => {
+    const sel = document.createElement("select")
+    sel.className = "field-input"
+    sel.setAttribute("aria-label", label)
+    if (inherit) sel.add(new Option(inherit, ""))
+    for (const t of TIER_NAMES) if (!floor || TIER_NAMES.indexOf(t) >= TIER_NAMES.indexOf(floor)) sel.add(new Option(t, t))
+    sel.value = value
+    sel.addEventListener("change", () => set(sel.value))
+    return sel
+  }
+  const grid = el("div", "profile-fields")
+  grid.append(
+    input(
+      "Name",
+      draft.name,
+      (v) => {
+        draft.name = v.trim()
+      },
+      { readOnly: Boolean(editing), placeholder: "night-runs" },
+    ),
+    input(
+      "Label",
+      draft.label,
+      (v) => {
+        draft.label = v
+      },
+      { placeholder: "Night runs" },
+    ),
+    input(
+      "Description",
+      draft.description,
+      (v) => {
+        draft.description = v
+      },
+      { placeholder: "What it is for" },
+    ),
+  )
+  const tierWrap = el("label", "field")
+  tierWrap.append(
+    Object.assign(el("span"), { textContent: "Conductor's tier" }),
+    tierSelect(draft.tier, "Conductor's tier", (v) => {
+      draft.tier = v as ProfileRow["tier"]
+    }),
+  )
+  grid.append(
+    tierWrap,
+    input(
+      "Conductor's reasoning effort",
+      draft.reasoning,
+      (v) => {
+        draft.reasoning = v
+      },
+      { placeholder: "high, or empty for the default" },
+    ),
+  )
+  const guidance = document.createElement("textarea")
+  guidance.className = "field-text"
+  guidance.rows = 4
+  guidance.value = draft.guidance
+  guidance.placeholder = "Rules added to Conductor's instructions while this profile runs."
+  guidance.setAttribute("aria-label", "Guidance")
+  guidance.addEventListener("input", () => {
+    draft.guidance = guidance.value
+  })
+  const routing = await request({ type: "routing.get", requestId: nextRequestId(), workspace: state.workspace })
+  if (!current()) return
+  const rows = routing.type === "routing" ? routing.routes.filter((r) => r.agent !== "conductor") : []
+  const table = el("table", "routing-table")
+  table.innerHTML = "<thead><tr><th>Task</th><th>Tier in this profile</th><th>First backend in this profile</th></tr></thead>"
+  const tb = document.createElement("tbody")
+  for (const r of rows) {
+    const tr = document.createElement("tr")
+    const tier = tierSelect(
+      draft.routeTiers[r.taskClass] ?? "",
+      `${r.taskClass} tier`,
+      (v) => {
+        if (v) draft.routeTiers[r.taskClass] = v as ProfileRow["tier"]
+        else delete draft.routeTiers[r.taskClass]
+      },
+      `as routed (${r.tier})`,
+      r.minTier,
+    )
+    const primary = document.createElement("select")
+    primary.className = "field-input"
+    primary.setAttribute("aria-label", `${r.taskClass} first backend`)
+    primary.add(new Option("as routed", ""))
+    for (const p of Object.keys(PROVIDER_LABEL) as ProviderId[]) primary.add(new Option(PROVIDER_LABEL[p], p))
+    primary.value = draft.routePrimary[r.taskClass] ?? ""
+    primary.addEventListener("change", () => {
+      if (primary.value) draft.routePrimary[r.taskClass] = primary.value as ProviderId
+      else delete draft.routePrimary[r.taskClass]
+    })
+    const td = (n: HTMLElement) => {
+      const c = document.createElement("td")
+      c.append(n)
+      return c
+    }
+    tr.append(Object.assign(document.createElement("td"), { textContent: r.taskClass }), td(tier), td(primary))
+    tb.append(tr)
+  }
+  table.append(tb)
+  const scope = scopePicker()
+  const status = el("span", "muted")
+  const save = textButton(editing ? "Save profile" : "Add profile", "primary small", () => form.requestSubmit())
+  save.type = "submit"
+  const buttons = el("div", "buttons")
+  buttons.append(Object.assign(el("span", "muted"), { textContent: "Save to" }), scope, save)
+  if (editing) buttons.append(textButton("New profile instead", "ghost small", () => void renderProfilesTab()))
+  buttons.append(status)
+  form.append(grid, guidance, table, buttons)
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault()
+    const r = await request({
+      type: "profile.save",
+      requestId: nextRequestId(),
+      workspace: state.workspace,
+      scope: scope.value as "project" | "user",
+      profile: draft,
+    })
+    if (savedStatus(status, r)) send({ type: "status", workspace: state.workspace })
+  })
+  body.append(form)
+}
+
+// Advanced: the settings that used to need routing.yaml, grouped, each checked before saving.
+async function renderAdvanced() {
+  const current = beginRender("advanced")
+  const body = $("spanel-advanced")
+  body.replaceChildren(
+    ...panelHead(
+      "Advanced",
+      "Escalation, limits and watchdogs, privacy, project checks, worktree setup and each backend's command. Only what you change is written; the rest keeps inheriting.",
+    ),
+  )
+  const reply = await request({ type: "advanced.get", requestId: nextRequestId(), workspace: state.workspace })
+  if (reply.type !== "advanced" || !current()) return
+  if (reply.error) {
+    body.append(Object.assign(el("div", "error"), { textContent: reply.error }))
+    return
+  }
+  const changed = new Map<string, unknown>()
+  const form = document.createElement("form")
+  form.className = "advanced-form"
+  let group = ""
+  let fieldset: HTMLFieldSetElement | undefined
+  for (const f of reply.fields) {
+    if (f.group !== group) {
+      group = f.group
+      fieldset = document.createElement("fieldset")
+      fieldset.className = "advanced-group"
+      fieldset.append(Object.assign(document.createElement("legend"), { textContent: group }))
+      form.append(fieldset)
+    }
+    const row = el("label", "advanced-row")
+    const label = Object.assign(el("span", "settings-label"), { textContent: f.label })
+    let control: HTMLElement
+    if (f.type === "bool") {
+      const box = document.createElement("input")
+      box.type = "checkbox"
+      box.checked = Boolean(f.value)
+      box.addEventListener("change", () => changed.set(f.key, box.checked))
+      control = box
+      row.classList.add("advanced-bool")
+      row.append(box, label)
+    } else if (f.type === "list") {
+      const ta = document.createElement("textarea")
+      ta.className = "field-text"
+      const items = (f.value as string[] | null) ?? []
+      ta.rows = Math.min(6, Math.max(2, items.length + 1))
+      ta.value = items.join("\n")
+      ta.addEventListener("input", () => changed.set(f.key, ta.value.split("\n")))
+      control = ta
+      row.append(label, ta)
+    } else {
+      const i = document.createElement("input")
+      i.className = "field-input"
+      if (f.type === "int" || f.type === "number") {
+        i.type = "number"
+        i.step = f.type === "int" ? "1" : "any"
+        if (f.min !== undefined) i.min = String(f.min)
+        if (f.max !== undefined) i.max = String(f.max)
+      }
+      i.value = f.value === null || f.value === undefined ? "" : String(f.value)
+      if (f.nullable) i.placeholder = "off"
+      i.addEventListener("input", () => changed.set(f.key, f.type === "string" || i.value === "" ? i.value : Number(i.value)))
+      control = i
+      row.append(label, i)
+    }
+    control.setAttribute("aria-label", f.label)
+    if (f.help) row.append(Object.assign(el("small", "muted"), { textContent: f.help }))
+    fieldset?.append(row)
+  }
+  const scope = scopePicker()
+  const status = el("span", "muted")
+  const save = textButton("Save changes", "primary small", () => form.requestSubmit())
+  save.type = "submit"
+  const buttons = el("div", "buttons sticky-buttons")
+  buttons.append(Object.assign(el("span", "muted"), { textContent: "Save to" }), scope, save, status)
+  form.append(buttons)
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault()
+    if (!changed.size) {
+      status.textContent = "Nothing changed."
+      return
+    }
+    const count = changed.size
+    const r = await request({
+      type: "advanced.save",
+      requestId: nextRequestId(),
+      workspace: state.workspace,
+      scope: scope.value as "project" | "user",
+      values: Object.fromEntries(changed),
+    })
+    if (savedStatus(status, r, `Saved ${count} setting${count > 1 ? "s" : ""}`)) changed.clear()
+  })
+  body.append(form)
+}
+
+// About: version, where things live, the keys.
+function renderAbout() {
+  const body = $("spanel-about")
+  const facts: [string, string][] = [
+    ["Version", state.version || "unknown"],
+    ["Workspace", state.workspace || "none"],
+    ["Project settings", state.workspace ? `${state.workspace}/.harness/routing.yaml` : "none"],
+    ["Templates", state.workspace ? `${state.workspace}/.harness/prompts` : "none"],
+    ["Project memory", state.workspace ? `${state.workspace}/.harness/memory.md` : "none"],
+  ]
+  const dl = el("dl", "about-list")
+  for (const [k, v] of facts) dl.append(Object.assign(el("dt"), { textContent: k }), Object.assign(el("dd", "mono"), { textContent: v }))
+  const keys: [string, string][] = [
+    ["Ctrl+,", "Settings"],
+    ["Ctrl+K", "Search chats and commands"],
+    ["Ctrl+F", "Find in this chat"],
+    ["Ctrl+N", "New chat"],
+    ["Ctrl+B", "Hide the sidebar"],
+    ["Ctrl+P", "Files"],
+    ["Ctrl+`", "Terminal"],
+    ["Escape", "Close a menu or the side panel"],
+    ["@ /", "Mention a file; commands and your templates"],
+    ["Tab", "Queue a request while Conductor works"],
+  ]
+  const kl = el("dl", "about-list keys")
+  for (const [k, v] of keys) {
+    const dt = el("dt")
+    for (const part of k.split(/[+ ]/)) dt.append(Object.assign(document.createElement("kbd"), { textContent: part }))
+    kl.append(dt, Object.assign(el("dd"), { textContent: v }))
+  }
+  body.replaceChildren(
+    ...panelHead("About", "agent-router runs Conductor on Claude Code and routes its subtasks to Claude, Gemini and Codex."),
+    dl,
+    Object.assign(el("h4"), { textContent: "Keys" }),
+    kl,
+  )
+}
 
 popover($<HTMLButtonElement>("threads-pill"), $("threads-menu"))
 popover($<HTMLButtonElement>("schedule-btn"), $("schedule-menu"), renderScheduleMenu)
-popover($<HTMLButtonElement>("appearance-btn"), $("appearance-menu"))
 installTooltips($("tooltip"))
 for (const id of ["log", "threads", "detail-body"]) overlayScrollbar($(id))
 
@@ -4351,6 +4813,9 @@ document.addEventListener("keydown", (e) => {
   } else if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "`" || e.code === "Backquote")) {
     e.preventDefault()
     dock.toggle()
+  } else if (mod && e.key === ",") {
+    e.preventDefault()
+    openSettings()
   } else if (mod && key === "p") {
     e.preventDefault()
     togglePanel("files")

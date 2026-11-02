@@ -194,6 +194,12 @@ export type ClientMessage =
   | { type: "routing.get"; requestId: string; workspace: string }
   | { type: "routing.save"; requestId: string; workspace: string; scope: SettingsScope; routes: RouteEdit[] }
   | { type: "route.test"; requestId: string; workspace: string; text: string; taskClass?: string; profile?: string }
+  | { type: "advanced.get"; requestId: string; workspace: string }
+  | { type: "advanced.save"; requestId: string; workspace: string; scope: SettingsScope; values: Record<string, unknown> }
+  | { type: "profiles.get"; requestId: string; workspace: string }
+  | { type: "profile.save"; requestId: string; workspace: string; scope: SettingsScope; profile: ProfileRow }
+  | { type: "profile.delete"; requestId: string; workspace: string; scope: SettingsScope; name: string }
+  | { type: "profile.default"; requestId: string; workspace: string; scope: SettingsScope; name: string }
   | { type: "templates.list"; workspace: string }
   | { type: "template.save"; workspace: string; scope: SettingsScope; name: string; text: string }
   | { type: "template.delete"; workspace: string; scope: SettingsScope; name: string }
@@ -291,6 +297,33 @@ export interface UsageSummary {
   turns: number
   costUsd: number
   tokens: number
+}
+
+export interface AdvancedField {
+  key: string
+  group: string
+  label: string
+  type: "bool" | "int" | "number" | "list" | "string"
+  nullable?: boolean
+  min?: number
+  max?: number
+  help?: string
+  value: boolean | number | string | string[] | null
+}
+
+export interface ProfileRow {
+  name: string
+  label: string
+  description: string
+  /** Conductor's own tier and effort. */
+  tier: Tier
+  reasoning: string
+  guidance: string
+  /** Per task class, the tier this profile sets (absent: the route's own). */
+  routeTiers: Record<string, Tier>
+  routePrimary: Record<string, ProviderId>
+  /** Ships with the harness: can be changed, not deleted. */
+  builtIn: boolean
 }
 
 export interface PromptTemplate {
@@ -471,6 +504,10 @@ export type ServerMessage =
   | { type: "routing.saved"; requestId: string; path?: string; error?: string }
   | { type: "route.tested"; requestId: string; result: RouteTest }
   | { type: "templates"; items: PromptTemplate[] }
+  | { type: "advanced"; requestId: string; fields: AdvancedField[]; error?: string }
+  | { type: "profiles"; requestId: string; profiles: ProfileRow[]; defaultProfile?: string; classes: string[]; error?: string }
+  /** A settings write (advanced, profiles): where it went, or why not. */
+  | { type: "config.saved"; requestId: string; path?: string; error?: string }
   | { type: "attachment.saved"; requestId: string; path: string; error?: string }
   | { type: "settings"; snapshot: SettingsSnapshot; options: Record<ProviderId, BackendOptions> }
   | { type: "settings.saved"; path: string; shadowed: string[]; snapshot: SettingsSnapshot }

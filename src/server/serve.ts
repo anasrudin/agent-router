@@ -19,6 +19,7 @@ import { describePreview, summarize } from "../mcp/server"
 import { type Overrides, parseOverrides, ULTRAWORK_NOTE } from "../router/classify"
 import { explainDecision } from "../router/policy"
 import { QuotaTracker } from "../router/quota"
+import { readAdvanced, saveAdvanced } from "./advanced"
 import { BoardStore } from "./boards"
 import { toWire } from "./bridge"
 import { ChatStore, dataDir } from "./chats"
@@ -36,6 +37,7 @@ import {
   writeWorkspaceFile,
 } from "./files"
 import { findIde, freePort, ideCommand, installIde } from "./ide"
+import { deleteProfile, readProfiles, saveProfile, setDefaultProfile } from "./profiles"
 import type {
   BackendStatus,
   BridgeMessage,
@@ -743,6 +745,35 @@ export function startServer(opts: ServeOptions) {
               result: { taskClass: msg.taskClass ?? "", why: [], error: errorText(e) },
             }),
           )
+        return
+      case "advanced.get":
+        Promise.resolve()
+          .then(() => readAdvanced(assertDirectory(msg.workspace)))
+          .then((fields) => reply(socket, { type: "advanced", requestId: msg.requestId, fields }))
+          .catch((e: unknown) => reply(socket, { type: "advanced", requestId: msg.requestId, fields: [], error: errorText(e) }))
+        return
+      case "profiles.get":
+        Promise.resolve()
+          .then(() => readProfiles(assertDirectory(msg.workspace)))
+          .then((r) => reply(socket, { type: "profiles", requestId: msg.requestId, ...r }))
+          .catch((e: unknown) =>
+            reply(socket, { type: "profiles", requestId: msg.requestId, profiles: [], classes: [], error: errorText(e) }),
+          )
+        return
+      case "advanced.save":
+      case "profile.save":
+      case "profile.delete":
+      case "profile.default":
+        Promise.resolve()
+          .then(() => {
+            const dir = assertDirectory(msg.workspace)
+            if (msg.type === "advanced.save") return saveAdvanced(dir, msg.scope, msg.values)
+            if (msg.type === "profile.save") return saveProfile(dir, msg.scope, msg.profile)
+            if (msg.type === "profile.delete") return deleteProfile(dir, msg.scope, msg.name)
+            return setDefaultProfile(dir, msg.scope, msg.name)
+          })
+          .then((r) => reply(socket, { type: "config.saved", requestId: msg.requestId, path: r.path }))
+          .catch((e: unknown) => reply(socket, { type: "config.saved", requestId: msg.requestId, error: errorText(e) }))
         return
       case "templates.list":
         reply(socket, { type: "templates", items: listTemplates(assertDirectory(msg.workspace), dataRoot) })
